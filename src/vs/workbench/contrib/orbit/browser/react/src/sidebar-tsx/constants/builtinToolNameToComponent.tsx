@@ -600,4 +600,34 @@ export const builtinToolNameToComponent: { [T in BuiltinToolName]: { resultWrapp
 			return <TaskToolResult toolMessage={toolMessage} threadId={threadId} />
 		},
 	},
+
+	'skill': {
+		resultWrapper: ({ toolMessage, compact }) => {
+			if (toolMessage.type === 'tool_request') return null
+
+			const accessor = useAccessor()
+			const title = getTitle(toolMessage)
+			const { desc1, desc1Info } = toolNameToDesc(toolMessage.name, toolMessage.params, accessor, toolMessage.rawParams)
+			const statusIconMeta = getToolStatusIconMeta(toolMessage)
+
+			const componentParams: ToolHeaderParams = {
+				title,
+				desc1,
+				desc1Info,
+				isError: toolMessage.type === 'tool_error',
+				isRejected: toolMessage.type === 'rejected',
+				isRunning: toolMessage.type === 'running_now',
+				icon: statusIconMeta?.icon,
+				iconTooltip: statusIconMeta?.tooltip,
+			}
+
+			if (toolMessage.type === 'tool_error') {
+				componentParams.desc1 = typeof toolMessage.result === 'string' ? toolMessage.result : String(toolMessage.result)
+			} else if (toolMessage.type === 'success') {
+				componentParams.desc1 = toolMessage.result?.skillName ?? desc1
+			}
+
+			return <ToolHeaderWrapper {...componentParams} compact={compact} />
+		},
+	},
 } satisfies { [T in BuiltinToolName]: { resultWrapper: ResultWrapper<T> } };

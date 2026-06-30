@@ -475,6 +475,7 @@ export type GlobalSettings = {
 	autoAcceptLLMChanges: boolean;
 	enableAgentCompletionSound: boolean;
 	enableAgentCompletionNotification: boolean;
+	disabledSkills: string[];
 }
 
 export const defaultGlobalSettings: GlobalSettings = {
@@ -493,6 +494,7 @@ export const defaultGlobalSettings: GlobalSettings = {
 	autoAcceptLLMChanges: false,
 	enableAgentCompletionSound: true, // enabled by default
 	enableAgentCompletionNotification: true, // enabled by default
+	disabledSkills: [],
 }
 
 export type GlobalSettingName = keyof GlobalSettings

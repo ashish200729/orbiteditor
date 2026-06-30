@@ -9,7 +9,8 @@ import { ProviderName, providerNames, VoidStatefulModelInfo, RefreshableProvider
 import ErrorBoundary from '../sidebar-tsx/ErrorBoundary.js'
 import { VoidButtonBgDarken, VoidCustomDropdownBox, VoidInputBox2, VoidSimpleInputBox, VoidSwitch } from '../util/inputs.js'
 import { useAccessor, useIsDark, useIsOptedOut, useRefreshModelListener, useRefreshModelState, useSettingsState, useOpenAiCodexAuthState, useOrbitProviderAuthState, useOrbitUsageStats } from '../util/services.js'
-import { X, RefreshCw, Loader2, Check, Asterisk, Plus, Boxes, Cloud, Sparkles, Settings2, Puzzle, LayoutList, type LucideIcon } from 'lucide-react'
+import { X, RefreshCw, Loader2, Check, Asterisk, Plus, Boxes, Cloud, Sparkles, Settings2, Puzzle, LayoutList, BookOpen, Trash2, Download, type LucideIcon } from 'lucide-react'
+import { listSkills, onSkillsChanged, type SkillDefinition } from '../../../../common/skillRegistry.js'
 import { URI } from '../../../../../../../base/common/uri.js'
 import { ModelDropdown } from './ModelDropdown.js'
 import { ChatMarkdownRender } from '../markdown/ChatMarkdownRender.js'
@@ -33,6 +34,7 @@ type Tab =
 	| 'featureOptions'
 	| 'mcp'
 	| 'general'
+	| 'skills'
 	| 'all';
 
 const SETTINGS_NAV_ICON = { size: 15, strokeWidth: 1.75 } as const
@@ -1081,6 +1083,104 @@ const SettingsCell = ({ label, description, badge, showDivider = false, children
 	);
 };
 
+// A single row inside the Skills card (Cursor-style).
+const SkillRow = ({ skill, onOpen, onToggle, onDelete }: {
+	skill: SkillDefinition;
+	onOpen: (skill: SkillDefinition) => void;
+	onToggle: (name: string, enabled: boolean) => void;
+	onDelete: (skill: SkillDefinition) => void;
+}) => {
+	const isBuiltIn = skill.source === 'built-in'
+	const canOpen = !!skill.filePath
+	const deletable = !isBuiltIn && !skill.external
+	return (
+		<div
+			className={`group flex items-start gap-3 px-4 py-3 border-t border-void-border-3 first:border-t-0 transition-colors ${canOpen ? 'cursor-pointer hover:bg-[color-mix(in_srgb,var(--void-fg-1)_4%,transparent)]' : ''} ${skill.enabled ? '' : 'opacity-55'}`}
+			onClick={canOpen ? () => onOpen(skill) : undefined}
+			role={canOpen ? 'button' : undefined}
+			title={canOpen ? 'Open SKILL.md' : undefined}
+		>
+			<div className='min-w-0 flex-1'>
+				<div className='flex items-center gap-2'>
+					<span className='text-void-fg-1 text-sm font-medium truncate'>{skill.name}</span>
+					{isBuiltIn && (
+						<span className='text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded text-void-fg-3' style={{ background: 'color-mix(in srgb, var(--void-fg-1) 8%, transparent)' }}>
+							built-in
+						</span>
+					)}
+					{skill.external && (
+						<span className='text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded text-void-fg-3' style={{ background: 'color-mix(in srgb, var(--void-fg-1) 8%, transparent)' }}>
+							global
+						</span>
+					)}
+					{skill.disableModelInvocation && (
+						<span className='text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded text-void-fg-3' style={{ background: 'color-mix(in srgb, var(--void-fg-1) 8%, transparent)' }}>
+							manual
+						</span>
+					)}
+				</div>
+				<p className='text-void-fg-3 text-xs leading-relaxed mt-0.5 line-clamp-2'>{skill.description}</p>
+			</div>
+			<div className='flex items-center gap-1.5 flex-shrink-0 pt-0.5' onClick={(e) => e.stopPropagation()}>
+				<VoidSwitch
+					value={skill.enabled}
+					size='xs'
+					onChange={(newVal) => onToggle(skill.name, newVal)}
+				/>
+				{deletable && (
+					<button
+						className='p-1 rounded text-void-fg-4 opacity-0 group-hover:opacity-100 hover:text-void-fg-1 transition-opacity'
+						onClick={() => onDelete(skill)}
+						title='Delete skill'
+					>
+						<Trash2 className='w-3.5 h-3.5' />
+					</button>
+				)}
+			</div>
+		</div>
+	)
+}
+
+const SKILLS_COLLAPSED_COUNT = 6
+
+// Skills list (Skills tab) — single rounded card with hairline-separated rows.
+const SkillsListView = ({ skills, onOpen, onToggle, onDelete }: {
+	skills: SkillDefinition[];
+	onOpen: (skill: SkillDefinition) => void;
+	onToggle: (name: string, enabled: boolean) => void;
+	onDelete: (skill: SkillDefinition) => void;
+}) => {
+	const [expanded, setExpanded] = useState(false)
+
+	if (skills.length === 0) {
+		return (
+			<div className='rounded-lg border border-void-border-3 bg-void-bg-2 px-4 py-8 text-center'>
+				<p className='text-void-fg-2 text-sm'>No skills yet.</p>
+				<p className='text-void-fg-3 text-xs mt-1'>Import your skills from Cursor, or create a new one.</p>
+			</div>
+		)
+	}
+
+	const hasMore = skills.length > SKILLS_COLLAPSED_COUNT
+	const visible = expanded ? skills : skills.slice(0, SKILLS_COLLAPSED_COUNT)
+
+	return (
+		<div className='rounded-lg border border-void-border-3 bg-void-bg-2 overflow-hidden'>
+			{visible.map(skill => (
+				<SkillRow key={skill.filePath || skill.name} skill={skill} onOpen={onOpen} onToggle={onToggle} onDelete={onDelete} />
+			))}
+			{hasMore && (
+				<button
+					className='w-full text-left px-4 py-2.5 border-t border-void-border-3 text-void-fg-3 text-xs hover:bg-[color-mix(in_srgb,var(--void-fg-1)_4%,transparent)] transition-colors'
+					onClick={() => setExpanded(v => !v)}
+				>
+					{expanded ? 'Show less' : `Show all (${skills.length - SKILLS_COLLAPSED_COUNT} more)`}
+				</button>
+			)}
+		</div>
+	)
+}
+
 export const Settings = () => {
 	const isDark = useIsDark()
 	// ─── sidebar nav ──────────────────────────
@@ -1093,6 +1193,7 @@ export const Settings = () => {
 		{ tab: 'featureOptions', label: 'Feature Options', icon: <SettingsNavIcon icon={Sparkles} /> },
 		{ tab: 'general', label: 'General', icon: <SettingsNavIcon icon={Settings2} /> },
 		{ tab: 'mcp', label: 'MCP', icon: <SettingsNavIcon icon={Puzzle} /> },
+		{ tab: 'skills', label: 'Skills', icon: <SettingsNavIcon icon={BookOpen} /> },
 		{ tab: 'all', label: 'All Settings', icon: <SettingsNavIcon icon={LayoutList} /> },
 	];
 	const shouldShowTab = (tab: Tab) => selectedSection === 'all' || selectedSection === tab;
@@ -1108,6 +1209,58 @@ export const Settings = () => {
 	const storageService = accessor.get('IStorageService')
 	const metricsService = accessor.get('IMetricsService')
 	const isOptedOut = useIsOptedOut()
+
+	// --- Skills ---
+	const skillImportService = accessor.get('ISkillImportService')
+	const [skills, setSkills] = useState<SkillDefinition[]>(() => listSkills())
+	useEffect(() => onSkillsChanged(() => setSkills(listSkills())), [])
+
+	const handleImportFromCursor = async () => {
+		try {
+			const result = await skillImportService.importFromCursor()
+			if (result.imported > 0) {
+				notificationService.info(`Imported ${result.imported} skill${result.imported !== 1 ? 's' : ''} from Cursor${result.skipped ? `, ${result.skipped} skipped (already installed)` : ''}.`)
+			} else if (result.skipped > 0) {
+				notificationService.info(`All ${result.skipped} Cursor skill${result.skipped !== 1 ? 's' : ''} are already installed.`)
+			} else {
+				notificationService.info(result.errors[0] ?? 'No Cursor skills found to import.')
+			}
+		} catch (err) {
+			notificationService.notify({ message: 'Failed to import skills from Cursor', source: err + '', severity: Severity.Error })
+		}
+	}
+
+	const handleCreateNewSkill = async () => {
+		try {
+			const name = await skillImportService.createNewSkill()
+			if (name) notificationService.info(`Created skill "${name}". Edit its SKILL.md to fill it in.`)
+		} catch (err) {
+			notificationService.notify({ message: 'Failed to create skill', source: err + '', severity: Severity.Error })
+		}
+	}
+
+	const handleDeleteSkill = async (skill: SkillDefinition) => {
+		try {
+			const ok = await skillImportService.deleteSkill(skill.filePath)
+			if (!ok) notificationService.info(`Could not delete "${skill.name}".`)
+		} catch (err) {
+			notificationService.notify({ message: `Failed to delete skill "${skill.name}"`, source: err + '', severity: Severity.Error })
+		}
+	}
+
+	const handleOpenSkill = (skill: SkillDefinition) => {
+		if (!skill.filePath) return
+		commandService.executeCommand('vscode.open', URI.file(skill.filePath))
+	}
+
+	const handleToggleSkill = (name: string, enabled: boolean) => {
+		const current = voidSettingsService.state.globalSettings.disabledSkills ?? []
+		const disabled = enabled
+			? current.filter((n: string) => n !== name)
+			// Dedup so rapid toggles against stale state can't persist duplicate names.
+			: Array.from(new Set([...current, name]))
+		voidSettingsService.setGlobalSetting('disabledSkills', disabled)
+	}
 
 	const onDownload = (t: 'Chats' | 'Settings') => {
 		let dataStr: string
@@ -1614,9 +1767,30 @@ Use Model Context Protocol to provide Agent mode with more tools.
 								</ErrorBoundary>
 							</div>
 
-
-
-
+							{/* ---------------- SKILLS ---------------- */}
+							<div className={shouldShowTab('skills') ? '' : 'hidden'}>
+								<ErrorBoundary>
+									<div className='flex flex-wrap items-start justify-between gap-x-4 gap-y-3 mb-4'>
+										<div className='min-w-0 flex-1 basis-64'>
+											<h2 className='text-void-fg-1 text-base font-semibold'>Skills</h2>
+											<p className='text-void-fg-2 text-xs leading-relaxed mt-1 max-w-xl'>
+												Skills give the agent reusable, on-demand knowledge. The agent loads a skill when a task matches its description, or you can trigger it manually. Import your own skills from Cursor, or create a new one.
+											</p>
+										</div>
+										<div className='flex items-center gap-2 flex-shrink-0'>
+											<VoidButtonBgDarken className='px-3 py-1 whitespace-nowrap' onClick={handleImportFromCursor}>
+												<Download className='w-3.5 h-3.5 mr-1 inline' /> Import from Cursor
+											</VoidButtonBgDarken>
+											<VoidButtonBgDarken className='px-3 py-1 whitespace-nowrap' onClick={handleCreateNewSkill}>
+												<Plus className='w-3.5 h-3.5 mr-1 inline' /> New
+											</VoidButtonBgDarken>
+										</div>
+									</div>
+									<ErrorBoundary>
+										<SkillsListView skills={skills} onOpen={handleOpenSkill} onToggle={handleToggleSkill} onDelete={handleDeleteSkill} />
+									</ErrorBoundary>
+								</ErrorBoundary>
+							</div>
 
 						</div>
 

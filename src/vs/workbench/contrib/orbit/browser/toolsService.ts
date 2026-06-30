@@ -55,6 +55,7 @@ import { IDisposable } from '../../../../base/common/lifecycle.js'
 import { IMetricsService } from '../common/metricsService.js'
 import { ISubAgentService } from './subAgentService.js'
 import { getSubAgent, listSubAgents } from '../common/subAgentRegistry.js'
+import { getSkill, listSkills } from '../common/skillRegistry.js'
 import {
 	finalizeGlobSearchResults,
 	GLOB_MTIME_SORT_CAP,
@@ -461,6 +462,12 @@ export class ToolsService implements IToolsService {
 				const model = typeof params.model === 'string' && params.model.trim() ? params.model.trim() : undefined;
 				const run_in_background = params.run_in_background === 'true' || String(params.run_in_background) === 'true';
 				return { subagent_type, description, prompt, model, run_in_background };
+			},
+
+			skill: (params: RawToolParamsObj): BuiltinToolCallParams['skill'] => {
+				const name = typeof params.name === 'string' ? params.name.trim() : '';
+				if (!name) throw new Error('skill name is required');
+				return { name };
 			},
 
 		}
@@ -1207,6 +1214,18 @@ export class ToolsService implements IToolsService {
 					interruptTool: () => abortRef.current?.(),
 				};
 			},
+
+			skill: async ({ name }: BuiltinToolCallParams['skill']) => {
+				const skill = getSkill(name);
+				if (!skill) {
+					const available = listSkills().filter(s => s.enabled).map(s => s.name).join(', ') || '(none)';
+					return { result: { content: `Skill "${name}" not found. Available skills: ${available}.`, skillName: name } };
+				}
+				if (!skill.enabled) {
+					return { result: { content: `Skill "${name}" is currently disabled. Enable it in Settings → Skills to use it.`, skillName: name } };
+				}
+				return { result: { content: skill.body, skillName: skill.name } };
+			},
 		}
 
 
@@ -1334,6 +1353,10 @@ export class ToolsService implements IToolsService {
 				}
 				const meta = `[Agent: ${result.agentType} | Tools used: ${result.toolUseCount} | Duration: ${result.durationMs < 1000 ? `${result.durationMs}ms` : `${(result.durationMs / 1000).toFixed(1)}s`}]`;
 				return `${result.output}\n\n${meta}`;
+			},
+
+			skill: (_params, result) => {
+				return result.content;
 			},
 		}
 

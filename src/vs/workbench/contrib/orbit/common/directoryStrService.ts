@@ -36,7 +36,13 @@ export const IDirectoryStrService = createDecorator<IDirectoryStrService>('voidD
 
 
 // Check if it's a known filtered type like .git
-const shouldExcludeDirectory = (name: string) => {
+const shouldExcludeDirectory = (name: string, opts?: { allowOrbitConfig?: boolean }) => {
+	// `.orbit` holds Orbit's own config (skills, agents). Keep it visible in the directory
+	// OVERVIEW so the agent can find and edit those files. It is NOT un-hidden for bulk file
+	// enumeration (getAllUrisInDirectory), where it would compete with real source files in
+	// the result budget.
+	if (name === '.orbit') return !opts?.allowOrbitConfig;
+
 	if (name === '.git' ||
 		name === 'node_modules' ||
 		name.startsWith('.') ||
@@ -120,7 +126,7 @@ const computeAndStringifyDirectoryTree = async (
 	let remainingChars = MAX_CHARS - nodeLine.length;
 
 	// Check if it's a directory we should skip
-	const isGitIgnoredDirectory = eItem.isDirectory && shouldExcludeDirectory(eItem.name);
+	const isGitIgnoredDirectory = eItem.isDirectory && shouldExcludeDirectory(eItem.name, { allowOrbitConfig: true });
 
 
 	// Fetch and process children if not a filtered directory
@@ -203,7 +209,7 @@ const renderChildrenCombined = async (
 		const nextLevelPrefix = parentPrefix + (isLast ? '    ' : '│   ');
 
 		// Skip processing children for git ignored directories
-		const isGitIgnoredDirectory = child.isDirectory && shouldExcludeDirectory(child.name);
+		const isGitIgnoredDirectory = child.isDirectory && shouldExcludeDirectory(child.name, { allowOrbitConfig: true });
 
 		// Create the prefix for the next level (continuation line or space)
 		if (child.isDirectory && !isGitIgnoredDirectory) {

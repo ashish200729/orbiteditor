@@ -88,6 +88,8 @@ export type BuiltinToolCallParams = {
 	'mark_plan_item_complete': { itemIndex: number },
 	// --- sub-agent delegation
 	'task': { subagent_type: string, description: string, prompt: string, model?: string, run_in_background?: boolean, internalToolId?: string, internalThreadId?: string },
+	// --- skills
+	'skill': { name: string },
 }
 
 // RESULT OF TOOL CALL
@@ -130,6 +132,8 @@ export type BuiltinToolResultType = {
 	'mark_plan_item_complete': { success: boolean, completedItem: string },
 	// --- sub-agent delegation
 	'task': { output: string, agentType: string, durationMs: number, toolUseCount: number, status: 'completed' | 'background_launched' | 'failed' | 'cancelled' },
+	// --- skills
+	'skill': { content: string, skillName: string },
 }
 
 

@@ -13,6 +13,7 @@ import { READ_ONLY_BUILTIN_TOOL_NAMES } from '../toolsServiceTypes.js';
 import { BuiltinToolCallParams, BuiltinToolName, BuiltinToolResultType, ToolName } from '../toolsServiceTypes.js';
 import { ChatMode } from '../orbitSettingsTypes.js';
 import { listSubAgents } from '../subAgentRegistry.js';
+import { listSkills } from '../skillRegistry.js';
 
 // Triple backtick wrapper used throughout the prompts for code blocks
 export const tripleTick = ['```', '```']
@@ -270,6 +271,34 @@ export type SnakeCase<S extends string> =
 export type SnakeCaseKeys<T extends Record<string, any>> = {
 	[K in keyof T as SnakeCase<Extract<K, string>>]: T[K]
 };
+
+/** Enabled skills the model may load via the `skill` tool. */
+const enabledSkillsForPrompt = () => listSkills().filter(s => s.enabled)
+
+/**
+ * Skills the model may load on its own initiative: enabled AND not flagged
+ * `disableModelInvocation`. The latter are surfaced separately under <explicit_skills> and
+ * must NOT be advertised in the tool's auto-load list.
+ */
+const autoInvokeSkillsForPrompt = () => enabledSkillsForPrompt().filter(s => !s.disableModelInvocation)
+
+/** Builds the `skill` tool description, including the current set of loadable skills. */
+const buildSkillToolDescription = (): string => {
+	const skills = enabledSkillsForPrompt()
+	const loadable = skills.filter(s => !s.disableModelInvocation)
+	const list = loadable.length > 0
+		? loadable.map(s => `- ${s.name}: ${s.description}`).join('\n')
+		: '(none currently installed)'
+	return `Load a specialized skill when the task matches its description. Skills provide domain-specific instructions, workflows, and best practices that are not loaded until you request them.
+
+Available skills:
+${list}
+
+Usage notes:
+- Call this tool with the skill's exact name to load its full instructions, then follow them.
+- Only load a skill when the current task matches its description — skills are lazily loaded to keep context focused.
+- The tool returns the skill's instructions as text; act on them, do not just relay them to the user.`
+}
 
 export const builtinTools: {
 	[T in keyof BuiltinToolCallParams]: {
@@ -1076,6 +1105,16 @@ Terse command-style prompts produce shallow, generic work.
 		example: `task({ subagent_type: "explore", description: "Find auth files", prompt: "Find all files related to authentication in this codebase. Search for: login, auth, token, session, JWT, OAuth patterns. For each file found, note its role and how it connects to others. Report exact file paths and key functions." })`,
 	},
 
+	// --- skills
+	skill: {
+		name: 'skill',
+		description: buildSkillToolDescription(),
+		params: {
+			name: { description: `The exact name of the skill to load. Available: ${autoInvokeSkillsForPrompt().map(s => s.name).join(', ') || '(none)'}` },
+		},
+		example: `skill({ name: "code-review" })`,
+	},
+
 } satisfies { [T in keyof BuiltinToolResultType]: InternalToolInfo }
 
 export const builtinToolNames = Object.keys(builtinTools) as BuiltinToolName[]
@@ -1168,8 +1207,9 @@ export const resolveBuiltinToolNameLoose = (toolName: string, opts?: { mcpToolNa
 	return compactMatch ?? undefined
 }
 
-// Read/search tools that can be parallelized safely
-export const readOnlyToolNames: BuiltinToolName[] = [...READ_ONLY_BUILTIN_TOOL_NAMES]
+// Read/search tools that can be parallelized safely. `skill` is read-only (it returns
+// the text of an in-memory skill definition) so it is safe in every mode.
+export const readOnlyToolNames: BuiltinToolName[] = [...READ_ONLY_BUILTIN_TOOL_NAMES, 'skill']
 
 const llmHiddenBuiltinToolNames = new Set<BuiltinToolName>([
 	'update_plan_section',
@@ -1270,6 +1310,18 @@ Terse command-style prompts produce shallow, generic work.
 					params: {
 						...builtinTools.task.params,
 						subagent_type: { description: `The type of agent to use. Available: ${agents.map(a => a.agentType).join(', ')}` },
+					},
+				};
+			}
+			if (toolName === 'skill') {
+				// Rebuild the skill tool description dynamically so it includes the current
+				// set of enabled user/project/built-in skills.
+				return {
+					...builtinTools.skill,
+					description: buildSkillToolDescription(),
+					params: {
+						...builtinTools.skill.params,
+						name: { description: `The exact name of the skill to load. Available: ${autoInvokeSkillsForPrompt().map(s => s.name).join(', ') || '(none)'}` },
 					},
 				};
 			}
@@ -1466,6 +1518,36 @@ export const augmentChatMessagesWithHarnessContext = <T extends HarnessAugmentab
 	const newMessages = messages.slice()
 	newMessages[lastUserIdx] = { ...userMsg, content: wrappedContent }
 	return newMessages
+}
+
+/**
+ * Builds the <available_skills> system-prompt section advertising loadable skills. Returns
+ * an empty string when no skills are enabled. Skills flagged `disableModelInvocation` are
+ * listed separately so the model knows they exist but are only used on explicit request.
+ */
+const buildAvailableSkillsSection = (): string => {
+	const skills = listSkills().filter(s => s.enabled)
+	if (skills.length === 0) return ''
+
+	const autoInvoke = skills.filter(s => !s.disableModelInvocation)
+	const explicit = skills.filter(s => s.disableModelInvocation)
+	const sections: string[] = []
+
+	if (autoInvoke.length > 0) {
+		sections.push(`<available_skills>
+The following skills are available. When a task matches a skill's description, call the \`skill\` tool with the skill's name to load its full instructions, then follow them. Skills are loaded on demand to keep context focused — only load one when it is relevant.
+${autoInvoke.map(s => `- ${s.name}: ${s.description}`).join('\n')}
+</available_skills>`)
+	}
+
+	if (explicit.length > 0) {
+		sections.push(`<explicit_skills>
+These skills exist but should only be loaded when the user explicitly asks for them:
+${explicit.map(s => `- ${s.name}: ${s.description}`).join('\n')}
+</explicit_skills>`)
+	}
+
+	return sections.join('\n\n')
 }
 
 export const chat_systemMessage = ({ workspaceFolders, openedURIs, activeURI, shellIds, directoryStr, chatMode: mode, mcpTools, includeXMLToolDefinitions, enableToolCalling, modelInfo, toolPolicy }: { workspaceFolders: string[], directoryStr: string, openedURIs: string[], activeURI: string | undefined, shellIds: string[], chatMode: ChatMode, mcpTools: InternalToolInfo[] | undefined, includeXMLToolDefinitions: boolean, enableToolCalling?: boolean, modelInfo?: { providerName: string, modelName: string }, toolPolicy?: ToolPolicy }) => {
@@ -1788,6 +1870,8 @@ Code chunks that you receive (via tool calls or from user) may include inline li
 	const parts: string[] = []
 	parts.push(header)
 	parts.push(toneAndStyle)
+	const availableSkills = allowToolCalling ? buildAvailableSkillsSection() : ''
+	if (availableSkills) parts.push(availableSkills)
 	const toolCalling = allowToolCalling ? toolCallingSection() : null
 	const maxParallel = allowToolCalling ? maximizeParallelToolCalls() : null
 	if (toolCalling) parts.push(toolCalling)

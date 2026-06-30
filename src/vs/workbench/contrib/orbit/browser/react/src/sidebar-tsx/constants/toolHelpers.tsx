@@ -304,6 +304,10 @@ export const toolNameToDesc = (toolName: string, _toolParams: BuiltinToolCallPar
 					const subagent_type = rawParams.subagent_type as string | undefined
 					return { desc1: description || subagent_type || '' }
 				},
+				'skill': () => {
+					const name = rawParams.name as string | undefined
+					return { desc1: name || '' }
+				},
 			}
 			try {
 				return x[toolName]?.() || { desc1: '' }
@@ -428,6 +432,12 @@ export const toolNameToDesc = (toolName: string, _toolParams: BuiltinToolCallPar
 			const toolParams = _toolParams as BuiltinToolCallParams['task']
 			return {
 				desc1: toolParams.description || toolParams.subagent_type,
+			}
+		},
+		'skill': () => {
+			const toolParams = _toolParams as BuiltinToolCallParams['skill']
+			return {
+				desc1: toolParams.name,
 			}
 		},
 	}

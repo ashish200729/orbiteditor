@@ -41,6 +41,10 @@ import './terminalToolService.js'
 import './subAgentService.js'
 import './projectAgentLoader.js'
 
+// skills (registry loader + import service)
+import './skillLoader.js'
+import './skillImportService.js'
+
 // register Thread History
 import './chatThreadService.js'
 
