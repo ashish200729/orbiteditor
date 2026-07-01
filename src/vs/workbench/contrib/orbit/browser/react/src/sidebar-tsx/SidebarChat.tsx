@@ -418,8 +418,9 @@ export const SidebarChat = () => {
 		>
 			<VoidInputBox2
 				enableAtToMention
-className={`min-h-[40px] px-0.5 py-0.5 !overflow-hidden resize-none placeholder:text-void-fg-4`}
-				placeholder={`@ to mention, ${keybindingString ? `${keybindingString} to add a selection. ` : ''}Enter instructions...`}
+				enableSlashCommands
+className={`min-h-[40px] px-0.5 py-0.5 resize-none placeholder:text-void-fg-4`}
+				placeholder={`@ to mention, / for commands, ${keybindingString ? `${keybindingString} to add a selection. ` : ''}Enter instructions...`}
 				onChangeText={onChangeText}
 				onKeyDown={onKeyDown}
 				onFocus={() => { chatThreadsService.setCurrentlyFocusedMessageIdx(undefined) }}

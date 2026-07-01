@@ -6,9 +6,11 @@
 import React, { KeyboardEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { Pencil, X, ChevronUp, ChevronDown } from 'lucide-react';
 import { ChatMessage, StagingSelectionItem, TodoItem } from '../../../../../../common/chatThreadServiceTypes.js';
+import { parseSlashTokenNames } from '../../../../../../common/slashCommands/slashTokens.js';
 import { TodoMessageAttachment } from '../toolResults/todo/TodoMessageAttachment.js';
 import { useAccessor } from '../../../util/services.js';
 import { VoidInputBox2, TextAreaFns } from '../../../util/inputs.js';
+import { SlashTokenContent } from '../../../util/slashMenu/SlashTokenContent.js';
 import { VoidChatArea } from '../chat/orbitChatArea.js';
 import { SelectedFiles } from '../files/SelectedFiles.js';
 import { IconX } from '../icons/IconX.js';
@@ -63,6 +65,8 @@ export const UserMessageComponent = React.memo(({ chatMessage, messageIdx, isChe
 	// initialize on first render, and when edit was just enabled
 	const _mustInitialize = useRef(true)
 	const _justEnabledEdit = useRef(false)
+	/** Composer `stagedSlashTokens` snapshot taken when edit opens; restored on cancel. */
+	const stagedSlashTokensBeforeEditRef = useRef<string[] | undefined>(undefined)
 	useEffect(() => {
 		const canInitialize = mode === 'edit' && textAreaRefState
 		const shouldInitialize = _justEnabledEdit.current || _mustInitialize.current
@@ -76,6 +80,13 @@ export const UserMessageComponent = React.memo(({ chatMessage, messageIdx, isChe
 
 			// Initialize images for edit mode
 			setEditImages(chatMessage.images || [])
+
+			// Re-stage slash tokens that were injected when this message was originally sent.
+			const present = new Set(parseSlashTokenNames(chatMessage.displayContent || ''))
+			const injected = chatMessage.injectedSlashTokens ?? []
+			chatThreadsService.setCurrentThreadState({
+				stagedSlashTokens: injected.filter(n => present.has(n)),
+			})
 
 			if (textAreaFnsRef.current)
 				textAreaFnsRef.current.setValue(chatMessage.displayContent || '')
@@ -102,6 +113,9 @@ export const UserMessageComponent = React.memo(({ chatMessage, messageIdx, isChe
 	}, [chatMessage.displayContent, mode])
 
 	const onOpenEdit = () => {
+		stagedSlashTokensBeforeEditRef.current = [
+			...(chatThreadsService.getCurrentThreadState().stagedSlashTokens ?? []),
+		]
 		setIsBeingEdited(true)
 		chatThreadsService.setCurrentlyFocusedMessageIdx(messageIdx)
 		_justEnabledEdit.current = true
@@ -111,7 +125,13 @@ export const UserMessageComponent = React.memo(({ chatMessage, messageIdx, isChe
 		setIsHovered(false)
 		setIsBeingEdited(false)
 		chatThreadsService.setCurrentlyFocusedMessageIdx(undefined)
-
+		_mustInitialize.current = true
+		if (stagedSlashTokensBeforeEditRef.current !== undefined) {
+			chatThreadsService.setCurrentThreadState({
+				stagedSlashTokens: [...stagedSlashTokensBeforeEditRef.current],
+			})
+			stagedSlashTokensBeforeEditRef.current = undefined
+		}
 	}
 
 	const EditSymbol = mode === 'display' ? Pencil : X
@@ -151,6 +171,10 @@ export const UserMessageComponent = React.memo(({ chatMessage, messageIdx, isChe
 		setEditImages(prev => prev.filter((_, i) => i !== index))
 	}, [])
 
+	const onEditChangeText = useCallback((text: string) => {
+		setIsDisabled(!text)
+	}, [])
+
 
 	let chatbubbleContents: React.ReactNode
 	if (mode === 'display') {
@@ -172,7 +196,7 @@ export const UserMessageComponent = React.memo(({ chatMessage, messageIdx, isChe
 			<div className='px-0.5'>
 				<div
 					ref={contentRef}
-					className={`whitespace-pre-wrap transition-all duration-300 ease-in-out ${!isExpanded && shouldTruncate ? 'line-clamp-3' : ''}`}
+					className={`whitespace-pre-wrap leading-relaxed transition-all duration-300 ease-in-out ${!isExpanded && shouldTruncate ? 'line-clamp-3' : ''}`}
 					style={{
 						display: !isExpanded && shouldTruncate ? '-webkit-box' : 'block',
 						WebkitLineClamp: !isExpanded && shouldTruncate ? '3' : 'unset',
@@ -182,7 +206,7 @@ export const UserMessageComponent = React.memo(({ chatMessage, messageIdx, isChe
 						wordBreak: 'break-word',
 					}}
 				>
-					{chatMessage.displayContent}
+					<SlashTokenContent text={chatMessage.displayContent || ''} />
 				</div>
 				{shouldTruncate && (
 					<button
@@ -229,6 +253,7 @@ export const UserMessageComponent = React.memo(({ chatMessage, messageIdx, isChe
 			// update state
 			setIsBeingEdited(false)
 			chatThreadsService.setCurrentlyFocusedMessageIdx(undefined)
+			stagedSlashTokensBeforeEditRef.current = undefined // submit consumes tokens; don't restore composer snapshot
 
 			// stream the edit
 			const userMessage = textAreaRefState.value;
@@ -273,11 +298,14 @@ export const UserMessageComponent = React.memo(({ chatMessage, messageIdx, isChe
 			setSelections={setStagingSelections}
 		>
 			<VoidInputBox2
+				key={`edit-${messageIdx}`}
 				enableAtToMention
+				enableSlashCommands
+				initValue={chatMessage.displayContent || ''}
 				ref={setTextAreaRef}
-				className='min-h-[81px] max-h-[500px] px-0.5'
+				className='min-h-[81px] max-h-[500px] px-0.5 py-0.5'
 				placeholder="Edit your message..."
-				onChangeText={(text) => setIsDisabled(!text)}
+				onChangeText={onEditChangeText}
 				onFocus={() => {
 					setIsFocused(true)
 					chatThreadsService.setCurrentlyFocusedMessageIdx(messageIdx);

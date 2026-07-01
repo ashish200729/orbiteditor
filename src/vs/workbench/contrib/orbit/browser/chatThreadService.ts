@@ -12,6 +12,7 @@ import { URI } from '../../../../base/common/uri.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { ILLMMessageService } from '../common/sendLLMMessageService.js';
 import { chat_userMessageContent, isABuiltinToolName, isLLMHiddenBuiltinToolName, llmVisibleBuiltinToolNames, readOnlyToolNames, resolveBuiltinToolName, resolveBuiltinToolNameLoose, InternalToolInfo } from '../common/prompt/prompts.js';
+import { parseSlashTokenNames } from '../common/slashCommands/slashTokens.js';
 import { AnthropicReasoning, getErrorMessage, RawToolCallObj, RawToolParamsObj } from '../common/sendLLMMessageTypes.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { FeatureName, ModelSelection, ModelSelectionOptions } from '../common/orbitSettingsTypes.js';
@@ -200,6 +201,7 @@ export type ThreadType = {
 		currCheckpointIdx: number | null; // the latest checkpoint we're at (null if not at a particular checkpoint, like if the chat is streaming, or chat just finished and we haven't clicked on a checkpt)
 
 		stagingSelections: StagingSelectionItem[];
+		stagedSlashTokens?: string[]; // names of /skill and /command tokens explicitly inserted via the slash menu (optional for back-compat with older persisted threads)
 		focusedMessageIdx: number | undefined; // index of the user message that is being edited (undefined if none)
 
 		linksOfMessageIdx: { // eg. link = linksOfMessageIdx[4]['RangeFunction']
@@ -301,6 +303,7 @@ const newThreadObject = () => {
 		state: {
 			currCheckpointIdx: null,
 			stagingSelections: [],
+			stagedSlashTokens: [],
 			focusedMessageIdx: undefined,
 			linksOfMessageIdx: {},
 		},
@@ -344,6 +347,7 @@ export interface IChatThreadService {
 
 	popStagingSelections(numPops?: number): void;
 	addNewStagingSelection(newSelection: StagingSelectionItem): void;
+	addStagedSlashToken(name: string): void;
 
 	dangerousSetState: (newState: ThreadsState) => void;
 	resetState: () => void;
@@ -2448,16 +2452,30 @@ We only need to do it for files that were edited since `from`, ie files between 
 		const instructions = userMessage
 		const currSelns: StagingSelectionItem[] = _chatSelections ?? thread.state.stagingSelections
 
-		const userMessageContent = await chat_userMessageContent(instructions, currSelns, { directoryStrService: this._directoryStringService, fileService: this._fileService }) // user message + names of files (NOT content)
+		// Active slash tokens = ones explicitly inserted via the menu AND still present in the
+		// text (so deleting a token, or typing one in prose, doesn't inject it).
+		const stagedSlashTokens = thread.state.stagedSlashTokens ?? []
+		const presentTokens = new Set(parseSlashTokenNames(instructions))
+		const activeSlashTokens = stagedSlashTokens.filter(name => presentTokens.has(name))
+
+		const userMessageContent = await chat_userMessageContent(instructions, currSelns, { directoryStrService: this._directoryStringService, fileService: this._fileService }, activeSlashTokens) // user message + names of files (NOT content)
 		const mergedImages = mergeUniqueImages([
 			...(_images ?? []),
 			...imagesOfSelections(currSelns),
 		])
-		const userHistoryElt: ChatMessage = { role: 'user', content: userMessageContent, displayContent: instructions, selections: currSelns, images: mergedImages, state: defaultMessageState }
+		const userHistoryElt: ChatMessage = {
+			role: 'user',
+			content: userMessageContent,
+			displayContent: instructions,
+			selections: currSelns,
+			images: mergedImages,
+			injectedSlashTokens: activeSlashTokens.length > 0 ? activeSlashTokens : undefined,
+			state: defaultMessageState,
+		}
 		this._addMessageToThread(threadId, userHistoryElt)
 		const turnSequence = this._nextTurnSequence(threadId)
 
-		this._setThreadState(threadId, { currCheckpointIdx: null }) // no longer at a checkpoint because started streaming
+		this._setThreadState(threadId, { currCheckpointIdx: null, stagedSlashTokens: [] }) // no longer at a checkpoint because started streaming; slash tokens consumed
 
 		const agentPromise = this._runChatAgent({ threadId, ...this._currentModelSelectionProps(), turnSequence });
 		this._trackAgentRun(threadId, agentPromise);
@@ -2535,6 +2553,9 @@ We only need to do it for files that were edited since `from`, ie files between 
 		// get prev and curr selections before clearing the message
 		const currSelns = thread.messages[messageIdx].state.stagingSelections || [] // staging selections for the edited message
 		const currImages = thread.messages[messageIdx].images
+		const prevInjected = thread.messages[messageIdx].role === 'user'
+			? (thread.messages[messageIdx].injectedSlashTokens ?? [])
+			: []
 
 		// restore file state to the checkpoint before this user message
 		this.jumpToCheckpointBeforeMessageIdx({ threadId, messageIdx, jumpToUserModified: false })
@@ -2558,6 +2579,15 @@ We only need to do it for files that were edited since `from`, ie files between 
 			}
 		})
 		this._pruneSubAgentConversationsForThread(threadId);
+
+		// Re-stage slash tokens still present in the edited text (prior injections + any new menu picks).
+		const presentTokens = new Set(parseSlashTokenNames(userMessage))
+		const stagedNow = threadAfterRestore.state.stagedSlashTokens ?? []
+		const restoredSlash = [...new Set([
+			...prevInjected.filter(n => presentTokens.has(n)),
+			...stagedNow.filter(n => presentTokens.has(n)),
+		])]
+		this._setThreadState(threadId, { stagedSlashTokens: restoredSlash })
 
 		// re-add the message and stream it
 		await this._addUserMessageAndStreamResponse({ userMessage, _chatSelections: currSelns, _images: currImages, threadId })
@@ -3027,6 +3057,14 @@ We only need to do it for files that were edited since `from`, ie files between 
 		// 	this.jumpToCheckpointBeforeMessageIdx({ threadId, messageIdx, jumpToUserModified: true })
 	}
 
+
+	// Record a /skill or /command token the user inserted via the slash menu (thread-level,
+	// de-duped). Consumed and cleared when the next message is sent.
+	addStagedSlashToken(name: string): void {
+		const current = this.getCurrentThreadState().stagedSlashTokens ?? []
+		if (current.includes(name)) return
+		this.setCurrentThreadState({ stagedSlashTokens: [...current, name] })
+	}
 
 	addNewStagingSelection(newSelection: StagingSelectionItem): void {
 

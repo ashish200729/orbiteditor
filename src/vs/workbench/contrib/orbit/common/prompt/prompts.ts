@@ -13,7 +13,8 @@ import { READ_ONLY_BUILTIN_TOOL_NAMES } from '../toolsServiceTypes.js';
 import { BuiltinToolCallParams, BuiltinToolName, BuiltinToolResultType, ToolName } from '../toolsServiceTypes.js';
 import { ChatMode } from '../orbitSettingsTypes.js';
 import { listSubAgents } from '../subAgentRegistry.js';
-import { listSkills } from '../skillRegistry.js';
+import { listSkills, getSkill } from '../skillRegistry.js';
+import { getBuiltinCommand } from '../slashCommands/builtinCommands.js';
 
 // Triple backtick wrapper used throughout the prompts for code blocks
 export const tripleTick = ['```', '```']
@@ -2014,6 +2015,12 @@ export const chat_userMessageContent = async (
 		directoryStrService: IDirectoryStrService,
 		fileService: IFileService
 	},
+	/**
+	 * Names of `/skill` and `/command` tokens the user EXPLICITLY inserted via the slash menu
+	 * (resolved + de-duped by the caller). We inject only these — never tokens parsed from
+	 * free prose — so a literal "/fix" written in a sentence can't hijack the request.
+	 */
+	slashTokenNames: string[] = [],
 ) => {
 
 	const selnsStrs = await Promise.all(
@@ -2031,7 +2038,31 @@ export const chat_userMessageContent = async (
 
 	const selnsStr = selnsStrs.join('\n\n') ?? ''
 	if (selnsStr) str += `\n---\nSELECTIONS\n${selnsStr}`
+
+	// Explicitly-inserted `/slash` tokens expand into the LLM-facing user message (not the
+	// system prompt): commands inject their full template, skills their full body.
+	// `instructions` (the display text) is left untouched, so the `/token` stays visible in
+	// the rendered user bubble. Commands win on a name collision.
+	str += slashCommandsBlock(slashTokenNames)
+
 	return str;
+}
+
+/** Builds the trailing `SLASH COMMANDS` block from the explicitly-inserted token names. */
+const slashCommandsBlock = (names: string[]): string => {
+	if (!names || names.length === 0) return ''
+	const seen = new Set<string>()
+	const blocks: string[] = []
+	for (const name of names) {
+		if (seen.has(name)) continue
+		seen.add(name)
+		const cmd = getBuiltinCommand(name)
+		if (cmd) { blocks.push(`/${name}:\n${cmd.template}`); continue }
+		const skill = getSkill(name)
+		if (skill?.enabled) blocks.push(`/${name} (skill):\n${skill.body}`)
+	}
+	if (blocks.length === 0) return ''
+	return `\n---\nSLASH COMMANDS\n${blocks.join('\n\n')}`
 }
 
 

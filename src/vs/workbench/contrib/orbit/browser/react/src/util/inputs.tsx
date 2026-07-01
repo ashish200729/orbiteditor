@@ -27,6 +27,12 @@ import { IEditorProgressService } from '../../../../../../../platform/progress/c
 import { detectLanguage } from '../../../../common/helpers/languageHelpers.js';
 import { toFilenameSearchGlobPattern } from '../../../../common/globToolHelpers.js';
 import { UnifiedDiffView } from '../sidebar-tsx/components/editTool/UnifiedDiffView.js';
+import { isSubsequence, scoreSubsequence } from './fuzzy.js';
+import { useSlashMenu } from './slashMenu/useSlashMenu.js';
+import { SlashMenuPopup } from './slashMenu/SlashMenuPopup.js';
+import { HighlightOverlay } from './slashMenu/HighlightOverlay.js';
+import { VOID_CHAT_TEXTAREA_SLASH_MIRROR } from './slashMenu/cssClasses.js';
+import './slashMenu/index.js'; // registers the built-in slash categories
 
 
 // type guard
@@ -70,73 +76,6 @@ type Option = {
 		| { leafNodeType?: undefined, nextOptions?: undefined, generateNextOptions: GenerateNextOptions, }
 		| { leafNodeType: 'File' | 'Folder', uri: URI, nextOptions?: undefined, generateNextOptions?: undefined, }
 	)
-
-
-const isSubsequence = (text: string, pattern: string): boolean => {
-
-	text = text.toLowerCase()
-	pattern = pattern.toLowerCase()
-
-	if (pattern === '') return true;
-	if (text === '') return false;
-	if (pattern.length > text.length) return false;
-
-	const seq: boolean[][] = Array(pattern.length + 1)
-		.fill(null)
-		.map(() => Array(text.length + 1).fill(false));
-
-	for (let j = 0; j <= text.length; j++) {
-		seq[0][j] = true;
-	}
-
-	for (let i = 1; i <= pattern.length; i++) {
-		for (let j = 1; j <= text.length; j++) {
-			if (pattern[i - 1] === text[j - 1]) {
-				seq[i][j] = seq[i - 1][j - 1];
-			} else {
-				seq[i][j] = seq[i][j - 1];
-			}
-		}
-	}
-	return seq[pattern.length][text.length];
-};
-
-
-const scoreSubsequence = (text: string, pattern: string): number => {
-	if (pattern === '') return 0;
-
-	text = text.toLowerCase();
-	pattern = pattern.toLowerCase();
-
-	// We'll use dynamic programming to find the longest consecutive substring
-	const n = text.length;
-	const m = pattern.length;
-
-	// This will track our maximum consecutive match length
-	let maxConsecutive = 0;
-
-	// For each starting position in the text
-	for (let i = 0; i < n; i++) {
-		// Check for matches starting from this position
-		let consecutiveCount = 0;
-
-		// For each character in the pattern
-		for (let j = 0; j < m; j++) {
-			// If we have a match and we're still within text bounds
-			if (i + j < n && text[i + j] === pattern[j]) {
-				consecutiveCount++;
-			} else {
-				// Break on first non-match
-				break;
-			}
-		}
-
-		// Update our maximum
-		maxConsecutive = Math.max(maxConsecutive, consecutiveCount);
-	}
-
-	return maxConsecutive;
-}
 
 
 function getRelativeWorkspacePath(accessor: ReturnType<typeof useAccessor>, uri: URI): string {
@@ -347,6 +286,7 @@ type InputBox2Props = {
 	placeholder: string;
 	multiline: boolean;
 	enableAtToMention?: boolean;
+	enableSlashCommands?: boolean;
 	fnsRef?: { current: null | TextAreaFns };
 	className?: string;
 	onChangeText?: (value: string) => void;
@@ -360,7 +300,7 @@ type InputBox2Props = {
 	onDrop?: (e: React.DragEvent<HTMLTextAreaElement>) => void;
 	onChangeHeight?: (newHeight: number) => void;
 }
-export const VoidInputBox2 = forwardRef<HTMLTextAreaElement, InputBox2Props>(function X({ initValue, placeholder, multiline, enableAtToMention, fnsRef, className, onKeyDown, onFocus, onBlur, onChangeText, onPaste, onDragEnter, onDragOver, onDragLeave, onDrop }, ref) {
+export const VoidInputBox2 = forwardRef<HTMLTextAreaElement, InputBox2Props>(function X({ initValue, placeholder, multiline, enableAtToMention, enableSlashCommands, fnsRef, className, onKeyDown, onFocus, onBlur, onChangeText, onPaste, onDragEnter, onDragOver, onDragLeave, onDrop }, ref) {
 
 
 	// mirrors whatever is in ref
@@ -370,6 +310,8 @@ export const VoidInputBox2 = forwardRef<HTMLTextAreaElement, InputBox2Props>(fun
 	const languageService = accessor.get('ILanguageService')
 
 	const textAreaRef = useRef<HTMLTextAreaElement | null>(null)
+	/** Keeps liveText / parent callbacks in sync when the DOM value changes outside onChange. */
+	const syncTextFromTextareaRef = useRef<(v: string) => void>(() => { });
 	const selectedOptionRef = useRef<HTMLDivElement>(null);
 	const [isMenuOpen, _setIsMenuOpen] = useState(false); // the @ to mention menu
 	const setIsMenuOpen: typeof _setIsMenuOpen = (value) => {
@@ -415,9 +357,7 @@ export const VoidInputBox2 = forwardRef<HTMLTextAreaElement, InputBox2Props>(fun
 
 		// React's onChange relies on a SyntheticEvent system
 		// The best way to ensure it runs is to call callbacks directly
-		if (onChangeText) {
-			onChangeText(textarea.value);
-		}
+		syncTextFromTextareaRef.current(textarea.value);
 		adjustHeight();
 	};
 
@@ -703,6 +643,21 @@ export const VoidInputBox2 = forwardRef<HTMLTextAreaElement, InputBox2Props>(fun
 
 	const [isEnabled, setEnabled] = useState(true)
 
+	// Live mirror of the textarea text (the textarea itself is uncontrolled). Only tracked
+	// when slash commands are on, since only the highlight overlay consumes it — avoids a
+	// per-keystroke re-render in every other VoidInputBox2 caller.
+	const [liveText, setLiveText] = useState<string>(initValue ?? '')
+	const handleTextChanged = useCallback((v: string) => {
+		if (enableSlashCommands) setLiveText(v)
+		onChangeText?.(v)
+	}, [onChangeText, enableSlashCommands])
+	syncTextFromTextareaRef.current = handleTextChanged
+
+	// Mirror overlay + transparent textarea glyphs only when there is content — keeps the
+	// native placeholder visible when the field is empty (transparent fill hides it otherwise).
+	const slashMirrorActive = !!enableSlashCommands && liveText.length > 0
+	const textareaPlaceholder = slashMirrorActive ? '' : placeholder
+
 	const adjustHeight = useCallback(() => {
 		const r = textAreaRef.current
 		if (!r) return
@@ -722,24 +677,58 @@ export const VoidInputBox2 = forwardRef<HTMLTextAreaElement, InputBox2Props>(fun
 			const r = textAreaRef.current
 			if (!r) return
 			r.value = val
-			onChangeText?.(r.value)
+			handleTextChanged(r.value)
 			adjustHeight()
 		},
 		enable: () => { setEnabled(true) },
 		disable: () => { setEnabled(false) },
-	}), [onChangeText, adjustHeight])
+	}), [handleTextChanged, adjustHeight])
 
+	// Slash-command menu ("/"). Self-contained; coexists with the "@" mention menu above.
+	const slash = useSlashMenu({
+		accessor,
+		enabled: !!enableSlashCommands,
+		textAreaRef,
+		onChangeText: handleTextChanged,
+		adjustHeight,
+	})
 
-
+	// Apply `initValue` only when the prop itself changes — never re-run because `fns` /
+	// `handleTextChanged` identity changed (edit mode passes an inline onChangeText).
+	const lastAppliedInitValueRef = useRef<string | null | undefined>(undefined)
 	useEffect(() => {
-		if (initValue)
-			fns.setValue(initValue)
-	}, [initValue])
+		if (initValue == null || initValue === '') {
+			lastAppliedInitValueRef.current = initValue
+			return
+		}
+		if (lastAppliedInitValueRef.current === initValue) return
+		lastAppliedInitValueRef.current = initValue
+		const r = textAreaRef.current
+		if (!r) return
+		r.value = initValue
+		syncTextFromTextareaRef.current(initValue)
+		adjustHeight()
+	}, [initValue, adjustHeight])
 
 
 
 
 	return <>
+		{/* When slash commands are off, `contents` makes this wrapper layout-invisible so
+		    every other VoidInputBox2 caller keeps its exact original DOM/layout. When on, the
+		    wrapper holds the input background and the overlay paints the visible text (textarea
+		    glyphs are transparent; caret stays on the textarea). */}
+		<div
+			className={enableSlashCommands ? 'relative w-full' : 'contents'}
+			style={enableSlashCommands ? { background: asCssVariable(inputBackground) } : undefined}
+		>
+		{enableSlashCommands && slashMirrorActive && (
+			<HighlightOverlay
+				textareaRef={textAreaRef}
+				text={liveText}
+				mirrorClassName={`void-chat-textarea w-full text-void-fg-1 ${className ?? ''}`}
+			/>
+		)}
 		<textarea
 			autoFocus={false}
 			ref={useCallback((r: HTMLTextAreaElement | null) => {
@@ -747,12 +736,22 @@ export const VoidInputBox2 = forwardRef<HTMLTextAreaElement, InputBox2Props>(fun
 					fnsRef.current = fns
 
 				refs.setReference(r)
+				slash.floating.refs.setReference(r)
 
 				textAreaRef.current = r
+				if (r) {
+					// Seed the DOM value on mount (effects can run before the ref exists).
+					if (initValue && !r.value) {
+						r.value = initValue
+						syncTextFromTextareaRef.current(initValue)
+					} else if (enableSlashCommands && r.value) {
+						setLiveText(r.value)
+					}
+					adjustHeight()
+				}
 				if (typeof ref === 'function') ref(r)
 				else if (ref) ref.current = r
-				adjustHeight()
-			}, [fnsRef, fns, setEnabled, adjustHeight, ref, refs])}
+			}, [fnsRef, fns, adjustHeight, ref, refs, slash.floating.refs, enableSlashCommands, initValue])}
 
 			onFocus={onFocus}
 			onBlur={onBlur}
@@ -761,10 +760,13 @@ export const VoidInputBox2 = forwardRef<HTMLTextAreaElement, InputBox2Props>(fun
 
 			disabled={!isEnabled}
 
-			className={`void-chat-textarea w-full resize-none max-h-[500px] overflow-y-auto text-void-fg-1 placeholder:text-void-fg-4/35 placeholder:transition-colors !outline-none !border-0 !shadow-none !ring-0 focus:!outline-none focus:!border-0 focus:!shadow-none focus:!ring-0 focus-visible:!outline-none focus-visible:!border-0 focus-visible:!shadow-none focus-visible:!ring-0 ${className}`}
+			className={`void-chat-textarea w-full resize-none max-h-[500px] overflow-y-auto placeholder:text-void-fg-4/35 placeholder:transition-colors !outline-none !border-0 !shadow-none !ring-0 focus:!outline-none focus:!border-0 focus:!shadow-none focus:!ring-0 focus-visible:!outline-none focus-visible:!border-0 focus-visible:!shadow-none focus-visible:!ring-0 ${slashMirrorActive ? `${VOID_CHAT_TEXTAREA_SLASH_MIRROR} relative z-[1]` : 'text-void-fg-1'} ${className}`}
 			style={{
-				background: asCssVariable(inputBackground),
-				color: asCssVariable(inputForeground),
+				background: enableSlashCommands ? 'transparent' : asCssVariable(inputBackground),
+				...(slashMirrorActive
+					? { color: 'transparent', WebkitTextFillColor: 'transparent' as any }
+					: { color: asCssVariable(inputForeground) }),
+				caretColor: asCssVariable(inputForeground),
 				outline: 'none',
 				border: 'none',
 				boxShadow: 'none',
@@ -774,30 +776,54 @@ export const VoidInputBox2 = forwardRef<HTMLTextAreaElement, InputBox2Props>(fun
 				const nativeEvent = event.nativeEvent as InputEvent;
 				const latestChange = nativeEvent.data;
 
-				if (latestChange === '@') {
+				if (latestChange === '@' && !slash.isOpen) {
+					slash.close()
 					onOpenOptionMenu()
 					return;
+				}
+
+				const target = event.currentTarget;
+				const caret = target.selectionStart;
+
+				// "/" command trigger — only at a token boundary (start or after whitespace),
+				// and never while the "@" menu is open. Handles direct typing AND IME-committed /
+				// pasted "/" (data is null or multi-char then) by checking the char before caret.
+				if (enableSlashCommands && !isMenuOpen) {
+					if (slash.isOpen) {
+						slash.syncFromTextarea()
+					} else if (!nativeEvent.isComposing && typeof caret === 'number' && caret > 0
+						&& target.value[caret - 1] === '/' && slash.canTriggerAtCaret(target.value, caret)) {
+						setIsMenuOpen(false)
+						slash.open(caret - 1)
+						return;
+					}
 				}
 
 				// Also handle IME-committed and pasted '@' (data is null or multi-char in those cases):
 				// detect '@' immediately before the caret, but not mid-composition.
 				if (nativeEvent.isComposing) return;
-				const target = event.currentTarget;
-				const caret = target.selectionStart;
-				if (typeof caret === 'number' && caret > 0 && target.value[caret - 1] === '@') {
+				if (!slash.isOpen && typeof caret === 'number' && caret > 0 && target.value[caret - 1] === '@') {
+					slash.close()
 					onOpenOptionMenu()
 				}
 
-			}, [onOpenOptionMenu, accessor])}
+			}, [onOpenOptionMenu, accessor, enableSlashCommands, isMenuOpen, slash])}
 
 			onChange={useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
 				const r = textAreaRef.current
 				if (!r) return
-				onChangeText?.(r.value)
+				handleTextChanged(r.value)
 				adjustHeight()
-			}, [onChangeText, adjustHeight])}
+				if (slash.isOpen) slash.syncFromTextarea()
+			}, [handleTextChanged, adjustHeight, slash])}
 
 			onKeyDown={useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+
+				// Slash menu gets first crack at navigation keys; non-nav keys fall through so
+				// the user keeps typing the /query into the textarea normally.
+				if (slash.isOpen) {
+					if (slash.onMenuKeyDown(e)) return;
+				}
 
 				if (isMenuOpen) {
 					onMenuKeyDown(e)
@@ -820,7 +846,7 @@ export const VoidInputBox2 = forwardRef<HTMLTextAreaElement, InputBox2Props>(fun
 					if (!shouldAddNewline) e.preventDefault(); // prevent newline from being created
 				}
 				onKeyDown?.(e)
-			}, [onKeyDown, onMenuKeyDown, multiline])}
+			}, [onKeyDown, onMenuKeyDown, multiline, slash])}
 
 			onDragEnter={useCallback((e: React.DragEvent<HTMLTextAreaElement>) => {
 				e.preventDefault();
@@ -900,9 +926,12 @@ export const VoidInputBox2 = forwardRef<HTMLTextAreaElement, InputBox2Props>(fun
 			}, [chatThreadService, languageService, onDrop])}
 
 			rows={1}
-			placeholder={placeholder}
+			defaultValue={initValue ?? undefined}
+			placeholder={textareaPlaceholder}
 		/>
+		</div>
 		{/* <div>{`idx ${optionIdx}`}</div> */}
+		{slash.isOpen && <SlashMenuPopup slash={slash} />}
 		{isMenuOpen && (
 			<div
 				ref={refs.setFloating}

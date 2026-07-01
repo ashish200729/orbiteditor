@@ -110,6 +110,8 @@ export type ChatMessage =
 		displayContent: string; // content displayed to user  - allowed to be '', will be ignored
 		selections: StagingSelectionItem[] | null; // the user's selection
 		images?: string[]; // Array of image URLs (data URIs or URLs) to send to AI
+		/** Slash tokens injected via the menu on send (optional for back-compat). */
+		injectedSlashTokens?: string[];
 		state: {
 			stagingSelections: StagingSelectionItem[];
 			isBeingEdited: boolean;

@@ -61,6 +61,10 @@
 	   (hover < active) regardless of the active theme's exact token values. */
 	--void-dropdown-hover-bg: color-mix(in srgb, var(--void-fg-1) 6%, var(--void-bg-1) 94%);
 	--void-dropdown-active-bg: color-mix(in srgb, var(--void-fg-1) 14%, var(--void-bg-1) 86%);
+
+	/* Slash-command token text color (Cursor-style amber on `/token`) */
+	--void-slash-token-fg: color-mix(in srgb, var(--void-warning) 82%, #d4a054);
+	--void-slash-token-fg-muted: color-mix(in srgb, var(--void-slash-token-fg) 70%, var(--void-fg-3));
 }
 
 /* Cursor-style markdown file links — subtle blue, faint underline, pointer on hover */
@@ -107,6 +111,9 @@
 	/* Card-type pill: brighter white overlay in the dark theme for clearer hover feedback */
 	--void-pill-card-bg: rgba(255, 255, 255, 0.04);
 	--void-pill-card-bg-hover: rgba(255, 255, 255, 0.09);
+
+	--void-slash-token-fg: #e0a86b;
+	--void-slash-token-fg-muted: color-mix(in srgb, #e0a86b 65%, var(--void-fg-3));
 }
 
 .select-child-restyle select {
@@ -159,6 +166,51 @@
 	border: none !important;
 	-webkit-appearance: none;
 	appearance: none;
+}
+
+/* Slash `/token` text color — input overlay + sent message bubbles */
+.void-slash-token-text {
+	color: var(--void-slash-token-fg);
+}
+.void-slash-token-text--muted {
+	color: var(--void-slash-token-fg-muted);
+}
+
+/* Textarea mirror: real glyphs are transparent; overlay paints colored text */
+.void-chat-textarea--slash-mirror,
+.void-chat-textarea--slash-mirror:focus,
+.void-chat-textarea--slash-mirror:focus-visible {
+	color: transparent !important;
+	-webkit-text-fill-color: transparent !important;
+}
+.void-chat-textarea--slash-mirror::selection {
+	color: var(--void-fg-1) !important;
+	-webkit-text-fill-color: var(--void-fg-1) !important;
+	background-color: var(--vscode-editor-selectionBackground, color-mix(in srgb, var(--void-link-color) 35%, transparent)) !important;
+}
+textarea.void-chat-textarea--slash-mirror:-webkit-autofill,
+textarea.void-chat-textarea--slash-mirror:-webkit-autofill:hover,
+textarea.void-chat-textarea--slash-mirror:-webkit-autofill:focus {
+	-webkit-text-fill-color: transparent !important;
+}
+
+.void-scope .void-chat-textarea--slash-mirror::placeholder {
+	color: var(--void-fg-4) !important;
+	opacity: 0.35;
+}
+.void-scope .void-chat-textarea--slash-mirror::-webkit-input-placeholder {
+	color: var(--void-fg-4) !important;
+	-webkit-text-fill-color: var(--void-fg-4) !important;
+	opacity: 0.35;
+}
+
+/* Compact slash-command popup */
+.void-slash-menu {
+	animation: void-slash-menu-in 120ms ease-out;
+}
+@keyframes void-slash-menu-in {
+	from { opacity: 0; transform: translateY(-2px); }
+	to { opacity: 1; transform: translateY(0); }
 }
 
 /* Remove default browser autofill backgrounds that conflict with the theme. */
