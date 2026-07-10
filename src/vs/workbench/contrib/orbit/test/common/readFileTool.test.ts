@@ -19,6 +19,27 @@ suite('ReadTool', () => {
 			assert.throws(() => validateReadToolParams({}));
 		});
 
+		test('rejects null path with helpful message', () => {
+			assert.throws(
+				() => validateReadToolParams({ path: null as unknown as string, offset: 0 as unknown as string }),
+				/path was null or missing/,
+			);
+		});
+
+		test('rejects empty string path', () => {
+			assert.throws(
+				() => validateReadToolParams({ path: '' }),
+				/path was null or missing/,
+			);
+		});
+
+		test('rejects null path even when other params present', () => {
+			assert.throws(
+				() => validateReadToolParams({ path: null as unknown as string, offset: 5 as unknown as string, limit: 100 as unknown as string }),
+				/path was null or missing/,
+			);
+		});
+
 		test('accepts path and defaults offset/limit', () => {
 			const params = validateReadToolParams({ path: '/tmp/foo.ts' });
 			assert.strictEqual(params.uri.fsPath, '/tmp/foo.ts');

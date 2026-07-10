@@ -379,7 +379,7 @@ Read image:
 - Combine with Grep when you need to search file contents
 - You have the capability to call multiple tools in a single response. It is always better to speculatively perform multiple searches that are potentially useful as a batch.`,
 		params: {
-			globPattern: {
+			glob_pattern: {
 				description: `The glob pattern to match files against.
 Patterns not starting with "**/" are automatically prepended with "**/" to enable recursive searching.
 
@@ -388,7 +388,7 @@ Examples:
 	- "**/node_modules/**" - find all node_modules directories
 	- "**/test/**/test_*.ts" - find all test_*.ts files in any test directory`,
 			},
-			targetDirectory: { description: 'Absolute path to directory to search for files in. If not provided, defaults to the workspace root.' },
+			target_directory: { description: 'Absolute path to directory to search for files in. If not provided, defaults to the workspace root.' },
 		},
 		inputSchema: {
 			type: 'object',

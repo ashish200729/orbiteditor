@@ -28,23 +28,98 @@ const CONTENT_FIELDS = [
 
 const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
+/**
+ * Convert a camelCase or PascalCase key to snake_case. Keys that are already
+ * snake_case (or contain no uppercase letters) are returned unchanged so we
+ * never double-convert or mangle identifiers like `-B`, `-A`, `-i` that some
+ * tools (e.g. Grep) use verbatim.
+ *
+ * Mirrors the `SnakeCase` mapped type in prompts.ts so the canonical key we
+ * produce matches what the validate functions destructure.
+ */
+const camelToSnakeCase = (key: string): string => {
+	if (!key) return key;
+	// Leave flags like "-B", "-A", "-i" and already-snake_case keys alone.
+	// Also skip anything starting with "-" so ripgrep-style flags are preserved.
+	if (!/[A-Z]/.test(key) || key.startsWith('-')) return key;
+	// Insert "_" before each uppercase letter, then lowercase. Existing
+	// underscores (e.g. "glob_Pattern") are preserved and not doubled.
+	return key.replace(/([A-Z])/g, (match, _group: string, offset: number) => {
+		const prev = key[offset - 1];
+		return prev === '_' ? match.toLowerCase() : `_${match.toLowerCase()}`;
+	});
+};
+
+/**
+ * Convert every top-level key of `parsed` to its snake_case form, preserving
+ * values. Keys that are already snake_case pass through untouched. When both a
+ * camelCase and a snake_case variant exist in the input, the snake_case value
+ * wins (it is what the schema asked for).
+ */
+const normalizeAllKeysToSnakeCase = (parsed: Record<string, unknown>): Record<string, unknown> => {
+	const out: Record<string, unknown> = {};
+	// Process already-snake_case keys first so a later camelCase variant cannot
+	// overwrite the canonical value. Iteration order is insertion order, so we
+	// do two passes to guarantee snake_case wins regardless of input order.
+	const keys = Object.keys(parsed);
+	// Pass 1: keys that are already snake_case (no conversion needed).
+	for (const key of keys) {
+		const snake = camelToSnakeCase(key);
+		if (snake === key) {
+			out[snake] = parsed[key];
+		}
+	}
+	// Pass 2: camelCase keys, only filling in gaps left by snake_case keys.
+	for (const key of keys) {
+		const snake = camelToSnakeCase(key);
+		if (snake !== key && out[snake] === undefined) {
+			out[snake] = parsed[key];
+		}
+	}
+	return out;
+};
+
 const normalizeParsedParams = (parsed: Record<string, unknown>): RawToolParamsObj => {
-	const rawParams: RawToolParamsObj = { ...parsed } as RawToolParamsObj;
+	// First, apply field-specific aliases so path/uri/content get mapped to
+	// their canonical targets regardless of casing. These take priority over
+	// the generic casing conversion because they may also remap the *target*
+	// key name (e.g. filePath -> path).
+	let rawParams: RawToolParamsObj = { ...parsed } as RawToolParamsObj;
+
+	// Treat null/undefined target values as "not present" so that an alias
+	// source (e.g. file_path) can fill in a target (e.g. path) even when the
+	// model explicitly sent `path: null`. Some providers/models emit explicit
+	// nulls for optional or mis-typed fields.
+	const isMissing = (v: unknown) => v === undefined || v === null;
 
 	for (const { field, target } of PATH_FIELDS) {
-		if (rawParams[target as keyof RawToolParamsObj] === undefined && Object.prototype.hasOwnProperty.call(parsed, field)) {
+		if (isMissing(rawParams[target as keyof RawToolParamsObj]) && Object.prototype.hasOwnProperty.call(parsed, field) && !isMissing(parsed[field])) {
 			rawParams[target as keyof RawToolParamsObj] = parsed[field] as string;
 		}
 	}
 
 	for (const { field, target } of CONTENT_FIELDS) {
-		if (rawParams[target as keyof RawToolParamsObj] === undefined && Object.prototype.hasOwnProperty.call(parsed, field)) {
+		if (isMissing(rawParams[target as keyof RawToolParamsObj]) && Object.prototype.hasOwnProperty.call(parsed, field) && !isMissing(parsed[field])) {
 			rawParams[target as keyof RawToolParamsObj] = parsed[field] as string;
 		}
 	}
 
+	// Drop the alias source keys so we don't send duplicates to the validator.
+	for (const { field, target } of [...PATH_FIELDS, ...CONTENT_FIELDS]) {
+		if (field !== target) {
+			delete (rawParams as Record<string, unknown>)[field];
+		}
+	}
+
+	// Then, generically convert any remaining camelCase keys to snake_case so
+	// custom OpenAI-compatible / Anthropic models that ignore the JSON schema
+	// still produce arguments the validate functions can destructure.
+	rawParams = normalizeAllKeysToSnakeCase(rawParams as Record<string, unknown>) as RawToolParamsObj;
+
 	return rawParams;
 };
+
+export const normalizeToolParams = normalizeParsedParams;
 
 const unescapePartialJsonString = (value: string): string => {
 	if (!value) {
@@ -100,6 +175,26 @@ const extractStringFieldFromPartialJson = (
 	};
 };
 
+/**
+ * Try to extract a string field from partial JSON, accepting either the
+ * canonical snake_case name or its camelCase variant. Returns the value under
+ * the canonical `target` name.
+ */
+const extractStringFieldAcceptingCasing = (
+	json: string,
+	target: string,
+): { value: string; isComplete: boolean } | undefined => {
+	const camelVariant = target.replace(/_([a-z])/g, (_m, c: string) => c.toUpperCase());
+	const candidates = target === camelVariant ? [target] : [target, camelVariant];
+	for (const candidate of candidates) {
+		const extracted = extractStringFieldFromPartialJson(json, candidate);
+		if (extracted) {
+			return extracted;
+		}
+	}
+	return undefined;
+};
+
 export const parsePartialToolParams = (toolParamsStr: string): {
 	rawParams: RawToolParamsObj;
 	doneParams: string[];
@@ -128,7 +223,7 @@ export const parsePartialToolParams = (toolParamsStr: string): {
 	const doneParams: string[] = [];
 
 	for (const { field, target } of PATH_FIELDS) {
-		const extracted = extractStringFieldFromPartialJson(trimmed, field);
+		const extracted = extractStringFieldAcceptingCasing(trimmed, field);
 		if (!extracted) {
 			continue;
 		}
@@ -140,7 +235,7 @@ export const parsePartialToolParams = (toolParamsStr: string): {
 	}
 
 	for (const { field, target } of CONTENT_FIELDS) {
-		const extracted = extractStringFieldFromPartialJson(trimmed, field);
+		const extracted = extractStringFieldAcceptingCasing(trimmed, field);
 		if (!extracted) {
 			continue;
 		}

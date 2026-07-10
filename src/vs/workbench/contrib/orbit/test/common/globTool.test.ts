@@ -47,7 +47,7 @@ suite('Glob tool helpers', () => {
 			const tools = availableTools('agent', undefined) ?? [];
 			const globTool = tools.find(tool => tool.name === 'Glob');
 			assert.ok(globTool);
-			assert.ok(globTool!.params.globPattern);
+			assert.ok(globTool!.params.glob_pattern);
 			assert.ok(globTool!.inputSchema?.properties?.glob_pattern);
 		});
 

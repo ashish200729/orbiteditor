@@ -60,8 +60,9 @@ const parseInteger = (value: unknown, defaultValue: number): number => {
 
 export const validateReadToolParams = (params: RawToolParamsObj): ReadToolValidatedParams => {
 	const pathRaw = params.path ?? params.uri;
-	if (pathRaw === null || pathRaw === undefined) {
-		throw new Error(`Invalid LLM output: path was null.`);
+	if (pathRaw === null || pathRaw === undefined || pathRaw === '') {
+		const receivedKeys = Object.keys(params).filter(k => params[k] !== undefined && params[k] !== null);
+		throw new Error(`Invalid LLM output: path was null or missing. Received params: {${receivedKeys.join(', ')}}. The "path" parameter is required and must be an absolute file path string.`);
 	}
 	if (typeof pathRaw !== 'string') {
 		throw new Error(`Invalid LLM output format: path must be a string, but its type is "${typeof pathRaw}". Full value: ${JSON.stringify(pathRaw)}.`);

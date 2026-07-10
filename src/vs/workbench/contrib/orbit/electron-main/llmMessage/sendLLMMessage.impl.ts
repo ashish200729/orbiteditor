@@ -18,7 +18,7 @@ import { AnthropicLLMChatMessage, GeminiLLMChatMessage, JsonToolSchema, LLMChatM
 import { ChatMode, displayInfoOfProviderName, ModelSelectionOptions, OverridesOfModel, ProviderName, SettingsOfProvider } from '../../common/orbitSettingsTypes.js';
 import { getSendableReasoningInfo, getModelCapabilities, getProviderCapabilities, defaultProviderSettings, getReservedOutputTokenSpace } from '../../common/modelCapabilities.js';
 import { extractReasoningWrapper, extractXMLToolsWrapper } from './extractGrammar.js';
-import { parsePartialToolParams } from './parsePartialToolParams.js';
+import { normalizeToolParams, parsePartialToolParams } from './parsePartialToolParams.js';
 import { availableTools, InternalToolInfo } from '../../common/prompt/prompts.js';
 import { generateUuid } from '../../../../../base/common/uuid.js';
 import { getOpenAiCodexOAuthManager } from '../openai-codex/oauthManager.js';
@@ -323,7 +323,7 @@ const rawToolCallObjOfAnthropicParams = (toolBlock: Anthropic.Messages.ToolUseBl
 	if (input === null) return null
 	if (typeof input !== 'object') return null
 
-	const rawParams: RawToolParamsObj = input
+	const rawParams: RawToolParamsObj = normalizeToolParams(input as Record<string, unknown>)
 	return { id, name, rawParams, doneParams: Object.keys(rawParams), isDone: true }
 }
 
@@ -424,32 +424,33 @@ const _sendOpenAICompatibleChat = async ({ messages, onText, onFinalMessage, onE
 
 					let toolData = toolsByIndex.get(index)
 
-					// Detect NEW tool on same index (sequential tool calling or collision)
-					const hasArgs = toolData && toolData.paramsStr.length > 0
+				// Detect NEW tool on same index (sequential tool calling or collision).
+				// The OpenAI streaming spec sends tool calls as incremental deltas keyed by
+				// `index`; the `type` field is NOT a reliable "new tool" signal because many
+				// OpenAI-compatible providers (GLM/zhipu, and others) include `type: 'function'`
+				// on EVERY delta chunk, not just the first one. Treating that as a split would
+				// fragment a single tool call into many entries (one per chunk), losing the
+				// arguments and producing "path was null" / "unexpected argument" errors.
+				//
+				// A tool call is only treated as NEW when:
+				// 1. There is no existing tool at this index, OR
+				// 2. The id explicitly mismatches the accumulated id (strongest signal), OR
+				// 3. A non-empty name update arrives that differs from the accumulated name AND
+				//    we already have arguments for the current tool (genuine sequential call).
+				const hasArgs = toolData && toolData.paramsStr.length > 0
 
-					// A new header usually implies a new tool if we already have data
-					// We check for:
-					// 1. Explicit ID mismatch (strongest signal)
-					// 2. Explicit 'function' type (strong signal of new tool start)
-					// 3. Name update when we already have args (sequential tool)
-					// 4. Name update when we already have a name (sequential tool with no args? - heuristic)
+				const isIdMismatch = toolData && tool.id && toolData.id && !toolData.id.startsWith(tool.id) && !tool.id.startsWith(toolData.id)
 
-					const isIdMismatch = toolData && tool.id && toolData.id && !toolData.id.startsWith(tool.id) && !tool.id.startsWith(toolData.id)
-					const isExplicitStart = tool.type === 'function' // Explicit start of new tool block
+				const incomingName = tool.function?.name ?? ''
+				const isNameUpdate = !!incomingName
+				// A name update indicates a NEW tool only if it differs from what we already
+				// accumulated. This lets "Rea" + "d" (name split across chunks) accumulate
+				// correctly while "Read" + "Read" (a second tool call) splits.
+				const isConflictingName = isNameUpdate && !!toolData?.name && !toolData.name.startsWith(incomingName) && !incomingName.startsWith(toolData.name)
 
-					const isNameUpdate = !!tool.function?.name
-					// If we get a name update, and we already have a name... it's LIKELY a new tool if the previous one confusingly had no args/id.
-					// BUT we must be careful not to split "read" + "_file".
-					// However, "Read" + "Read" is a split.
-					// We can't easily distinguish "read" + "_file" from "read" + "file" (new tool).
-					// Relying on hasArgs is safest, but if args are empty, we fail.
-					// We'll trust isExplicitStart and isIdMismatch mainly.
-					// Fallback: If hasArgs AND isNameUpdate.
-
-					const shouldSplit = !toolData
-						|| isIdMismatch
-						|| (toolData && isExplicitStart)
-						|| (hasArgs && isNameUpdate)
+				const shouldSplit = !toolData
+					|| isIdMismatch
+					|| (hasArgs && isNameUpdate && isConflictingName)
 
 					if (shouldSplit) {
 						toolData = { name: '', id: '', paramsStr: '' }
@@ -464,10 +465,15 @@ const _sendOpenAICompatibleChat = async ({ messages, onText, onFinalMessage, onE
 						allTools.push(toolData)
 					}
 
-					toolData.name += tool.function?.name ?? ''
-					toolData.paramsStr += tool.function?.arguments ?? ''
-					toolData.id += tool.id ?? ''
+				toolData.name += tool.function?.name ?? ''
+				toolData.paramsStr += tool.function?.arguments ?? ''
+				// Only set the id once. Many OpenAI-compatible providers (GLM/zhipu, etc.)
+				// repeat the same id on every delta chunk; concatenating would produce
+				// "call_1call_1call_1..." and break tool_call_id matching on replay.
+				if (!toolData.id && tool.id) {
+					toolData.id = tool.id
 				}
+			}
 
 				// reasoning
 				let newReasoning = ''
