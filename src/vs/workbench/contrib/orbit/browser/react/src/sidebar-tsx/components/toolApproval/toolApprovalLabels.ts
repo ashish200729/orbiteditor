@@ -57,3 +57,61 @@ export const getDenyAriaLabel = (type: ToolApprovalType | undefined): string => 
 	const label = getApprovalTypeLabel(type ?? 'MCP tools');
 	return `Deny ${label.toLowerCase()}`;
 };
+
+/* -------------------------------------------------------------------------- */
+/* Compact premium button labels                                            */
+/*                                                                            */
+/* These back the lean footer (Skip · Always Run · Run ↵). The legacy helpers  */
+/* above (`getApprovalTypeLabel`, `getAutoApproveLabel`) are untouched — they  */
+/* still back the Settings page's full-sentence copy.                          */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Visible label for the ghost "Skip" button. Same for every approval type.
+ * (aria-labels still use the descriptive `Skip {type}` form via `getDenyAriaLabel`.)
+ */
+export const getSkipLabel = (): string => 'Skip';
+
+/**
+ * Visible label for the primary pill action. Terminal commands use "Run";
+ * edits, MCP tools, and the default case use "Approve". Browser-open keeps
+ * its own override ("Open browser") and never goes through here.
+ */
+export const getRunActionLabel = (type: ToolApprovalType | undefined): string => {
+	switch (type) {
+		case 'terminal': return 'Run';
+		case 'edits':
+		case 'MCP tools':
+		default: return 'Approve';
+	}
+};
+
+/**
+ * Visible label for the bordered secondary "always allow" pill. Terminal
+ * commands read "Always Run"; edits and MCP tools read "Always Allow"
+ * (matching the Settings-page verb for non-terminal categories).
+ */
+export const getAlwaysRunLabel = (type: ToolApprovalType | undefined): string => {
+	switch (type) {
+		case 'terminal': return 'Always Run';
+		case 'edits': return 'Always Allow';
+		case 'MCP tools': return 'Always Allow';
+		default: return 'Always Allow';
+	}
+};
+
+/**
+ * aria-label for the Skip button — descriptive form for screen readers.
+ */
+export const getSkipAriaLabel = (type: ToolApprovalType | undefined): string => {
+	const label = getApprovalTypeLabel(type ?? 'MCP tools');
+	return `Skip ${label.toLowerCase()}`;
+};
+
+/**
+ * aria-label for the Always Run / Always Allow button — descriptive form.
+ */
+export const getAlwaysRunAriaLabel = (type: ToolApprovalType | undefined): string => {
+	const label = getApprovalTypeLabel(type ?? 'MCP tools');
+	return `Always allow ${label.toLowerCase()}`;
+};

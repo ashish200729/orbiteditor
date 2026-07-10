@@ -18,8 +18,8 @@ import { toolApprovalTheme } from '../toolApproval/toolApprovalTheme.js';
  * Pending (awaiting-approval) tool request card for non-edit tools.
  *
  * Replaces the old flat `ToolHeaderWrapper` row + tiny buttons with the
- * unified `ToolApprovalCardShell`: header (icon + title + awaiting badge) →
- * tool-specific preview body → footer (Deny / Approve / auto-approve toggle).
+ * unified `ToolApprovalCardShell`: header (icon + title) →
+ * tool-specific preview body → footer (Skip · Always Run · Run ↵).
  *
  * ChatBubble still routes here for `tool_request` messages that are NOT
  * StrReplace / Write / AskQuestion. The backend approval flow is unchanged.
@@ -43,7 +43,7 @@ export const PendingToolRequest = ({ toolMessage, threadId }: { toolMessage: Too
 
 	const header = (
 		<div
-			className="flex items-center gap-2 px-3 py-2 select-none"
+			className="flex items-center gap-2 px-3 py-1.5 select-none"
 			style={{ color: toolApprovalTheme.fg }}
 		>
 			{statusIconMeta?.icon && (
@@ -61,18 +61,6 @@ export const PendingToolRequest = ({ toolMessage, threadId }: { toolMessage: Too
 				style={{ color: toolApprovalTheme.fg }}
 			>
 				{title}
-			</span>
-			<span className="ml-auto flex-shrink-0">
-				<span
-					className="text-[10.5px] font-medium px-1.5 py-0.5 rounded whitespace-nowrap"
-					style={{
-						color: toolApprovalTheme.awaitingBadgeFg,
-						background: toolApprovalTheme.awaitingBadgeBg,
-						border: `1px solid ${toolApprovalTheme.subtleDivider}`,
-					}}
-				>
-					Awaiting approval
-				</span>
 			</span>
 		</div>
 	);

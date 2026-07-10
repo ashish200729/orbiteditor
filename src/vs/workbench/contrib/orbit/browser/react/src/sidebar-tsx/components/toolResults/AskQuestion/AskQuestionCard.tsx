@@ -12,6 +12,10 @@ import { TextShimmer } from '../../../../util/TextShimmer.js';
 import { getTitle, getToolStatusIconMeta, toolNameToDesc } from '../../../constants/toolHelpers.js';
 import { EditToolCardWrapper } from '../../editTool/EditToolCardWrapper.js';
 import {
+	ApprovalGhostButton,
+	ApprovalPrimaryButton,
+} from '../../toolApproval/ApprovalButton.js';
+import {
 	ASK_QUESTION_BACK_LABEL,
 	ASK_QUESTION_CARD_TITLE,
 	ASK_QUESTION_CONTINUE_LABEL,
@@ -362,59 +366,36 @@ export const AskQuestionCard = ({
 									</motion.div>
 								</AnimatePresence>
 
-								<div
-									className="flex items-center justify-between gap-2 pt-1 min-h-[32px]"
-									style={{ borderTop: `1px solid ${askQuestionTheme.subtleDivider}` }}
-								>
-									<button
-										type="button"
-										disabled={!isInteractive}
-										onClick={onSkip}
-										className="flex items-center gap-1.5 px-2 py-1 rounded-md text-[11.5px] transition-colors duration-150 disabled:opacity-45 flex-shrink-0"
-										style={{ color: askQuestionTheme.descFg }}
-										onMouseEnter={(e) => {
-											if (!isInteractive) return;
-											e.currentTarget.style.background = askQuestionTheme.toolbarHover;
-											e.currentTarget.style.color = askQuestionTheme.fg;
-										}}
-										onMouseLeave={(e) => {
-											e.currentTarget.style.background = 'transparent';
-											e.currentTarget.style.color = askQuestionTheme.descFg;
-										}}
-									>
-										{ASK_QUESTION_SKIP_LABEL}
-										<KbdHint>Esc</KbdHint>
-									</button>
-									<div className="flex items-center gap-2 flex-shrink-0">
-										{canGoBack && (
-											<AskQuestionBackButton
-												disabled={!isInteractive}
-												onClick={goBack}
-												label={ASK_QUESTION_BACK_LABEL}
-											/>
-										)}
-										<button
-											type="button"
-											disabled={!isInteractive}
-											onClick={advanceOrSubmit}
-											className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-md text-[11.5px] font-medium transition-[opacity,background-color] duration-150 disabled:opacity-45"
-											style={{
-												background: askQuestionTheme.buttonBg,
-												color: askQuestionTheme.buttonFg,
-											}}
-											onMouseEnter={(e) => {
-												if (!isInteractive) return;
-												e.currentTarget.style.background = askQuestionTheme.buttonHover;
-											}}
-											onMouseLeave={(e) => {
-												e.currentTarget.style.background = askQuestionTheme.buttonBg;
-											}}
-										>
-											{isLastStep ? ASK_QUESTION_CONTINUE_LABEL : 'Next'}
-											<KbdHint>↵</KbdHint>
-										</button>
-									</div>
-								</div>
+					<div
+						className="flex items-center justify-end gap-2 pt-1 min-h-[30px]"
+						style={{ borderTop: `1px solid ${askQuestionTheme.subtleDivider}` }}
+					>
+						<ApprovalGhostButton
+							disabled={!isInteractive}
+							onClick={onSkip}
+							ariaLabel="Skip question"
+						>
+							{ASK_QUESTION_SKIP_LABEL}
+							<KbdHint>Esc</KbdHint>
+						</ApprovalGhostButton>
+						<div className="flex items-center gap-2 flex-shrink-0">
+							{canGoBack && (
+								<AskQuestionBackButton
+									disabled={!isInteractive}
+									onClick={goBack}
+									label={ASK_QUESTION_BACK_LABEL}
+								/>
+							)}
+							<ApprovalPrimaryButton
+								disabled={!isInteractive}
+								onClick={advanceOrSubmit}
+								ariaLabel={isLastStep ? 'Continue' : 'Next question'}
+								showEnterHint
+							>
+								{isLastStep ? ASK_QUESTION_CONTINUE_LABEL : 'Next'}
+							</ApprovalPrimaryButton>
+						</div>
+					</div>
 							</div>
 						</motion.div>
 					)}

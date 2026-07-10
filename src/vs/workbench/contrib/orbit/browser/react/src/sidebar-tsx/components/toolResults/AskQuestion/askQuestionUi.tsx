@@ -5,6 +5,7 @@
 
 import React, { useState } from 'react';
 import { ChevronLeft } from 'lucide-react';
+import { ApprovalGhostButton } from '../../toolApproval/ApprovalButton.js';
 
 /** VS Code–aligned tokens for AskQuestion surfaces */
 export const askQuestionTheme = {
@@ -113,26 +114,15 @@ export const AskQuestionBackButton = ({
 	onClick: () => void;
 	label: string;
 }) => (
-	<button
-		type="button"
+	<ApprovalGhostButton
 		disabled={disabled}
 		onClick={onClick}
-		className="flex items-center gap-1 px-2 py-1 rounded-md text-[11.5px] transition-colors duration-150 disabled:opacity-40 disabled:pointer-events-none"
-		style={{ color: askQuestionTheme.descFg }}
-		onMouseEnter={(e) => {
-			if (disabled) return;
-			e.currentTarget.style.background = askQuestionTheme.toolbarHover;
-			e.currentTarget.style.color = askQuestionTheme.fg;
-		}}
-		onMouseLeave={(e) => {
-			e.currentTarget.style.background = 'transparent';
-			e.currentTarget.style.color = askQuestionTheme.descFg;
-		}}
+		ariaLabel="Go back to previous question"
 	>
 		<ChevronLeft size={13} strokeWidth={2.25} className="flex-shrink-0 opacity-80" />
 		<span>{label}</span>
 		<KbdHint>←</KbdHint>
-	</button>
+	</ApprovalGhostButton>
 );
 
 type OptionRowProps = {

@@ -15,7 +15,7 @@ import { toolApprovalTheme } from './toolApprovalTheme.js';
  * `EditToolCardWrapper` + `AskQuestionCard`.
  */
 export type ToolApprovalCardShellProps = {
-	/** Header row: icon + title + awaiting badge. */
+	/** Header row: icon + title. */
 	header: React.ReactNode;
 	/** Tool-specific preview body (command, params, etc). */
 	children?: React.ReactNode;
