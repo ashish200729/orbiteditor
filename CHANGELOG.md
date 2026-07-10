@@ -2,6 +2,38 @@
 
 All notable changes to Orbit Editor are documented here.
 
+## 0.1.3
+
+### 🔒 Plan mode safety
+
+Plan mode no longer lets the agent edit files or run shell commands after presenting a plan unless you explicitly click **Build**. StrReplace, Write, and Shell were previously reachable through guard gaps; those paths are now blocked at both the tool-policy and runtime layers.
+
+### ✨ Tool approval redesign
+
+Tool approval cards (shell, edits, AskQuestion, and more) now use a compact **Skip · Always Run · Run** button cluster aligned with the rest of Orbit's UI — clearer actions, tighter headers, and theme-aware focus states.
+
+### 🖥️ Shell command card polish
+
+The shell tool card now matches edit-tool cards: shimmer animation applies **only to the title text** while a command runs (no full-card sweep), meta tags render as pills, and collapsed/expanded states share one consistent card layout.
+
+### 🐛 Fixes
+
+- **GLM 5.2 and OpenAI-compatible providers** — fixed streaming tool-call fragmentation that caused `path was null` errors when using models like GLM 5.2; argument accumulation and param normalization are now reliable across providers.
+- **Plan card in chat** — compact preview (2-line overview, capped todo list) without awkward scrolling.
+- **Chat text selection** — fixed highlight overlay breaking selection in the chat input when long messages were truncated.
+
+### macOS install
+
+- **Recommended (no Gatekeeper warning):**
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/ashish200729/orbiteditor/main/install.sh | bash
+  ```
+- **Or download the `.dmg`** from the release, drag Orbit to Applications, then run once:
+  ```bash
+  xattr -cr /Applications/Orbit.app
+  ```
+  (Orbit isn't notarized by Apple yet, so a browser-downloaded `.dmg` shows a one-time "unverified developer" prompt; the command above clears it.)
+
 ## 0.1.2
 
 ### 🌐 A browser your agent can actually use

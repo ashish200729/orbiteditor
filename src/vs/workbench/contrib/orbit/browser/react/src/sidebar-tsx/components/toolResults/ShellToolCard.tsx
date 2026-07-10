@@ -71,7 +71,7 @@ const shortenShellStatus = (text: string): string => {
 const ShellStopButton = ({ onClick }: { onClick: () => void }) => (
 	<button
 		type="button"
-		className="flex-shrink-0 w-[22px] h-[22px] rounded-full border border-white/20 flex items-center justify-center opacity-60 hover:opacity-100 hover:border-white/35 hover:bg-white/[0.06] transition-all"
+		className="flex-shrink-0 w-[22px] h-[22px] rounded-full border border-void-fg-1/20 flex items-center justify-center opacity-70 hover:opacity-100 hover:border-void-fg-1/35 hover:bg-void-fg-1/5 transition-all"
 		onClick={(e) => { e.stopPropagation(); onClick(); }}
 		title="Stop"
 		aria-label="Stop command"
@@ -79,6 +79,26 @@ const ShellStopButton = ({ onClick }: { onClick: () => void }) => (
 		<Square size={9} className="text-void-fg-2 fill-void-fg-2" strokeWidth={0} />
 	</button>
 );
+
+const ShellMetaTags = ({ tags }: { tags: string[] }) => {
+	if (tags.length === 0) return null;
+	return (
+		<div className="flex items-center gap-1 flex-shrink-0 overflow-hidden">
+			{tags.map((tag, i) => (
+				<span
+					key={`${tag}-${i}`}
+					className="text-[10px] px-1 py-px rounded font-medium whitespace-nowrap text-void-fg-4/65"
+					style={{
+						background: 'rgba(128, 128, 128, 0.08)',
+						border: '1px solid rgba(var(--vscode-void-border-3-rgb, 64, 64, 64), 0.2)',
+					}}
+				>
+					{tag}
+				</span>
+			))}
+		</div>
+	);
+};
 
 const ShellWaitingFooter = ({
 	waitingCount,
@@ -162,8 +182,8 @@ export const ShellToolCard = ({ toolMessage, threadId }: ShellToolCardProps) => 
 	}, [isRunning, streamState, toolMessage.id]);
 
 	const showWaitingFooter = isBlockingAgent && !isReadOnlyChat;
-	const showCollapsedRunningBar = isRunning && !isExpanded;
 	const hasExpandableContent = !!(commandLine || outputText.trim() || isRunning);
+	const showBody = isExpanded && hasExpandableContent;
 
 	useEffect(() => {
 		if (isSuccess && outputText.trim()) setIsExpanded(true);
@@ -211,157 +231,112 @@ export const ShellToolCard = ({ toolMessage, threadId }: ShellToolCardProps) => 
 
 	if (toolMessage.type === 'tool_request') return null;
 
-	const metaLabel = metaTags.length > 0 ? metaTags.join(', ') : undefined;
 	const errorText = isError && typeof toolMessage.result === 'string' ? toolMessage.result : '';
 	// For tool_error, getShellCardOutput already returns the error string as
 	// outputText, so prefer errorText (and avoid duplicating it) when present.
 	const copyText = [commandLine ? `$ ${commandLine}` : '', errorText || outputText].filter(Boolean).join('\n\n');
 
 	const headerTitle = isRunning ? (
-		<TextShimmer duration={2.2} spread={2} className="text-[12px] font-medium truncate">
+		<TextShimmer duration={1.5} className="text-[12px] font-medium truncate text-void-fg-4/90 min-w-0">
 			{title}
 		</TextShimmer>
 	) : (
-		<span className={`text-[12px] font-medium text-void-fg-2/90 truncate ${isRejected ? 'line-through opacity-70' : ''}`}>
+		<span className={`text-[12px] font-medium text-void-fg-2/90 truncate min-w-0 ${isRejected ? 'line-through opacity-70' : ''}`}>
 			{title}
 		</span>
 	);
 
+	const toggleExpanded = hasExpandableContent ? () => setIsExpanded(v => !v) : undefined;
+
 	return (
 		<motion.div
 			className="w-full"
-			initial={{ opacity: 0, y: 6 }}
+			initial={{ opacity: 0, y: 4 }}
 			animate={{ opacity: 1, y: 0 }}
-			transition={{ duration: 0.22, ease: 'easeOut' }}
+			transition={{ duration: 0.18, ease: 'easeOut' }}
 		>
-			{/* Collapsed running pill — Cursor default while command is in flight */}
-			{showCollapsedRunningBar ? (
-				<motion.button
-					type="button"
-					className="relative w-full overflow-hidden flex items-center gap-2 px-3 py-1.5 rounded-lg border border-white/[0.08] bg-white/[0.03] hover:border-white/[0.14] hover:bg-white/[0.05] transition-all duration-200 text-left"
-					onClick={() => setIsExpanded(true)}
-					initial={{ opacity: 0, y: 4 }}
-					animate={{ opacity: 1, y: 0 }}
+			<EditToolCardWrapper
+				isRunning={isRunning}
+				className={isRejected ? 'opacity-70' : ''}
+			>
+				<div
+					className={`edit-tool-card-header flex items-center justify-between gap-2 px-3 py-2 select-none group ${hasExpandableContent ? 'cursor-pointer' : ''}`}
+					onClick={toggleExpanded}
+					style={{
+						borderBottom: showBody
+							? '1px solid rgba(var(--vscode-void-border-3-rgb, 64, 64, 64), 0.15)'
+							: 'none',
+						minHeight: '32px',
+					}}
 				>
-					<motion.div
-						className="absolute inset-0 z-0 pointer-events-none"
-						initial={{ x: '-100%' }}
-						animate={{ x: '100%' }}
-						transition={{ repeat: Infinity, duration: 2, ease: 'linear' }}
-						style={{ background: 'linear-gradient(90deg, transparent, rgba(59, 130, 246, 0.09), transparent)' }}
-					/>
-					<div className="relative z-10 flex items-center gap-2 min-w-0 flex-1">
-						<Terminal size={13} className="text-void-fg-4/70 flex-shrink-0" strokeWidth={2} />
-						<div className="flex items-baseline gap-1.5 min-w-0 flex-1 overflow-hidden">
-							{headerTitle}
-							{metaLabel && (
-								<span className="text-[11px] text-void-fg-4/50 font-mono truncate flex-shrink-0">
-									{metaLabel}
-								</span>
-							)}
-						</div>
-					</div>
-				</motion.button>
-			) : (
-				<EditToolCardWrapper
-					isRunning={isRunning}
-					className={`${isRejected ? 'opacity-70' : ''} relative overflow-hidden`}
-				>
-					{isRunning && (
-						<motion.div
-							className="absolute inset-0 z-0 pointer-events-none"
-							initial={{ x: '-100%' }}
-							animate={{ x: '100%' }}
-							transition={{ repeat: Infinity, duration: 2.2, ease: 'linear' }}
-							style={{ background: 'linear-gradient(90deg, transparent, rgba(59, 130, 246, 0.07), transparent)' }}
-						/>
-					)}
-
-					{/* Header */}
-					<div
-						className={`relative z-10 flex items-center gap-1.5 px-2.5 py-1.5 select-none group ${hasExpandableContent ? 'cursor-pointer' : ''}`}
-						onClick={hasExpandableContent ? () => setIsExpanded(v => !v) : undefined}
-						style={{
-							borderBottom: isExpanded && hasExpandableContent
-								? '1px solid rgba(var(--vscode-void-border-3-rgb, 64, 64, 64), 0.15)'
-								: 'none',
-							minHeight: '26px',
-						}}
-					>
-						<div className="flex items-center gap-1.5 min-w-0 flex-1 overflow-hidden">
-							{hasExpandableContent && (
-								<ChevronRight
-									size={10}
-									strokeWidth={2.5}
-									className={`text-void-fg-4/40 flex-shrink-0 transition-all duration-200 ease-out ${isExpanded ? 'rotate-90 text-void-fg-4/60' : 'opacity-0 group-hover:opacity-100'}`}
-								/>
-							)}
-							{!isExpanded && (
-								<Terminal size={13} className="text-void-fg-4/60 flex-shrink-0" strokeWidth={2} />
-							)}
-
-							{headerTitle}
-
-							{metaLabel && (
-								<span className="text-[11px] text-void-fg-4/50 font-mono truncate flex-shrink-0">
-									{metaLabel}
-								</span>
-							)}
-						</div>
-
-						<div className="flex items-center gap-1 flex-shrink-0 ml-auto">
-							{!isRunning && statusLine && (
-								<span
-									className="flex items-center gap-1 flex-shrink-0 text-[10px] font-mono text-void-fg-4/70"
-									title={statusLine.text}
-								>
-									<StatusIcon icon={statusLine.icon} />
-									{shortStatus && <span>{shortStatus}</span>}
-								</span>
-							)}
-							{copyText && !isRunning && (
-								<div className="opacity-0 group-hover:opacity-100 transition-opacity" onClick={e => e.stopPropagation()}>
-									<CopyButton codeStr={copyText} toolTipName="Copy output" />
-								</div>
-							)}
-							{shellId && (
-								<button
-									type="button"
-									className="p-0.5 rounded opacity-40 hover:opacity-100 hover:bg-white/5 transition-all"
-									onClick={(e) => { e.stopPropagation(); focusShell(); }}
-									title="Focus terminal"
-								>
-									<MoreHorizontal size={14} className="text-void-fg-4" />
-								</button>
-							)}
-							{isRunning && isBlockingAgent && !isReadOnlyChat && (
-								<ShellStopButton onClick={stopCommand} />
-							)}
-						</div>
+					<div className="edit-tool-card-header-main flex items-center gap-1.5 min-w-0 flex-1 overflow-hidden">
+						{hasExpandableContent && (
+							<ChevronRight
+								size={10}
+								strokeWidth={2.5}
+								className={`text-void-fg-4/40 flex-shrink-0 transition-all duration-200 ease-out ${showBody ? 'rotate-90 text-void-fg-4/60' : 'opacity-0 group-hover:opacity-100'}`}
+							/>
+						)}
+						<Terminal size={14} className="text-void-fg-4/55 flex-shrink-0" strokeWidth={2} />
+						{headerTitle}
+						<ShellMetaTags tags={metaTags} />
 					</div>
 
-					{/* Body */}
-					<AnimatePresence initial={false}>
-						{isExpanded && hasExpandableContent && (
-							<motion.div
-								key="shell-body"
-								initial={{ height: 0, opacity: 0 }}
-								animate={{ height: 'auto', opacity: 1 }}
-								exit={{ height: 0, opacity: 0 }}
-								transition={{ duration: 0.2, ease: 'easeOut' }}
-								className="relative z-10 overflow-hidden"
+					<div className="flex items-center gap-1 flex-shrink-0 ml-auto">
+						{!isRunning && statusLine && (
+							<span
+								className="flex items-center gap-1 flex-shrink-0 text-[10px] font-mono text-void-fg-4/70"
+								title={statusLine.text}
 							>
-								<div
-									ref={outputRef}
-									className="font-mono text-[11px] leading-[1.5] px-3 py-2 max-h-[140px] overflow-y-auto overflow-x-auto void-custom-scrollable"
-									style={{ background: 'color-mix(in srgb, var(--vscode-editor-background) 55%, transparent)' }}
-								>
-									{commandLine && (
-										<div className={`text-[11.5px] whitespace-pre ${(outputText.trim() || errorText) ? 'mb-1' : ''}`}>
-											<span className="text-void-fg-4 opacity-70 select-none">$ </span>
-											<ShellCommandHighlight command={commandLine} />
-										</div>
-									)}
+								<StatusIcon icon={statusLine.icon} />
+								{shortStatus && <span>{shortStatus}</span>}
+							</span>
+						)}
+						{copyText && !isRunning && (
+							<div className="opacity-0 group-hover:opacity-100 transition-opacity" onClick={e => e.stopPropagation()}>
+								<CopyButton codeStr={copyText} toolTipName="Copy output" />
+							</div>
+						)}
+						{shellId && (
+							<button
+								type="button"
+								className="p-0.5 rounded opacity-40 hover:opacity-100 hover:bg-void-fg-1/5 transition-all"
+								onClick={(e) => { e.stopPropagation(); focusShell(); }}
+								title="Focus terminal"
+							>
+								<MoreHorizontal size={14} className="text-void-fg-4" />
+							</button>
+						)}
+						{isRunning && isBlockingAgent && !isReadOnlyChat && (
+							<ShellStopButton onClick={stopCommand} />
+						)}
+					</div>
+				</div>
+
+				<AnimatePresence initial={false}>
+					{showBody && (
+						<motion.div
+							key="shell-body"
+							initial={{ height: 0, opacity: 0 }}
+							animate={{ height: 'auto', opacity: 1 }}
+							exit={{ height: 0, opacity: 0 }}
+							transition={{ duration: 0.2, ease: 'easeOut' }}
+							className="overflow-hidden"
+						>
+							<div
+								ref={outputRef}
+								className="font-mono text-[11px] leading-[1.5] px-3 py-2 max-h-[140px] overflow-y-auto overflow-x-auto void-custom-scrollable"
+								style={{
+									background: 'rgba(var(--vscode-void-bg-2-rgb, 16, 16, 16), 0.35)',
+									borderTop: showBody ? 'none' : undefined,
+								}}
+							>
+								{commandLine && (
+									<div className={`text-[11.5px] whitespace-pre ${(outputText.trim() || errorText) ? 'mb-1.5' : ''}`}>
+										<span className="text-void-fg-4/70 select-none">$ </span>
+										<ShellCommandHighlight command={commandLine} />
+									</div>
+								)}
 
 								{(!errorText && ((outputText.trim() && !isRunning) || (isRunning && isExpanded && outputText.trim()))) &&
 									outputText.split('\n').map((line, idx) => (
@@ -373,12 +348,11 @@ export const ShellToolCard = ({ toolMessage, threadId }: ShellToolCardProps) => 
 										{errorText}
 									</div>
 								)}
-								</div>
-							</motion.div>
-						)}
-					</AnimatePresence>
-				</EditToolCardWrapper>
-			)}
+							</div>
+						</motion.div>
+					)}
+				</AnimatePresence>
+			</EditToolCardWrapper>
 
 			{showWaitingFooter && (
 				<ShellWaitingFooter waitingCount={1} onRunInBackground={runInBackground} />
