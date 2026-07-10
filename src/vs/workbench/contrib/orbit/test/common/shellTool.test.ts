@@ -188,11 +188,14 @@ suite('ShellTool', () => {
 	});
 
 	suite('availableTools plan mode', () => {
-		test('includes Shell and AwaitShell in plan mode', () => {
+		test('excludes Shell and AwaitShell from plan mode', () => {
+			// Plan mode must not grant shell execution — see planModeToolNames in
+			// prompts.ts. Allowing Shell here let the model mutate the system after
+			// presenting a plan, without the user clicking Build.
 			const tools = availableTools('plan', undefined) ?? [];
 			const toolNames = tools.map(t => t.name);
-			assert.ok(toolNames.includes('Shell'));
-			assert.ok(toolNames.includes('AwaitShell'));
+			assert.ok(!toolNames.includes('Shell'));
+			assert.ok(!toolNames.includes('AwaitShell'));
 		});
 
 		test('excludes Shell from normal mode', () => {

@@ -15,6 +15,7 @@ import { IVoidSettingsService } from '../common/orbitSettingsService.js';
 import { PlanDraft, PLAN_DIR, buildPlanContentFromDraft, preparePlanDraftSave, syncPlanChecklistToThreadTodos } from '../common/planDraftHelpers.js';
 import { planFileLock } from '../common/planFileLock.js';
 import { syncPlanStatus } from '../common/planTemplate.js';
+import { buildPlanImplementationMessage } from '../common/planBuildMessage.js';
 import { TodoItem } from '../common/chatThreadServiceTypes.js';
 import { VOID_PLAN_EDITOR_ID } from './planEditorConstants.js';
 
@@ -175,18 +176,11 @@ export async function buildPlanFromThread(deps: {
 		console.warn('[PlanBuild] Failed to update plan status:', error);
 	}
 
-	const messageContent = `I've created a plan: "${deps.planTitle}"
-
-## Overview
-${deps.overview}
-
-## Tasks (${deps.todos.length})
-${deps.todos.map((t, i) => `${i + 1}. [${t.status.toUpperCase()}] ${t.content}`).join('\n')}
-
-Let's implement this plan.`;
+	const { displayContent, llmContent } = buildPlanImplementationMessage(deps.planTitle, deps.overview, deps.todos);
 
 	await deps.chatThreadService.addUserMessageAndStreamResponse({
-		userMessage: messageContent,
+		userMessage: displayContent,
+		llmInstructions: llmContent,
 		threadId: deps.threadId,
 	});
 }

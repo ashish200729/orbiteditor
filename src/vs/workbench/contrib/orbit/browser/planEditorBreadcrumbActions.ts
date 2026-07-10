@@ -10,6 +10,7 @@ import { PlanEditorInput } from './planEditorInput.js';
 
 const PLAN_EDITOR_BREADCRUMBS_ROW_CLASS = 'plan-editor-breadcrumbs-row';
 const PLAN_EDITOR_BREADCRUMB_ACTIONS_CLASS = 'plan-editor-breadcrumb-actions';
+const MAX_MOUNT_ATTEMPTS = 20;
 
 export interface PlanEditorTitleActionsState {
 	threadId?: string;
@@ -56,6 +57,7 @@ export class PlanEditorBreadcrumbActionsMount implements IDisposable {
 	private _state: PlanEditorTitleActionsState | undefined;
 	private _input: PlanEditorInput | undefined;
 	private _editorContainer: HTMLElement | undefined;
+	private _mutationObserver: MutationObserver | undefined;
 
 	constructor(
 		private readonly instantiationService: IInstantiationService,
@@ -71,6 +73,38 @@ export class PlanEditorBreadcrumbActionsMount implements IDisposable {
 		this._state = state;
 		this._mountAttempts = 0;
 		this._mountScheduler.schedule();
+		// Harden the DOM-injection architecture: the breadcrumb row may not exist
+		// yet when setInput runs (single-tab layout mounts lazily). A MutationObserver
+		// on the editor group container catches the row appearing later, in addition
+		// to the existing RunOnceScheduler retry loop.
+		this._startMutationObserver();
+	}
+
+	private _startMutationObserver(): void {
+		this._stopMutationObserver();
+		if (!this._editorContainer || typeof MutationObserver === 'undefined') {
+			return;
+		}
+		const groupContainer = this._editorContainer.closest('.editor-group-container');
+		if (!groupContainer) {
+			return;
+		}
+		this._mutationObserver = new MutationObserver(() => {
+			if (this._reactMount || this._host?.parentElement) {
+				return;
+			}
+			if (this._mountScheduler.isScheduled()) {
+				return;
+			}
+			this._mountAttempts = 0;
+			this._mountScheduler.schedule();
+		});
+		this._mutationObserver.observe(groupContainer as HTMLElement, { childList: true, subtree: true });
+	}
+
+	private _stopMutationObserver(): void {
+		this._mutationObserver?.disconnect();
+		this._mutationObserver = undefined;
 	}
 
 	updateState(state: PlanEditorTitleActionsState): void {
@@ -91,8 +125,13 @@ export class PlanEditorBreadcrumbActionsMount implements IDisposable {
 
 		const breadcrumbRow = getPlanEditorBreadcrumbRow(this._editorContainer);
 		if (!breadcrumbRow) {
-			if (this._mountAttempts++ < 20) {
+			if (this._mountAttempts++ < MAX_MOUNT_ATTEMPTS) {
 				this._mountScheduler.schedule();
+			} else {
+				// Mounting ultimately failed (the breadcrumb row never appeared within
+				// the retry budget). Previously this failed silently; log a warning so
+				// the missing title-bar actions are at least diagnosable.
+				console.warn('[PlanEditorBreadcrumbActions] Could not mount breadcrumb actions: breadcrumb row not found after retries.');
 			}
 			return;
 		}
@@ -126,6 +165,7 @@ export class PlanEditorBreadcrumbActionsMount implements IDisposable {
 
 	dispose(): void {
 		this._mountScheduler.dispose();
+		this._stopMutationObserver();
 		this._reactMount?.dispose?.();
 		this._reactMount = undefined;
 		this._host?.remove();

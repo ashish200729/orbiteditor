@@ -16,6 +16,18 @@ import { Emitter } from '../../../../base/common/event.js';
 import { IDisposable } from '../../../../base/common/lifecycle.js';
 import { VOID_PLAN_EDITOR_ID } from './planEditorConstants.js';
 
+/**
+ * Formats an arbitrary error from a plan-file load into a display string.
+ * Extracted as a pure helper so the error-shaping is unit-testable without
+ * instantiating a PlanEditorInput.
+ */
+export function formatPlanLoadError(error: unknown): string {
+	if (error instanceof Error) {
+		return error.message;
+	}
+	return String(error);
+}
+
 export class PlanEditorInput extends EditorInput {
 	static readonly ID = 'workbench.input.void.planEditor';
 
@@ -35,11 +47,17 @@ export class PlanEditorInput extends EditorInput {
 	private static readonly SELF_WRITE_IGNORE_MS = 1500;
 
 	// Public for PlanTodoSyncService to call when it writes the plan file.
-	notifySelfWrite(): void {
+	// When the caller knows the written content (e.g. the sync service), it passes
+	// it in so we can record a content hash for certainty-based self-write
+	// detection. When the caller is our own save() path, it sets the hash
+	// directly; callers without the content can omit it and fall back to the
+	// timestamp-based ignore window.
+	notifySelfWrite(content?: string): void {
 		this._selfWriteSerial += 1;
 		this._lastSelfWriteAt = Date.now();
-		// We do not know the exact content the sync wrote, so we rely on the
-		// timestamp-based ignore window below.
+		if (content !== undefined) {
+			this._lastSelfWriteHash = this._hash(content);
+		}
 	}
 
 	// Event for external file changes
@@ -235,6 +253,7 @@ export class PlanEditorInput extends EditorInput {
 	override async revert(group: GroupIdentifier, options?: any): Promise<void> {
 		await this.loadPlan();
 		this._isDirty = false;
+		this._hasExternalConflict = false;
 		this._onDidChangeDirty.fire();
 	}
 
@@ -248,7 +267,7 @@ export class PlanEditorInput extends EditorInput {
 				status: 'planning'
 			},
 			sections: {
-				overview: `**Error loading plan file:**\n\n${error.message}`,
+				overview: `**Error loading plan file:**\n\n${formatPlanLoadError(error)}`,
 				files: '',
 				steps: '',
 				checklist: '',

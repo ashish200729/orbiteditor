@@ -51,6 +51,15 @@ malware."* Bypass it once, any of:
 
 Orbit Editor is a fork of [Void Editor](https://github.com/voideditor/void), which itself is a fork of [VS Code](https://github.com/microsoft/vscode). We are grateful to both projects for their excellent foundation.
 
+## Features
+
+- **AI agents** — Run agents that understand your codebase, with support for subagents and configurable tool policies.
+- **Bring your own model** — Connect any provider or run models locally. Messages go directly to the provider without retaining your data.
+- **Checkpoints & change visualization** — Inspect, revert, and replay edits as you work, with a clear view of what changed and why.
+- **Plan mode** — Collaboratively design an implementation approach before any code is written.
+- **MCP integration** — Extend agent capabilities with Model Context Protocol servers.
+- **Skills** — Reusable, scoped workflows that encode project-specific knowledge and best practices.
+
 ## Reference
 
 Orbit Editor is a fork of the [vscode](https://github.com/microsoft/vscode) repository. For a guide to our codebase, see [ORBIT_CODEBASE_GUIDE](./ORBIT_CODEBASE_GUIDE.md).

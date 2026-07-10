@@ -24,6 +24,16 @@ import { syncPlanChecklistToThreadTodos } from '../common/planDraftHelpers.js';
 import { buildPlanFromThread, savePlanDraftToWorkspace } from './planDraftActions.js';
 import { CONTEXT_VOID_PLAN_EDITOR_ACTIVE, VOID_PLAN_EDITOR_ID } from './planEditorConstants.js';
 
+/**
+ * Pure predicate mirroring util/planBuildButtonState.tsx's canStartPlanBuild.
+ * Duplicated here because browser/*.ts cannot import from the React bundle
+ * (react/src); the predicate is trivial and the invariant is locked by tests
+ * in test/common/planBuildButtonState.test.ts.
+ */
+function canStartPlanBuild(planBuildState: 'idle' | 'building' | 'built' | 'failed'): boolean {
+	return planBuildState !== 'building';
+}
+
 export const ORBIT_PLAN_OPEN_DRAFT_COMMAND_ID = 'orbit.plan.openDraft';
 export const ORBIT_PLAN_SAVE_TO_WORKSPACE_COMMAND_ID = 'orbit.plan.saveToWorkspace';
 export const ORBIT_PLAN_BUILD_FROM_DRAFT_COMMAND_ID = 'orbit.plan.buildFromDraft';
@@ -218,6 +228,15 @@ registerAction2(class BuildPlanDraftAction extends Action2 {
 		let buildStarted = false;
 		try {
 			threadId = getThreadId(accessor, threadIdArg);
+			// Re-entrancy guard: a rapid double-click (or a stale breadcrumb button
+			// firing while the sidebar card already started a build) must not kick off
+			// a second agent run for the same thread. The state machine already tracks
+			// "building" as the in-flight signal; canStartPlanBuild encodes the policy.
+			const currentState = chatThreadService.getPlanBuildState(threadId);
+			if (!canStartPlanBuild(currentState)) {
+				notificationService.info('A build for this plan is already in progress.');
+				return;
+			}
 			chatThreadService.setPlanBuildState(threadId, 'building');
 			const buildInput = await getBuildInputForThread(accessor, threadId);
 			buildStarted = true;

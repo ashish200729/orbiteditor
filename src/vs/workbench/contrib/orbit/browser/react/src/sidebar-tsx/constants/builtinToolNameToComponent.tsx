@@ -465,17 +465,23 @@ export const builtinToolNameToComponent: { [T in BuiltinToolName]: { resultWrapp
 				iconTooltip: statusIconMeta?.tooltip,
 			}
 
-			if (isError) {
-				componentParams.children = (
-					<ToolChildrenWrapper>
-						<div className="text-void-fg-4 text-[11px] p-2 bg-void-bg-1/50 rounded mx-3 my-2">
-							{typeof toolMessage.result === 'string'
-								? toolMessage.result
-								: 'An error occurred while creating the plan'}
-						</div>
-					</ToolChildrenWrapper>
-				)
-			} else if (isRunning) {
+		if (isError) {
+			componentParams.children = (
+				<ToolChildrenWrapper>
+					<div
+						className="text-[11px] p-2 rounded mx-3 my-2 whitespace-pre-wrap break-words"
+						style={{
+							color: '#E06C75',
+							backgroundColor: 'color-mix(in srgb, #E06C75 8%, transparent)',
+						}}
+					>
+						{typeof toolMessage.result === 'string'
+							? toolMessage.result
+							: 'An error occurred while creating the plan'}
+					</div>
+				</ToolChildrenWrapper>
+			)
+		} else if (isRunning) {
 				componentParams.children = (
 					<ToolChildrenWrapper>
 						<div className="flex items-center gap-2 text-void-fg-4 text-[11px] p-3">

@@ -33,8 +33,10 @@ import { updatePlanSection, addTodoToChecklist, markTodoComplete, isValidSection
 import {
 	applyStringReplaceToContent,
 	buildPlanContentFromDraft,
+	buildCreatePlanResult,
 	createPlanDraftFromParams,
 	isPlanFilePath,
+	resolvePlanModeEditDecision,
 	syncPlanChecklistToThreadTodos,
 	updateDraftFromPlanContent,
 } from '../common/planDraftHelpers.js'
@@ -717,23 +719,29 @@ export class ToolsService implements IToolsService {
 
 			// ---
 
-			StrReplace: async ({ path, oldString, newString, replaceAll }) => {
-				this._acquireMutatingLock('StrReplace');
-				try {
+		StrReplace: async ({ path, oldString, newString, replaceAll }) => {
+			this._acquireMutatingLock('StrReplace');
+			try {
+				// Plan-mode guard MUST run whenever plan mode is active — gating on
+				// `threadId` left a hole: if no thread was current (e.g. a race or a
+				// sub-agent context), the entire block was skipped and the agent could
+				// edit arbitrary files. Now the guard always fires in plan mode; the
+				// scoping decision is centralized in resolvePlanModeEditDecision.
+				if (this._isPlanMode()) {
 					const threadId = this._getCurrentThreadId();
-					if (this._isPlanMode() && threadId) {
-						const draft = this.chatThreadService.getThreadPlanDraft(threadId);
-						const linkedPath = this.chatThreadService.state.allThreads[threadId]?.linkedPlanPath ?? null;
-						if (draft && !draft.savedPlanPath) {
-							const result = this._applyPlanDraftEdit(threadId, content =>
-								applyStringReplaceToContent(content, oldString, newString, replaceAll));
-							this._releaseMutatingLock();
-							return { result: Promise.resolve(result) };
-						}
-						if (!isPlanFilePath(path.fsPath, linkedPath)) {
-							throw new Error('Plan mode only allows editing the plan. Switch to Agent mode to edit code.');
-						}
+					const draft = threadId ? this.chatThreadService.getThreadPlanDraft(threadId) : undefined;
+					const linkedPath = threadId ? (this.chatThreadService.state.allThreads[threadId]?.linkedPlanPath ?? null) : null;
+					const decision = resolvePlanModeEditDecision(path.fsPath, !!(draft && !draft.savedPlanPath), linkedPath);
+					if (decision === 'draft') {
+						const result = this._applyPlanDraftEdit(threadId!, content =>
+							applyStringReplaceToContent(content, oldString, newString, replaceAll));
+						this._releaseMutatingLock();
+						return { result: Promise.resolve(result) };
 					}
+					if (decision === 'blocked') {
+						throw new Error('Plan mode only allows editing the plan. Switch to Agent mode to edit code.');
+					}
+				}
 
 					if (!(await fileService.exists(path))) {
 						throw new Error(`StrReplace: file not found: ${path.fsPath}`)
@@ -753,21 +761,22 @@ export class ToolsService implements IToolsService {
 					// returning early would let the agent re-read stale/unwritten content.
 					await editCodeService.instantlyApplyStrReplace({ uri: path, oldString, newString, replaceAll })
 
-					const lintErrorsPromise = Promise.resolve().then(async () => {
-						// The mutating lock MUST be released here even if computing lint
-						// errors or syncing the plan throws — otherwise every subsequent
-						// mutating/terminal tool is permanently blocked for the session.
-						try {
-							await timeout(2000)
-							const { lintErrors } = this._getLintErrors(path)
-							if (threadId && this._isPlanMode() && isPlanFilePath(path.fsPath, this.chatThreadService.state.allThreads[threadId]?.linkedPlanPath)) {
-								await this._syncSavedPlanFileToThread(threadId, path);
-							}
-							return { lintErrors }
-						} finally {
-							this._releaseMutatingLock();
+				const lintErrorsPromise = Promise.resolve().then(async () => {
+					// The mutating lock MUST be released here even if computing lint
+					// errors or syncing the plan throws — otherwise every subsequent
+					// mutating/terminal tool is permanently blocked for the session.
+					try {
+						await timeout(2000)
+						const { lintErrors } = this._getLintErrors(path)
+						const syncThreadId = this._getCurrentThreadId();
+						if (syncThreadId && this._isPlanMode() && isPlanFilePath(path.fsPath, this.chatThreadService.state.allThreads[syncThreadId]?.linkedPlanPath)) {
+							await this._syncSavedPlanFileToThread(syncThreadId, path);
 						}
-					})
+						return { lintErrors }
+					} finally {
+						this._releaseMutatingLock();
+					}
+				})
 
 					return { result: lintErrorsPromise }
 				} catch (error) {
@@ -776,22 +785,26 @@ export class ToolsService implements IToolsService {
 				}
 			},
 
-			Write: async ({ path, contents }) => {
-				this._acquireMutatingLock('Write');
-				try {
+		Write: async ({ path, contents }) => {
+			this._acquireMutatingLock('Write');
+			try {
+				// Plan-mode guard MUST run whenever plan mode is active — see StrReplace
+				// for the rationale. Gating on `threadId` left a hole where a missing
+				// current thread let arbitrary file writes through.
+				if (this._isPlanMode()) {
 					const threadId = this._getCurrentThreadId();
-					if (this._isPlanMode() && threadId) {
-						const draft = this.chatThreadService.getThreadPlanDraft(threadId);
-						const linkedPath = this.chatThreadService.state.allThreads[threadId]?.linkedPlanPath ?? null;
-						if (draft && !draft.savedPlanPath) {
-							const result = this._applyPlanDraftEdit(threadId, () => contents);
-							this._releaseMutatingLock();
-							return { result: Promise.resolve(result) };
-						}
-						if (!isPlanFilePath(path.fsPath, linkedPath)) {
-							throw new Error('Plan mode only allows editing the plan. Switch to Agent mode to edit code.');
-						}
+					const draft = threadId ? this.chatThreadService.getThreadPlanDraft(threadId) : undefined;
+					const linkedPath = threadId ? (this.chatThreadService.state.allThreads[threadId]?.linkedPlanPath ?? null) : null;
+					const decision = resolvePlanModeEditDecision(path.fsPath, !!(draft && !draft.savedPlanPath), linkedPath);
+					if (decision === 'draft') {
+						const result = this._applyPlanDraftEdit(threadId!, () => contents);
+						this._releaseMutatingLock();
+						return { result: Promise.resolve(result) };
 					}
+					if (decision === 'blocked') {
+						throw new Error('Plan mode only allows editing the plan. Switch to Agent mode to edit code.');
+					}
+				}
 
 					const exists = await fileService.exists(path)
 					let didCreateFile = false
@@ -827,20 +840,21 @@ export class ToolsService implements IToolsService {
 						throw writeError
 					}
 
-					const lintErrorsPromise = Promise.resolve().then(async () => {
-						// Always release the mutating lock, even if lint computation or plan
-						// sync throws — otherwise all future mutating tools deadlock.
-						try {
-							await timeout(2000)
-							const { lintErrors } = this._getLintErrors(path)
-							if (threadId && this._isPlanMode() && isPlanFilePath(path.fsPath, this.chatThreadService.state.allThreads[threadId]?.linkedPlanPath)) {
-								await this._syncSavedPlanFileToThread(threadId, path);
-							}
-							return { lintErrors }
-						} finally {
-							this._releaseMutatingLock();
+				const lintErrorsPromise = Promise.resolve().then(async () => {
+					// Always release the mutating lock, even if lint computation or plan
+					// sync throws — otherwise all future mutating tools deadlock.
+					try {
+						await timeout(2000)
+						const { lintErrors } = this._getLintErrors(path)
+						const syncThreadId = this._getCurrentThreadId();
+						if (syncThreadId && this._isPlanMode() && isPlanFilePath(path.fsPath, this.chatThreadService.state.allThreads[syncThreadId]?.linkedPlanPath)) {
+							await this._syncSavedPlanFileToThread(syncThreadId, path);
 						}
-					})
+						return { lintErrors }
+					} finally {
+						this._releaseMutatingLock();
+					}
+				})
 					return { result: lintErrorsPromise }
 				} catch (error) {
 					this._releaseMutatingLock();
@@ -848,13 +862,20 @@ export class ToolsService implements IToolsService {
 				}
 			},
 			// ---
-			Shell: async (params) => {
-				this._acquireMutatingLock('Shell');
-				try {
-					const threadId = this.currentShellThreadId;
-					if (!threadId) {
-						throw new Error('Shell requires an active chat thread.');
-					}
+		Shell: async (params) => {
+			this._acquireMutatingLock('Shell');
+			try {
+				// Defense in depth: Shell is excluded from planModeToolNames, but a
+				// runtime guard ensures a stray shell call (e.g. from a sub-agent or
+				// a tool-list race) can never mutate system state in plan mode.
+				if (this._isPlanMode()) {
+					this._releaseMutatingLock();
+					throw new Error('Plan mode does not allow running shell commands. Switch to Agent mode to execute.');
+				}
+				const threadId = this.currentShellThreadId;
+				if (!threadId) {
+					throw new Error('Shell requires an active chat thread.');
+				}
 
 					const { shellId, pid } = await this.terminalToolService.getOrCreateShellForThread({
 						threadId,
@@ -942,13 +963,18 @@ export class ToolsService implements IToolsService {
 					throw error;
 				}
 			},
-			AwaitShell: async (params) => {
-				this._acquireMutatingLock('AwaitShell');
-				try {
-					if (params.shellId && !this.terminalToolService.shellExists(params.shellId)) {
-						this._releaseMutatingLock();
-						return { result: { kind: 'notfound' as const, error: `Shell with id "${params.shellId}" does not exist.`, runningForMs: 0 } };
-					}
+		AwaitShell: async (params) => {
+			this._acquireMutatingLock('AwaitShell');
+			try {
+				// Defense in depth: AwaitShell is excluded from planModeToolNames.
+				if (this._isPlanMode()) {
+					this._releaseMutatingLock();
+					throw new Error('Plan mode does not allow awaiting shell commands. Switch to Agent mode to execute.');
+				}
+				if (params.shellId && !this.terminalToolService.shellExists(params.shellId)) {
+					this._releaseMutatingLock();
+					return { result: { kind: 'notfound' as const, error: `Shell with id "${params.shellId}" does not exist.`, runningForMs: 0 } };
+				}
 
 					const resPromise = this.terminalToolService.awaitShell(params.shellId, {
 						blockUntilMs: params.blockUntilMs,
@@ -1002,8 +1028,17 @@ export class ToolsService implements IToolsService {
 					throw new Error('No workspace folder open. Please open a folder to create a plan.');
 				}
 
+				// Fix #5: a plan draft is meaningless without a thread to pin it to —
+				// the sidebar PlanCard, the build path, and the sync watcher all key off
+				// the threadId. Previously this returned success with an orphan draft;
+				// now it fails as a real tool error so the agent doesn't assume a draft
+				// exists that the UI can never render.
 				const threadId = this._getCurrentThreadId();
-				const existingDraft = threadId ? this.chatThreadService.getThreadPlanDraft(threadId) : undefined;
+				if (!threadId) {
+					throw new Error('No active chat thread. create_plan requires an open chat to attach the plan draft to.');
+				}
+
+				const existingDraft = this.chatThreadService.getThreadPlanDraft(threadId);
 				const planBody = injectOverviewIntoPlan(plan, overview);
 
 				let draft;
@@ -1022,17 +1057,15 @@ export class ToolsService implements IToolsService {
 					throw new Error(message);
 				}
 
-				if (threadId) {
-					const fullContent = buildPlanContentFromDraft(
-						draft,
-						'planning',
-						this.voidSettingsService.state.modelSelectionOfFeature.Chat?.modelName,
-					);
-					const syncedDraft = updateDraftFromPlanContent(fullContent, draft);
-					this.chatThreadService.setThreadPlanDraft(threadId, syncedDraft);
-					const executionTodos = syncPlanChecklistToThreadTodos(fullContent);
-					this.chatThreadService.setThreadTodoList(threadId, executionTodos);
-				}
+				const fullContent = buildPlanContentFromDraft(
+					draft,
+					'planning',
+					this.voidSettingsService.state.modelSelectionOfFeature.Chat?.modelName,
+				);
+				const syncedDraft = updateDraftFromPlanContent(fullContent, draft);
+				this.chatThreadService.setThreadPlanDraft(threadId, syncedDraft);
+				const executionTodos = syncPlanChecklistToThreadTodos(fullContent);
+				this.chatThreadService.setThreadTodoList(threadId, executionTodos);
 
 				this._metricsService.capture('Create Plan', {
 					planName: draft.name,
@@ -1042,13 +1075,7 @@ export class ToolsService implements IToolsService {
 				});
 
 				return {
-					result: {
-						planPath: '',
-						planName: draft.name,
-						isDraft: true,
-						overview,
-						todos,
-					}
+					result: buildCreatePlanResult(draft, overview, todos),
 				};
 			},
 
@@ -1326,9 +1353,9 @@ export class ToolsService implements IToolsService {
 					? `\nIncluded ${params.todos.length} implementation todo(s) in the plan checklist.`
 					: '';
 				if (result.isDraft) {
-					return `Plan "${result.planName}" is ready for review as an ephemeral draft.${todoNote}\nThe user can Save to workspace, edit the draft with StrReplace/Write, or click Build to start execution. Calling create_plan again replaces the draft before save. After save, update via read_plan + StrReplace/Write on the plan file.`;
+					return `Plan "${result.planName}" is ready for review as an ephemeral draft.${todoNote}\nThe user can Save to workspace, edit the draft in the Plan Editor, or click Build to start execution. Calling create_plan again replaces the draft before save. You cannot edit the draft directly — if the plan needs changes, call create_plan again with the updated content.`;
 				}
-				return `Plan "${result.planName}" created successfully at ${result.planPath}.${todoNote}\nTo update the plan, read and edit the plan file directly using your file editing tools.`;
+				return `Plan "${result.planName}" created successfully at ${result.planPath}.${todoNote}\nThe user can edit the saved plan file in the Plan Editor. You cannot edit it directly — if the plan needs changes, call create_plan again.`;
 			},
 
 			read_plan: (params, result) => {

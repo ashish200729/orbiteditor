@@ -18,7 +18,7 @@ import { IWorkspaceContextService } from '../../../../platform/workspace/common/
 import { Dimension } from '../../../../base/browser/dom.js';
 import { PlanEditorInput } from './planEditorInput.js';
 import { CONTEXT_VOID_PLAN_EDITOR_ACTIVE, CONTEXT_VOID_PLAN_VIEW_MODE, VOID_PLAN_EDITOR_ID } from './planEditorConstants.js';
-import { PlanEditorBreadcrumbActionsMount } from './planEditorBreadcrumbActions.js';
+import { PlanEditorBreadcrumbActionsMount, PlanEditorTitleActionsState } from './planEditorBreadcrumbActions.js';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { IChatThreadService } from './chatThreadService.js';
@@ -26,6 +26,7 @@ import { IPlanTodoSyncService } from './planTodoSyncService.js';
 import { TodoItem } from '../common/chatThreadServiceTypes.js';
 import { IVoidSettingsService } from '../common/orbitSettingsService.js';
 import { convertPlanTodoToExecutionTodo, parseNumberedTodoMarkdown, syncPlanStatus, ParsedPlan } from '../common/planTemplate.js';
+import { buildPlanImplementationMessage } from '../common/planBuildMessage.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
 
@@ -37,6 +38,7 @@ export class PlanEditorPane extends EditorPane {
 	private _externalChangeDisposable: IDisposable | undefined;
 	private _syncSelfWriteDisposable: IDisposable | undefined;
 	private _externalConflictDisposable: IDisposable | undefined;
+	private _breadcrumbReactivityDisposable: IDisposable | undefined;
 	private _breadcrumbActions: PlanEditorBreadcrumbActionsMount | undefined;
 	private _contextKeys: {
 		editorActive: IContextKey<boolean>;
@@ -109,6 +111,12 @@ export class PlanEditorPane extends EditorPane {
 				this.notificationService.error('No active chat thread. Please open a chat first.');
 				return;
 			}
+			// Re-entrancy guard: mirrors BuildPlanDraftAction's canStartPlanBuild check
+			// (planEditorCommands.ts) so a rapid double-click on the breadcrumb Build
+			// button cannot kick off a second concurrent agent run for this thread.
+			if (this.chatThreadService.getPlanBuildState(thread.id) === 'building') {
+				return;
+			}
 			buildThreadId = thread.id;
 			this.chatThreadService.setPlanBuildState(thread.id, 'building');
 
@@ -119,6 +127,10 @@ export class PlanEditorPane extends EditorPane {
 			this.planTodoSyncService.watchThreadTodos(thread.id, input.resource.fsPath);
 			this.chatThreadService.setLinkedPlanPath(thread.id, input.resource.fsPath);
 			this.chatThreadService.setThreadTodoList(thread.id, todos);
+			// Match buildPlanFromThread: clear the ephemeral plan draft now that the
+			// saved plan file is the source of truth. Previously handleBuild skipped
+			// this, leaving a stale draft pinned to the thread.
+			this.chatThreadService.clearThreadPlanDraft(thread.id);
 
 			// 5. Switch to agent mode
 			await this.settingsService.setGlobalSetting('chatMode', 'agent');
@@ -147,22 +159,18 @@ export class PlanEditorPane extends EditorPane {
 				// Don't block Build on a transient status update failure, but log it.
 			}
 
-			// 6. Start sync watcher
-			this.planTodoSyncService.watchThreadTodos(thread.id, input.resource.fsPath);
-
-			// 7. Send plan summary as user message (optimized - not full content)
-			const messageContent = `I've created a plan: "${planContent.metadata.title}"
-
-## Overview
-${planContent.sections.overview}
-
-## Tasks (${todos.length})
-${todos.map((t, i) => `${i + 1}. [${t.status.toUpperCase()}] ${t.content}`).join('\n')}
-
-Let's implement this plan.`;
+			// 7. Send plan summary as user message (optimized - not full content).
+			// Shared with buildPlanFromThread so both Build paths produce identical
+			// LLM instructions (incl. the todo-id reuse directive) and display text.
+			const { displayContent, llmContent } = buildPlanImplementationMessage(
+				planContent.metadata.title,
+				planContent.sections.overview,
+				todos,
+			);
 
 			await this.chatThreadService.addUserMessageAndStreamResponse({
-				userMessage: messageContent,
+				userMessage: displayContent,
+				llmInstructions: llmContent,
 				threadId: thread.id
 			});
 			await this.chatThreadService.waitForThreadAgentRunEnd(thread.id);
@@ -234,11 +242,13 @@ Let's implement this plan.`;
 
 		// Phase 1.5 (C4) fix: when the sync service writes the plan (todo list sync),
 		// notify the editor input so its file-watcher ignores the resulting file-changed
-		// event as a self-write rather than a no-op reload.
+		// event as a self-write rather than a no-op reload. The payload carries the
+		// written content so the input can match on a content hash (certainty) instead
+		// of only a wall-clock ignore window.
 		this._syncSelfWriteDisposable?.dispose();
 		this._syncSelfWriteDisposable = this.planTodoSyncService.onDidWritePlan((e) => {
 			if (e.planPath === input.resource.fsPath) {
-				input.notifySelfWrite();
+				input.notifySelfWrite(e.content);
 			}
 		});
 
@@ -266,35 +276,43 @@ Let's implement this plan.`;
 
 		const { mountPlanEditor } = await import('./react/out/plan-editor-tsx/index.js');
 
+		// Resolve the linked thread once so both the editor body and the breadcrumb
+		// mount see the same threadId/isDraft.
+		const threadId = this._getThreadIdForPlanPath(input.resource.fsPath);
+		const thread = threadId ? this.chatThreadService.state.allThreads[threadId] : undefined;
+
 		this._reactDisposable = this.instantiationService.invokeFunction(
 			accessor => {
-				const disposeFn = mountPlanEditor(this._container!, accessor, {
-					plan: parsedPlan,
-					resource: input.resource,
-					initialViewMode: this._currentViewMode,
-					onSave: async (content: string) => {
-						input.updateContent(content);
-						const result = await input.save(this.group.id);
-						if (!result) {
-							this.notificationService.error('Failed to save plan file');
-						}
-						// Removed success notification per user request
-					},
-					onContentChange: (content: string) => {
-						input.updateContent(content);
-					},
-					onBuild: async (todos: TodoItem[]) => {
-						await this.handleBuild(todos, input);
+			const disposeFn = mountPlanEditor(this._container!, accessor, {
+				plan: parsedPlan,
+				resource: input.resource,
+				threadId,
+				isDraft: thread?.planDraft !== undefined,
+				initialViewMode: this._currentViewMode,
+				onSave: async (content: string) => {
+					input.updateContent(content);
+					const result = await input.save(this.group.id);
+					if (!result) {
+						this.notificationService.error('Failed to save plan file');
 					}
-				})?.dispose;
+					// Removed success notification per user request
+				},
+				onSaveError: (error: unknown) => {
+					this.notificationService.error(`Failed to save plan: ${error instanceof Error ? error.message : String(error)}`);
+				},
+				onContentChange: (content: string) => {
+					input.updateContent(content);
+				},
+				onBuild: async (todos: TodoItem[]) => {
+					await this.handleBuild(todos, input);
+				}
+			})?.dispose;
 				return toDisposable(() => disposeFn?.());
 			}
 		);
 
 		this._breadcrumbActions ??= new PlanEditorBreadcrumbActionsMount(this.instantiationService);
-		const threadId = this._getThreadIdForPlanPath(input.resource.fsPath);
-		const thread = threadId ? this.chatThreadService.state.allThreads[threadId] : undefined;
-		this._breadcrumbActions.scheduleMount(this._container, input, {
+		const breadcrumbState: PlanEditorTitleActionsState = {
 			threadId,
 			// Phase 1.6 (C5) fix: compute isDraft from the linked thread's planDraft.
 			// The previous hard-coded `false` made the title bar's "Save to Workspace"
@@ -307,7 +325,41 @@ Let's implement this plan.`;
 				void this._buildFromInput(input);
 			},
 			onSaveToWorkspace: thread?.planDraft ? () => this._saveDraftToWorkspace(threadId!, input) : undefined,
-		});
+		};
+		this._breadcrumbActions.scheduleMount(this._container, input, breadcrumbState);
+
+		// Breadcrumb reactivity: updateState() exists on the mount but was only ever
+		// called once (on setInput). Subscribe to the three thread events that affect
+		// the breadcrumb's Build/Save buttons so a build started from the sidebar card
+		// (or a draft saved elsewhere) reactively updates the breadcrumb while the Plan
+		// Editor tab is open. All three events already exist on IChatThreadService.
+		this._breadcrumbReactivityDisposable?.dispose();
+		this._breadcrumbReactivityDisposable = undefined;
+		if (threadId) {
+			const refreshBreadcrumb = () => {
+				const t = this.chatThreadService.state.allThreads[threadId];
+				this._breadcrumbActions?.updateState({
+					threadId,
+					isDraft: t?.planDraft !== undefined,
+					isDirty: input.isDirty(),
+					isSaving: false,
+					isStarting: false,
+					onBuild: () => {
+						void this._buildFromInput(input);
+					},
+					onSaveToWorkspace: t?.planDraft ? () => this._saveDraftToWorkspace(threadId, input) : undefined,
+				});
+			};
+			const handler = (e: { threadId: string }) => {
+				if (e.threadId === threadId) {
+					refreshBreadcrumb();
+				}
+			};
+			const d1 = this.chatThreadService.onDidChangeThreadPlanDraft(handler);
+			const d2 = this.chatThreadService.onDidChangeThreadTodoList(handler);
+			const d3 = this.chatThreadService.onDidChangePlanBuildState(handler);
+			this._breadcrumbReactivityDisposable = { dispose: () => { d1.dispose(); d2.dispose(); d3.dispose(); } };
+		}
 	}
 
 	// Phase 1.6 (C5) fix: handler for the title bar's "Save to Workspace" button.
@@ -351,6 +403,8 @@ Let's implement this plan.`;
 		this._syncSelfWriteDisposable = undefined;
 		this._externalConflictDisposable?.dispose();
 		this._externalConflictDisposable = undefined;
+		this._breadcrumbReactivityDisposable?.dispose();
+		this._breadcrumbReactivityDisposable = undefined;
 		this._breadcrumbActions?.dispose();
 		this._breadcrumbActions = undefined;
 		this._contextKeys.editorActive.set(false);

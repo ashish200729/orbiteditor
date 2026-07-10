@@ -134,12 +134,28 @@ _Additional context and considerations..._
 /**
  * Escapes a string for safe YAML inclusion
  */
-function escapeYamlString(str: string): string {
+export function escapeYamlString(str: string): string {
 	// If the string contains special characters, wrap in quotes
 	if (/[:\{\}\[\],&*#?|\-<>=!%@`\\]/.test(str) || str.includes('\n')) {
 		return `"${str.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\r/g, '\\r').replace(/\n/g, '\\n')}"`;
 	}
 	return str;
+}
+
+/**
+ * Reverses {@link escapeYamlString} for a quote-wrapped value.
+ *
+ * `escapeYamlString` only applies to values it wrapped in quotes (unquoted
+ * values were never escaped), so this helper must only be called on values that
+ * were quote-wrapped on disk. The replacement order is the reverse of the escape
+ * order so multi-char escapes (\\n / \\r / \\\\") round-trip correctly.
+ */
+export function unescapeYamlString(value: string): string {
+	return value
+		.replace(/\\n/g, '\n')
+		.replace(/\\r/g, '\r')
+		.replace(/\\"/g, '"')
+		.replace(/\\\\/g, '\\');
 }
 
 /**
@@ -176,6 +192,23 @@ function getChecklistSectionContent(content: string): string {
 		return '';
 	}
 	return content.substring(bounds.start, bounds.end);
+}
+
+/**
+ * Removes the "## Implementation Checklist" heading and its content from a plan
+ * body. Used by the Plan Editor preview so the checklist renders exactly once,
+ * as the interactive `PlanChecklist` component, instead of also appearing as
+ * inert markdown prose.
+ */
+export function stripChecklistSection(content: string): string {
+	const marker = PLAN_SECTION_MARKERS.checklist;
+	const markerIndex = content.indexOf(marker);
+	if (markerIndex === -1) {
+		return content;
+	}
+	const bounds = getSectionContentBounds(content, 'checklist');
+	const end = bounds ? bounds.end : content.length;
+	return (content.slice(0, markerIndex) + content.slice(end)).trim();
 }
 
 /**
@@ -223,9 +256,14 @@ function parseYamlFrontmatter(content: string): PlanMetadata {
 		const key = line.substring(0, colonIndex).trim();
 		let value = line.substring(colonIndex + 1).trim();
 
-		// Remove quotes if present
-		if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+		// Remove quotes if present. Only quote-wrapped values were run through
+		// escapeYamlString on write, so only those need unescaping on read.
+		const wasQuoted = (value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"));
+		if (wasQuoted) {
 			value = value.slice(1, -1);
+			if (key === 'title' || key === 'model') {
+				value = unescapeYamlString(value);
+			}
 		}
 
 		switch (key) {
@@ -843,12 +881,46 @@ export function addPlanChecklistTodo(content: string, todoContent: string, id?: 
 }
 
 /**
+ * Builds a stable, content-derived todo id for checklist entries that lack an
+ * explicit `<!-- id: -->` comment. The id is `todo-` + a slug of the content +
+ * a short hash, so reordering checklist lines (or re-parsing the same file)
+ * yields the same ids instead of reshuffling positional `todo-N` ids.
+ *
+ * Duplicate contents are disambiguated with a `-{n}` suffix so each todo still
+ * gets a unique id (validated downstream by {@link validateTodos}).
+ */
+function deriveStableTodoId(content: string, usedIds: Set<string>): string {
+	const slug = content
+		.toLowerCase()
+		.replace(/[^a-z0-9]+/g, '-')
+		.replace(/^-+|-+$/g, '')
+		.slice(0, 24);
+	// Cheap stable hash of the full content so two distinct todos that happen to
+	// share a 24-char prefix still get different ids.
+	let h = 0;
+	for (let i = 0; i < content.length; i++) {
+		h = (h * 31 + content.charCodeAt(i)) | 0;
+	}
+	const hash = (h >>> 0).toString(36);
+	let base = `todo-${slug || 'item'}-${hash}`;
+	let id = base;
+	let n = 2;
+	while (usedIds.has(id)) {
+		id = `${base}-${n}`;
+		n += 1;
+	}
+	usedIds.add(id);
+	return id;
+}
+
+/**
  * Parses numbered todo markdown format
  * Format: 1. [STATUS] Content (optionally with <!-- id:xxx --> comment)
  * Preserves existing IDs from comments, generates new UUIDs only if needed
  */
 export function parseNumberedTodoMarkdown(content: string): { id: string; content: string; status: 'pending' | 'in_progress' | 'completed' | 'cancelled' }[] {
 	const todos: { id: string; content: string; status: 'pending' | 'in_progress' | 'completed' | 'cancelled' }[] = [];
+	const usedIds = new Set<string>();
 	const lines = content.split('\n');
 
 	// Regex to match: 1. [STATUS] Content with optional ID comment
@@ -865,9 +937,14 @@ export function parseNumberedTodoMarkdown(content: string): { id: string; conten
 			else if (statusMarker === 'IN_PROGRESS') status = 'in_progress';
 			else if (statusMarker === 'CANCELLED') status = 'cancelled';
 
+			const trimmedContent = todoContent.trim();
+			const id = existingId && !usedIds.has(existingId)
+				? (usedIds.add(existingId), existingId)
+				: deriveStableTodoId(trimmedContent, usedIds);
+
 			todos.push({
-				id: existingId || `todo-${todos.length + 1}`, // Use existing ID if present, otherwise a stable position-based id
-				content: todoContent.trim(),
+				id,
+				content: trimmedContent,
 				status
 			});
 		}

@@ -375,7 +375,7 @@ export interface IChatThreadService {
 	editUserMessageAndStreamResponse({ userMessage, messageIdx, threadId }: { userMessage: string, messageIdx: number, threadId: string }): Promise<void>;
 
 	// call to add a message
-	addUserMessageAndStreamResponse({ userMessage, _chatSelections, _images, threadId }: { userMessage: string, _chatSelections?: StagingSelectionItem[], _images?: string[], threadId: string }): Promise<void>;
+	addUserMessageAndStreamResponse({ userMessage, llmInstructions, _chatSelections, _images, threadId }: { userMessage: string, llmInstructions?: string, _chatSelections?: StagingSelectionItem[], _images?: string[], threadId: string }): Promise<void>;
 
 	// approve/reject
 	approveLatestToolRequest(threadId: string, toolId?: string): void;
@@ -2468,7 +2468,7 @@ We only need to do it for files that were edited since `from`, ie files between 
 	}
 
 
-	private async _addUserMessageAndStreamResponse({ userMessage, _chatSelections, _images, threadId }: { userMessage: string, _chatSelections?: StagingSelectionItem[], _images?: string[], threadId: string }) {
+	private async _addUserMessageAndStreamResponse({ userMessage, llmInstructions, _chatSelections, _images, threadId }: { userMessage: string, llmInstructions?: string, _chatSelections?: StagingSelectionItem[], _images?: string[], threadId: string }) {
 		const thread = this.state.allThreads[threadId]
 		if (!thread) return // should never happen
 
@@ -2485,7 +2485,10 @@ We only need to do it for files that were edited since `from`, ie files between 
 
 
 		// add user's message to chat history
-		const instructions = userMessage
+		// llmInstructions (when provided, e.g. by Plan Build) replaces what the LLM
+		// sees while userMessage stays as the rendered bubble text. Default: both are
+		// the same string.
+		const instructions = llmInstructions ?? userMessage
 		const currSelns: StagingSelectionItem[] = _chatSelections ?? thread.state.stagingSelections
 
 		// Active slash tokens = ones explicitly inserted via the menu AND still present in the
@@ -2502,7 +2505,7 @@ We only need to do it for files that were edited since `from`, ie files between 
 		const userHistoryElt: ChatMessage = {
 			role: 'user',
 			content: userMessageContent,
-			displayContent: instructions,
+			displayContent: userMessage,
 			selections: currSelns,
 			images: mergedImages,
 			injectedSlashTokens: activeSlashTokens.length > 0 ? activeSlashTokens : undefined,
@@ -2549,7 +2552,7 @@ We only need to do it for files that were edited since `from`, ie files between 
 	}
 
 
-	async addUserMessageAndStreamResponse({ userMessage, _chatSelections, _images, threadId }: { userMessage: string, _chatSelections?: StagingSelectionItem[], _images?: string[], threadId: string }) {
+	async addUserMessageAndStreamResponse({ userMessage, llmInstructions, _chatSelections, _images, threadId }: { userMessage: string, llmInstructions?: string, _chatSelections?: StagingSelectionItem[], _images?: string[], threadId: string }) {
 		const thread = this.state.allThreads[threadId];
 		if (!thread) return
 
@@ -2573,7 +2576,7 @@ We only need to do it for files that were edited since `from`, ie files between 
 		}
 
 		// Now call the original method to add the user message and stream the response
-		await this._addUserMessageAndStreamResponse({ userMessage, _chatSelections, _images, threadId });
+		await this._addUserMessageAndStreamResponse({ userMessage, llmInstructions, _chatSelections, _images, threadId });
 
 	}
 

@@ -196,12 +196,11 @@ export const UserMessageComponent = React.memo(({ chatMessage, messageIdx, isChe
 			<div className='px-0.5'>
 				<div
 					ref={contentRef}
-					className={`whitespace-pre-wrap leading-relaxed transition-all duration-300 ease-in-out ${!isExpanded && shouldTruncate ? 'line-clamp-3' : ''}`}
+					className={`whitespace-pre-wrap leading-relaxed ${!isExpanded && shouldTruncate ? 'overflow-hidden' : ''}`}
 					style={{
-						display: !isExpanded && shouldTruncate ? '-webkit-box' : 'block',
-						WebkitLineClamp: !isExpanded && shouldTruncate ? '3' : 'unset',
-						WebkitBoxOrient: !isExpanded && shouldTruncate ? 'vertical' as const : undefined,
-						overflow: !isExpanded && shouldTruncate ? 'hidden' : 'visible',
+						// Prefer max-height over -webkit-box/line-clamp — the latter shatters
+						// native ::selection into overlapping line bars.
+						maxHeight: !isExpanded && shouldTruncate ? '4.5em' : undefined,
 						overflowWrap: 'break-word',
 						wordBreak: 'break-word',
 					}}

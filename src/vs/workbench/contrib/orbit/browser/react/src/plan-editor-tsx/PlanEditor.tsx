@@ -5,18 +5,23 @@
 
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { URI } from '../../../../../../../base/common/uri.js';
-import { ParsedPlan, parsePlanFile, parseNumberedTodoMarkdown, convertPlanTodoToExecutionTodo } from '../../../../common/planTemplate.js';
+import { ParsedPlan, stripChecklistSection } from '../../../../common/planTemplate.js';
 import { useIsDark } from '../util/services.js';
 import { ChatMarkdownRender } from '../markdown/ChatMarkdownRender.js';
 import { TodoItem } from '../../../../common/chatThreadServiceTypes.js';
+import { PlanChecklist } from './PlanChecklist.js';
 import '../styles.css';
 
 export interface PlanEditorProps {
 	plan: ParsedPlan;
 	resource: URI;
+	threadId?: string;
+	isDraft?: boolean;
 	onSave?: (content: string) => Promise<void>;
+	onSaveError?: (error: unknown) => void;
 	onContentChange?: (content: string) => void;
 	initialViewMode?: 'preview' | 'markdown';
+	/** Reserved for future in-pane Build; the breadcrumb title action owns Build today. */
 	onBuild?: (todos: TodoItem[]) => Promise<void>;
 }
 
@@ -24,25 +29,31 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({
 	plan: initialPlan,
 	resource,
 	onSave,
+	onSaveError,
 	onContentChange,
 	initialViewMode = 'preview',
-	onBuild
 }) => {
 	const isDark = useIsDark();
 	const [viewMode, setViewMode] = useState<'preview' | 'markdown'>(initialViewMode);
 	const [rawContent, setRawContent] = useState(initialPlan.rawContent);
 	const [isDirty, setIsDirty] = useState(false);
 	const [isSaving, setIsSaving] = useState(false);
-	const [isLoading, setIsLoading] = useState(true);
-	const [isBuilding, setIsBuilding] = useState(false);
 
 	// Use ref to track the latest resource URI
 	const resourceRef = useRef(resource);
 	resourceRef.current = resource;
 
-	// Initial loading complete
-	useEffect(() => {
-		setIsLoading(false);
+	// Scroll-fade affordance: tracks scroll position of the preview container so
+	// a pointer-events-none gradient overlay fades in when content overflows — a
+	// direct visual cue for "preview not good visible" on long plans.
+	const scrollRef = useRef<HTMLDivElement>(null);
+	const [showFade, setShowFade] = useState(false);
+
+	const handleScroll = useCallback(() => {
+		const el = scrollRef.current;
+		if (!el) return;
+		const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+		setShowFade(!atBottom && el.scrollHeight > el.clientHeight + 8);
 	}, []);
 
 	// Sync view mode when initialViewMode changes
@@ -73,7 +84,9 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({
 		onContentChange?.(newContent);
 	}, [onContentChange]);
 
-	// Fixed auto-save with proper dependencies
+	// Auto-save with proper dependencies. Failures are surfaced through
+	// `onSaveError` (wired in planEditorPane.ts to notificationService.error)
+	// instead of the previous silent console.error.
 	useEffect(() => {
 		if (!isDirty || !onSave) return;
 
@@ -86,7 +99,11 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({
 					setIsDirty(false);
 				})
 				.catch((error) => {
-					console.error('Save error:', error);
+					if (onSaveError) {
+						onSaveError(error);
+					} else {
+						console.error('Save error:', error);
+					}
 				})
 				.finally(() => {
 					setIsSaving(false);
@@ -94,90 +111,18 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({
 		}, 2000);
 
 		return () => clearTimeout(timer);
-	}, [rawContent, isDirty, onSave, isSaving]);
+	}, [rawContent, isDirty, onSave, isSaving, onSaveError]);
 
-	// Handle Build button click
-	const handleBuildClick = useCallback(async () => {
-		if (!onBuild) return;
-
-		setIsBuilding(true);
-		try {
-			// Parse current plan content
-			const parsed = parsePlanFile(rawContent);
-
-			// Extract todos from checklist section
-			const checklistContent = parsed.sections.checklist;
-			const parsedTodos = parseNumberedTodoMarkdown(checklistContent);
-
-				// Convert to execution todos with proper status and activeForm
-				const executionTodos: TodoItem[] = parsedTodos.map(todo =>
-					convertPlanTodoToExecutionTodo(todo)
-				);
-
-			// Call onBuild callback with todos
-			await onBuild(executionTodos);
-
-		} catch (error) {
-			console.error('Build failed:', error);
-			// Show error (could use notification service if available)
-		} finally {
-			setIsBuilding(false);
-		}
-	}, [rawContent, onBuild]);
-
-	// Get content without frontmatter
-	const displayContent = rawContent.replace(/^---\n[\s\S]*?\n---\n*/, '');
-
-	// Show loading state
-	if (isLoading) {
-		return (
-			<div className={`@@void-scope ${isDark ? 'dark' : ''}`} style={{ width: '100%', height: '100%' }}>
-				<div className="flex items-center justify-center h-full bg-void-bg-3 text-void-fg-2">
-					<div className="flex flex-col items-center gap-3">
-						<div className="animate-spin rounded-full h-8 w-8 border-b-2 border-void-fg-2"></div>
-						<span className="text-sm">Loading plan...</span>
-					</div>
-				</div>
-			</div>
-		);
-	}
+	// Get content without frontmatter. The checklist section is stripped from the
+	// rendered markdown because it's rendered once, interactively, via
+	// <PlanChecklist> below — keeping it here too would show it twice.
+	const displayContent = stripChecklistSection(rawContent.replace(/^---\n[\s\S]*?\n---\n*/, ''));
 
 	// Markdown editing mode
 	if (viewMode === 'markdown') {
 		return (
 			<div className={`@@void-scope ${isDark ? 'dark' : ''}`} style={{ width: '100%', height: '100%' }}>
 				<div className="flex flex-col h-full bg-void-bg-3 text-void-fg-1">
-					{/* Build button toolbar */}
-					{onBuild && (
-						<div className="flex items-center justify-end px-4 py-2 border-b border-void-border-3/30">
-							<button
-								onClick={handleBuildClick}
-								disabled={isBuilding || isDirty}
-								className="
-									flex items-center gap-2 px-3 py-1.5
-									bg-void-accent hover:bg-void-accent/90
-									text-white font-medium text-sm rounded
-									disabled:opacity-50 disabled:cursor-not-allowed
-									transition-all duration-150
-								"
-								title={isDirty ? "Save plan before building" : "Send plan to agent and start execution"}
-							>
-								{isBuilding ? (
-									<>
-										<div className="animate-spin rounded-full h-3 w-3 border-2 border-white border-t-transparent"></div>
-										<span>Building...</span>
-									</>
-								) : (
-									<>
-										<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-											<polygon points="5 3 19 12 5 21 5 3"></polygon>
-										</svg>
-										<span>Build</span>
-									</>
-								)}
-							</button>
-						</div>
-					)}
 					<div className="flex-1 overflow-auto">
 						<textarea
 							value={rawContent}
@@ -201,38 +146,11 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({
 	return (
 		<div className={`@@void-scope ${isDark ? 'dark' : ''}`} style={{ width: '100%', height: '100%' }}>
 			<div className="flex flex-col h-full bg-void-bg-3 text-void-fg-1">
-				{/* Build button toolbar */}
-				{onBuild && (
-					<div className="flex items-center justify-end px-4 py-2 border-b border-void-border-3/30">
-						<button
-							onClick={handleBuildClick}
-							disabled={isBuilding || isDirty}
-							className="
-								flex items-center gap-2 px-3 py-1.5
-								bg-void-accent hover:bg-void-accent/90
-								text-white font-medium text-sm rounded
-								disabled:opacity-50 disabled:cursor-not-allowed
-								transition-all duration-150
-							"
-							title={isDirty ? "Save plan before building" : "Send plan to agent and start execution"}
-						>
-							{isBuilding ? (
-								<>
-									<div className="animate-spin rounded-full h-3 w-3 border-2 border-white border-t-transparent"></div>
-									<span>Building...</span>
-								</>
-							) : (
-								<>
-									<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-										<polygon points="5 3 19 12 5 21 5 3"></polygon>
-									</svg>
-									<span>Build</span>
-								</>
-							)}
-						</button>
-					</div>
-				)}
-				<div className="flex-1 overflow-auto">
+				<div
+					ref={scrollRef}
+					onScroll={handleScroll}
+					className="flex-1 overflow-auto relative"
+				>
 					<article
 						className="
 							max-w-4xl mx-auto px-12 py-12
@@ -385,6 +303,28 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({
 							isLinkDetectionEnabled={true}
 						/>
 					</article>
+
+					{/* Interactive checklist. The markdown article above has its
+					    "## Implementation Checklist" section stripped (see
+					    stripChecklistSection) so this is the only rendering of it. */}
+					<PlanChecklist
+						rawContent={rawContent}
+						onContentChange={handleContentChange}
+					/>
+
+					{/* Scroll-fade affordance: pointer-events-none gradient overlay at
+					    the bottom edge, opacity driven by scroll position so it only
+					    appears when there's more content below. */}
+					{showFade && (
+						<div
+							className="sticky bottom-0 left-0 right-0 h-8 pointer-events-none transition-opacity duration-150"
+							style={{
+								background: 'linear-gradient(to top, var(--vscode-editor-background), transparent)',
+								opacity: showFade ? 1 : 0,
+							}}
+							aria-hidden
+						/>
+					)}
 				</div>
 			</div>
 		</div>

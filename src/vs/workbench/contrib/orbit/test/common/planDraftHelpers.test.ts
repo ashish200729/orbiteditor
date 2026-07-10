@@ -12,6 +12,7 @@ import {
 	isPlanFilePath,
 	parsePlanSectionTitles,
 	preparePlanDraftSave,
+	resolvePlanModeEditDecision,
 	syncPlanChecklistToThreadTodos,
 	updateDraftFromPlanContent,
 } from '../../common/planDraftHelpers.js';
@@ -84,6 +85,21 @@ suite('planDraftHelpers', () => {
 		assert.ok(isPlanFilePath('/workspace/.void/plans/2026-01-01-plan.md'));
 		assert.ok(isPlanFilePath('/workspace/.void/plans/foo.md', '/workspace/.void/plans/foo.md'));
 		assert.ok(!isPlanFilePath('/workspace/src/index.ts'));
+	});
+
+	test('resolvePlanModeEditDecision routes edits correctly (plan-mode guard)', () => {
+		// Unsaved draft wins over everything — edits go to the in-memory draft.
+		assert.strictEqual(resolvePlanModeEditDecision('/workspace/src/index.ts', true, null), 'draft');
+		assert.strictEqual(resolvePlanModeEditDecision('/workspace/.void/plans/foo.md', true, '/workspace/.void/plans/foo.md'), 'draft');
+		// No draft, target is the linked plan file → allowed on disk.
+		assert.strictEqual(resolvePlanModeEditDecision('/workspace/.void/plans/foo.md', false, '/workspace/.void/plans/foo.md'), 'plan-file');
+		// No draft, target is any .void/plans/*.md → allowed (matches the plan dir).
+		assert.strictEqual(resolvePlanModeEditDecision('/workspace/.void/plans/2026-01-01-x.md', false, null), 'plan-file');
+		// No draft, target is a source file → blocked (the headline bug fix).
+		assert.strictEqual(resolvePlanModeEditDecision('/workspace/src/index.ts', false, null), 'blocked');
+		assert.strictEqual(resolvePlanModeEditDecision('/workspace/src/index.ts', false, '/workspace/.void/plans/foo.md'), 'blocked');
+		// No draft, no thread (linkedPath null) — arbitrary path blocked.
+		assert.strictEqual(resolvePlanModeEditDecision('/etc/passwd', false, null), 'blocked');
 	});
 
 	test('preparePlanDraftSave generates timestamped filename', () => {

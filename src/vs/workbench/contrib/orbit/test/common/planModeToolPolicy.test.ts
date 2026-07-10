@@ -17,14 +17,29 @@ suite('PlanModeToolPolicy', () => {
 		assert.ok(!names.includes('mark_plan_item_complete'));
 	});
 
-	test('plan mode includes task and plan editing tools', () => {
+	test('plan mode includes plan authoring tools but NOT file-editing tools', () => {
 		const tools = availableTools('plan', undefined) ?? [];
 		const names = tools.map(t => t.name);
+		// Plan authoring + research tools ARE available.
 		assert.ok(names.includes('task'));
 		assert.ok(names.includes('create_plan'));
 		assert.ok(names.includes('read_plan'));
-		assert.ok(names.includes('StrReplace'));
-		assert.ok(names.includes('Write'));
+		// File-editing tools are NOT available — the agent must use create_plan to
+		// author a plan, never edit code directly in plan mode.
+		assert.ok(!names.includes('StrReplace'), 'StrReplace must NOT be available in plan mode (forces create_plan)');
+		assert.ok(!names.includes('Write'), 'Write must NOT be available in plan mode (forces create_plan)');
+	});
+
+	test('plan mode excludes every mutating tool (defense-in-depth contract)', () => {
+		// The agent in plan mode must only research + author plans. No file edits,
+		// no shell, no legacy plan mutation tools. This is the tool-list half of
+		// the contract; the runtime half is the StrReplace/Write/Shell guard in
+		// toolsService.ts (resolvePlanModeEditDecision + _isPlanMode checks).
+		const tools = availableTools('plan', undefined) ?? [];
+		const names = tools.map(t => t.name);
+		for (const blocked of ['StrReplace', 'Write', 'Shell', 'AwaitShell', 'update_plan_section', 'add_plan_todo', 'mark_plan_item_complete']) {
+			assert.ok(!names.includes(blocked as any), `${blocked} must NOT be available in plan mode`);
+		}
 	});
 
 	test('legacy plan tools are llm hidden globally', () => {

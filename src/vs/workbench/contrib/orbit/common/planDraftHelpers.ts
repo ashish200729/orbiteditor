@@ -47,6 +47,34 @@ export function isPlanFilePath(fsPath: string, linkedPlanPath?: string | null): 
 	return /\/\.void\/plans\/[^/]+\.md$/.test(normalized);
 }
 
+/**
+ * Pure decision for the plan-mode edit guard in toolsService.ts. Returns one of:
+ *  - 'draft'     — an unsaved plan draft exists; the edit should be applied to
+ *                  the in-memory draft via `_applyPlanDraftEdit`.
+ *  - 'plan-file' — no unsaved draft, but the target path IS the linked/saved
+ *                  plan file (or any `.void/plans/*.md`); the edit may proceed
+ *                  against the file on disk.
+ *  - 'blocked'   — the target is neither the draft nor a plan file; the tool
+ *                  must throw "Plan mode only allows editing the plan."
+ *
+ * Extracted so the guard's scoping logic is unit-testable without instantiating
+ * the full ToolsService. The `hasUnsavedDraft` argument is computed by the
+ * caller from the thread's plan draft (so this helper stays pure / synchronous).
+ */
+export function resolvePlanModeEditDecision(
+	fsPath: string,
+	hasUnsavedDraft: boolean,
+	linkedPlanPath: string | null | undefined,
+): 'draft' | 'plan-file' | 'blocked' {
+	if (hasUnsavedDraft) {
+		return 'draft';
+	}
+	if (isPlanFilePath(fsPath, linkedPlanPath)) {
+		return 'plan-file';
+	}
+	return 'blocked';
+}
+
 export function buildPlanContentFromDraft(
 	draft: PlanDraft,
 	status: PlanStatus = 'planning',
@@ -116,9 +144,14 @@ export function updateDraftFromPlanContent(
 		parsedTodos = parseTodosFromMarkdown(checklistContent || planMarkdown);
 	}
 	const now = new Date().toISOString();
+	// Re-derive the overview from the parsed section so StrReplace/Write edits to
+	// the "## Overview" section propagate. Only fall back to the existing draft's
+	// overview when the section is genuinely empty (e.g. a plan with no overview).
+	const derivedOverview = parsed.sections.overview?.trim() || null;
+	const overview = derivedOverview ?? existingDraft?.overview ?? null;
 	return {
 		name: parsed.metadata.title || existingDraft?.name || extractPlanTitleFromMarkdown(planMarkdown) || 'Implementation Plan',
-		overview: existingDraft?.overview ?? null,
+		overview,
 		planMarkdown,
 		todos: parsedTodos.map(t => ({ id: t.id, content: t.content })),
 		createdAt: existingDraft?.createdAt ?? parsed.metadata.created ?? now,
@@ -188,5 +221,24 @@ export function createPlanDraftFromParams(
 		createdAt: existingDraft?.createdAt ?? now,
 		updatedAt: now,
 		savedPlanPath: existingDraft?.savedPlanPath,
+	};
+}
+
+/**
+ * Shapes the result object returned by the `create_plan` tool. Extracted as a
+ * pure helper so the result shape is unit-testable without instantiating the
+ * full ToolsService.
+ */
+export function buildCreatePlanResult(
+	draft: PlanDraft,
+	overview: string | null,
+	todos: PlanTodoItem[],
+): { planPath: string; planName: string; isDraft: true; overview: string; todos: PlanTodoItem[] } {
+	return {
+		planPath: draft.savedPlanPath ?? '',
+		planName: draft.name,
+		isDraft: true as const,
+		overview: overview ?? '',
+		todos,
 	};
 }

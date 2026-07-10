@@ -6,6 +6,7 @@
 import { Disposable, IDisposable } from '../../../../base/common/lifecycle.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
+import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { URI } from '../../../../base/common/uri.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
@@ -13,7 +14,7 @@ import { IChatThreadService } from './chatThreadService.js';
 import { registerSingleton, InstantiationType } from '../../../../platform/instantiation/common/extensions.js';
 import { normalizeTodoList, stableTodoListKey } from '../common/todoToolHelpers.js';
 import { planFileLock } from '../common/planFileLock.js';
-import { buildPlanContentFromTodos } from '../common/planTodoSyncHelpers.js';
+import { buildPlanContentFromTodos, getPlanChecklistIds, isFullTodoIdTurnover, shouldNotifyPlanSyncFailureOnce } from '../common/planTodoSyncHelpers.js';
 
 export const IPlanTodoSyncService = createDecorator<IPlanTodoSyncService>('planTodoSyncService');
 
@@ -43,9 +44,11 @@ export interface IPlanTodoSyncService {
 	/**
 	 * Fires after the service has written the plan file as part of syncing thread
 	 * todos. Consumers (e.g. PlanEditorInput) can use this to suppress
-	 * reload-on-self-write handling.
+	 * reload-on-self-write handling. The payload includes the written content so
+	 * consumers can do a content-hash equality check instead of relying on a
+	 * wall-clock ignore window.
 	 */
-	readonly onDidWritePlan: Event<{ planPath: string }>;
+	readonly onDidWritePlan: Event<{ planPath: string; content: string }>;
 }
 
 export class PlanTodoSyncService extends Disposable implements IPlanTodoSyncService {
@@ -54,17 +57,23 @@ export class PlanTodoSyncService extends Disposable implements IPlanTodoSyncServ
 	private watchers = new Map<string, IDisposable>();
 	private debounceTimers = new Map<string, NodeJS.Timeout>();
 	private lastSyncedTodos = new Map<string, string>(); // threadId -> JSON string of todos
+	// Per-thread consecutive sync-failure tracking for the notify-once-per-streak
+	// plumbing (fix #3). Reset to 0 on a successful sync.
+	private syncFailureCounts = new Map<string, number>();
+	private syncFailureNotified = new Map<string, boolean>();
 	// Phase 1.3/H2 fix: drop the single-slot `currentWatchedThreadId` global so multiple
 	// threads can be watched concurrently. `this.watchers` Map is the source of truth.
 
 	// Emitted after a successful sync write so PlanEditorInput can suppress its
-	// reload-on-self-write handling.
-	private readonly _onDidWritePlan = new Emitter<{ planPath: string }>();
-	readonly onDidWritePlan: Event<{ planPath: string }> = this._onDidWritePlan.event;
+	// reload-on-self-write handling. The content is included so consumers can do
+	// a content-hash equality check, not just a wall-clock ignore window.
+	private readonly _onDidWritePlan = new Emitter<{ planPath: string; content: string }>();
+	readonly onDidWritePlan: Event<{ planPath: string; content: string }> = this._onDidWritePlan.event;
 
 	constructor(
 		@IFileService private readonly fileService: IFileService,
-		@IChatThreadService private readonly chatThreadService: IChatThreadService
+		@IChatThreadService private readonly chatThreadService: IChatThreadService,
+		@INotificationService private readonly notificationService: INotificationService,
 	) {
 		super();
 	}
@@ -103,9 +112,19 @@ export class PlanTodoSyncService extends Disposable implements IPlanTodoSyncServ
 			// Phase 2.1 (H1) fix: wrap the read-modify-write in planFileLock so concurrent
 			// add_plan_todo / mark_plan_item_complete tool calls cannot race and overwrite
 			// each other's writes.
+			let turnoverNotified = false;
 			await planFileLock.withLock(planPath, async () => {
 				const fileContent = await this.fileService.readFile(planUri);
 				const planContent = fileContent.value.toString();
+				// Safety net for the todo-id reconciliation fix: if the incoming ids have
+				// zero overlap with the ids currently in the plan file's checklist, the
+				// agent most likely ignored the reuse-id instruction. Still write (never
+				// discard the LLM's intent) but surface a one-shot notification so the user
+				// can review the plan file.
+				const onDiskIds = getPlanChecklistIds(planContent);
+				if (isFullTodoIdTurnover(onDiskIds, normalizedTodos)) {
+					turnoverNotified = true;
+				}
 				// Phase 3 (M18) fix: use the shared helper rather than the previous inline
 				// implementation, so this service cannot drift from the helper's behavior.
 				const updatedContent = buildPlanContentFromTodos(planContent, normalizedTodos);
@@ -120,13 +139,36 @@ export class PlanTodoSyncService extends Disposable implements IPlanTodoSyncServ
 				// Update last synced state only after a successful write
 				this.lastSyncedTodos.set(threadId, currentTodosJson);
 				// Notify subscribers (e.g. PlanEditorInput) that we just wrote the plan
-				// so they can suppress their own reload-on-self-write handling.
-				this._onDidWritePlan.fire({ planPath });
+				// so they can suppress their own reload-on-self-write handling. Include
+				// the content so they can match on a hash, not just a time window.
+				this._onDidWritePlan.fire({ planPath, content: updatedContent });
 				console.log(`[PlanTodoSync] Synced ${normalizedTodos.length} todos to plan: ${planPath}`);
 			});
+
+			// Success: reset the per-thread failure streak.
+			this.syncFailureCounts.set(threadId, 0);
+			this.syncFailureNotified.set(threadId, false);
+
+			if (turnoverNotified) {
+				this.notificationService.warn(
+					'The assistant used new task ids while building this plan that do not match the original checklist. The plan file was updated with the assistant\'s task list — review it to confirm the work items still match your intent.'
+				);
+			}
 		} catch (error) {
 			console.error(`[PlanTodoSync] Failed to sync thread ${threadId} to plan:`, error);
-			// Silent error - no notification per user request
+			// Per-thread notify-once-per-streak plumbing (fix #3). The helpers were
+			// already defined in planTodoSyncHelpers.ts but never called; wire them up
+			// here so repeated silent sync failures finally surface to the user.
+			const prevCount = this.syncFailureCounts.get(threadId) ?? 0;
+			const nextCount = prevCount + 1;
+			this.syncFailureCounts.set(threadId, nextCount);
+			const alreadyNotified = this.syncFailureNotified.get(threadId) ?? false;
+			if (shouldNotifyPlanSyncFailureOnce(nextCount, alreadyNotified)) {
+				this.notificationService.warn(
+					`Failed to sync plan progress after ${nextCount} attempts. The plan file may be out of sync with the assistant's task list — check the plan file and your workspace for conflicts.`
+				);
+				this.syncFailureNotified.set(threadId, true);
+			}
 		}
 	}
 
@@ -204,6 +246,10 @@ export class PlanTodoSyncService extends Disposable implements IPlanTodoSyncServ
 
 		// Clear last synced state
 		this.lastSyncedTodos.delete(threadId);
+		// Clear per-thread sync-failure tracking so a thread that's re-watched
+		// later starts with a clean failure streak.
+		this.syncFailureCounts.delete(threadId);
+		this.syncFailureNotified.delete(threadId);
 	}
 
 	/**

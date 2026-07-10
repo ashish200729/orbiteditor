@@ -29,6 +29,17 @@ export function resolvePlanBuildButtonPhase(
 	return 'idle';
 }
 
+/**
+ * Pure predicate: true when a new Build can start for the given plan build
+ * state. Used by the BuildPlanDraftAction command to guard re-entrancy (e.g. a
+ * rapid double-click) without needing a new service API — the state machine
+ * already encodes "building" as the in-flight signal. A 'built' state is still
+ * startable (re-run); only an active 'building' blocks.
+ */
+export function canStartPlanBuild(planBuildState: PlanBuildState): boolean {
+	return planBuildState !== 'building';
+}
+
 export function usePlanBuildButtonPhase(
 	threadId: string | undefined,
 	opts?: { isSaving?: boolean; isStarting?: boolean },

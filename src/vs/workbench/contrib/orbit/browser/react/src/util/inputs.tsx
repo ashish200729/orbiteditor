@@ -726,7 +726,9 @@ export const VoidInputBox2 = forwardRef<HTMLTextAreaElement, InputBox2Props>(fun
 			<HighlightOverlay
 				textareaRef={textAreaRef}
 				text={liveText}
-				mirrorClassName={`void-chat-textarea w-full text-void-fg-1 ${className ?? ''}`}
+				/* Sizing/padding come from textarea computed styles — do not mirror
+				   layout utility classes or wrap width will diverge (selection/scroll desync). */
+				mirrorClassName="text-void-fg-1"
 			/>
 		)}
 		<textarea

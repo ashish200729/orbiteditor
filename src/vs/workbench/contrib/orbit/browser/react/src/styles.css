@@ -176,17 +176,34 @@
 	color: var(--void-slash-token-fg-muted);
 }
 
-/* Textarea mirror: real glyphs are transparent; overlay paints colored text */
+/* Textarea mirror: real glyphs are fully invisible (including native selection).
+   HighlightOverlay paints colored text + selection with box-decoration-break.
+   Native ::selection on transparent -webkit-text-fill is broken in Chromium
+   (overlapping/shattered line bars) — never rely on it here. */
 .void-chat-textarea--slash-mirror,
 .void-chat-textarea--slash-mirror:focus,
 .void-chat-textarea--slash-mirror:focus-visible {
 	color: transparent !important;
 	-webkit-text-fill-color: transparent !important;
+	/* Stable gutter so wrap width matches the overlay (no scrollbar jump). */
+	scrollbar-gutter: stable;
 }
-.void-chat-textarea--slash-mirror::selection {
-	color: var(--void-fg-1) !important;
-	-webkit-text-fill-color: var(--void-fg-1) !important;
-	background-color: var(--vscode-editor-selectionBackground, color-mix(in srgb, var(--void-link-color) 35%, transparent)) !important;
+.void-chat-textarea--slash-mirror::selection,
+.void-chat-textarea--slash-mirror::-moz-selection {
+	color: transparent !important;
+	-webkit-text-fill-color: transparent !important;
+	background-color: transparent !important;
+}
+
+/* Overlay-painted selection — clone per line box so multi-line select looks native */
+.void-slash-token-mirror-selection {
+	background-color: var(
+		--vscode-editor-selectionBackground,
+		color-mix(in srgb, var(--void-link-color) 40%, transparent)
+	);
+	-webkit-box-decoration-break: clone;
+	box-decoration-break: clone;
+	border-radius: 2px;
 }
 textarea.void-chat-textarea--slash-mirror:-webkit-autofill,
 textarea.void-chat-textarea--slash-mirror:-webkit-autofill:hover,
@@ -316,193 +333,6 @@ select:-webkit-autofill:focus {
 } */
 
 
-/* ============================================
-   Plan Mode Card Styling
-   ============================================ */
-
-.plan-card {
-	border-radius: 10px;
-	border: 1px solid var(--void-border-2);
-	background-color: var(--void-bg-2);
-	overflow: hidden;
-	transition: border-color 200ms ease, box-shadow 200ms ease;
-}
-
-.plan-card:hover {
-	border-color: var(--void-border-1);
-}
-
-/* Header row: icon + filename + actions */
-.plan-card-header {
-	display: flex;
-	align-items: center;
-	gap: 0.5rem;
-	padding: 0.625rem 0.875rem 0.5rem 0.875rem;
-	border-bottom: 1px solid var(--void-border-2);
-}
-
-.plan-card-filename {
-	color: var(--void-fg-3);
-	font-size: 11.5px;
-	line-height: 1;
-	flex: 1;
-	min-width: 0;
-}
-
-.plan-card-body {
-	padding: 0.75rem 0.875rem 0.625rem 0.875rem;
-	display: flex;
-	flex-direction: column;
-	gap: 0.625rem;
-}
-
-.plan-card-title {
-	color: var(--void-fg-0);
-	font-weight: 700;
-	font-size: 16px;
-	line-height: 1.25;
-	letter-spacing: -0.01em;
-}
-
-.plan-card-icon {
-	color: var(--void-fg-3);
-	transition: color 0.15s ease;
-}
-
-.plan-card:hover .plan-card-icon {
-	color: var(--void-fg-2);
-}
-
-.plan-card-icon-button {
-	color: var(--void-fg-3);
-	transition: color 0.15s ease, background-color 0.15s ease;
-}
-
-.plan-card-icon-button:hover {
-	color: var(--void-fg-1);
-	background-color: var(--void-bg-1);
-}
-
-.plan-card-overview {
-	color: var(--void-fg-2);
-	font-size: 12.5px;
-	line-height: 1.55;
-}
-
-.plan-card-todos-box {
-	border: 1px solid var(--void-border-2);
-	border-radius: 8px;
-	background-color: color-mix(in srgb, var(--void-bg-1) 60%, transparent);
-	padding: 0.625rem 0.875rem;
-	display: flex;
-	flex-direction: column;
-	gap: 0.5rem;
-}
-
-.plan-card-todos-header {
-	color: var(--void-fg-3);
-	font-size: 11px;
-	font-weight: 500;
-	letter-spacing: 0.01em;
-}
-
-.plan-card-todo-row {
-	display: flex;
-	align-items: flex-start;
-	gap: 0.625rem;
-	font-size: 13px;
-	line-height: 1.45;
-	color: var(--void-fg-1);
-}
-
-.plan-card-todo-bullet {
-	flex-shrink: 0;
-	width: 15px;
-	height: 15px;
-	border: 1.5px solid var(--void-fg-3);
-	border-radius: 50%;
-	margin-top: 2px;
-	display: inline-block;
-	transition: border-color 0.15s ease, background-color 0.15s ease;
-}
-
-.plan-card-todo-bullet.completed {
-	background-color: var(--void-fg-2);
-	border-color: var(--void-fg-2);
-}
-
-.plan-card-footer {
-	display: flex;
-	align-items: center;
-	justify-content: space-between;
-	gap: 0.5rem;
-	border-top: 1px solid var(--void-border-2);
-	padding: 0.5rem 0.875rem;
-}
-
-.plan-card-footer-actions {
-	display: flex;
-	align-items: center;
-	gap: 0.5rem;
-	min-width: 0;
-}
-
-/* Keyboard shortcut label inside the Build button */
-.plan-card-build-kbd {
-	display: inline-flex;
-	align-items: center;
-	font-size: 9.5px;
-	font-family: var(--vscode-editor-font-family, var(--monaco-monospace-font, monospace));
-	opacity: 0.7;
-	letter-spacing: 0.02em;
-	font-weight: 400;
-}
-
-.plan-card-error {
-	padding: 0.5rem 0.75rem;
-	border-top: 1px solid rgba(239, 68, 68, 0.2);
-	background-color: rgba(239, 68, 68, 0.1);
-}
-
-.plan-card-error span {
-	font-size: 10px;
-	color: #f87171;
-}
-
-.plan-card-file-link {
-	margin-top: 0.5rem;
-	padding-top: 0.5rem;
-	border-top: 1px solid var(--void-border-2);
-	cursor: pointer;
-	margin-left: -0.75rem;
-	margin-right: -0.75rem;
-	padding-left: 0.75rem;
-	padding-right: 0.75rem;
-	padding-bottom: 0.375rem;
-	display: flex;
-	align-items: center;
-	gap: 0.5rem;
-	color: var(--void-fg-3);
-	font-size: 10px;
-	transition: background-color 0.15s ease;
-}
-
-.plan-card-file-link:hover {
-	background-color: var(--void-bg-1);
-	color: var(--void-fg-2);
-}
-
-.plan-card-error {
-	padding: 0.5rem 0.75rem;
-	border-top: 1px solid rgba(239, 68, 68, 0.2);
-	background-color: rgba(239, 68, 68, 0.1);
-}
-
-.plan-card-error span {
-	font-size: 10px;
-	color: #f87171;
-}
-
 /* Sidebar chat stream error banner */
 .sidebar-chat-error {
 	border: 1px solid color-mix(in srgb, var(--vscode-inputValidation-errorBorder, #f14c4c) 42%, var(--void-border-2) 58%);
@@ -625,34 +455,6 @@ select:-webkit-autofill:focus {
 	background-color: var(--void-border-2);
 }
 
-/* Plan checklist styling */
-.plan-checklist {
-	display: flex;
-	flex-direction: column;
-	gap: 0.25rem;
-}
-
-.plan-checklist-item {
-	display: flex;
-	align-items: flex-start;
-	gap: 0.5rem;
-	font-size: 10px;
-}
-
-.plan-checklist-item input[type="checkbox"] {
-	margin-top: 0.125rem;
-	accent-color: #4ade80;
-}
-
-.plan-checklist-item.completed {
-	color: var(--void-fg-3);
-	text-decoration: line-through;
-}
-
-.plan-checklist-item.pending {
-	color: var(--void-fg-2);
-}
-
 /* Animated spinner for running state */
 @keyframes plan-spin {
 	from { transform: rotate(0deg); }
@@ -702,6 +504,21 @@ select:-webkit-autofill:focus {
 	gap: 0.375rem;
 	min-width: 0;
 	padding-inline: 0.25rem;
+}
+
+/* Allow the Save/Build labels to collapse (ellipsis) before the ModelDropdown
+   does, so controls stop getting clipped in the ~22px breadcrumb row at normal
+   widths. The dropdown keeps its own min-width via the className. */
+.plan-editor-breadcrumb-actions-inner > .plan-editor-btn {
+	min-width: 0;
+}
+
+.plan-editor-save-label,
+.plan-editor-build-label {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	min-width: 0;
 }
 
 .plan-editor-btn {
@@ -811,12 +628,6 @@ select:-webkit-autofill:focus {
 
 .plan-editor-build-icon {
 	flex-shrink: 0;
-}
-
-.plan-editor-save-label,
-.plan-editor-build-label {
-	overflow: hidden;
-	text-overflow: ellipsis;
 }
 
 /* Keyboard shortcut hint (e.g. ⌘↵) inside the Build button */

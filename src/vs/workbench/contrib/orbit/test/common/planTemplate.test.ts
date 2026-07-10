@@ -18,6 +18,7 @@ import {
 	markTodoComplete,
 	parsePlanFile,
 	parseTodosFromMarkdown,
+	stripChecklistSection,
 	syncPlanStatus,
 	updatePlanSection,
 	updatePlanStatus,
@@ -105,6 +106,21 @@ suite('PlanTemplate', () => {
 	test('updatePlanStatus changes frontmatter status', () => {
 		const updated = updatePlanStatus(SAMPLE_PLAN, 'in-progress');
 		assert.ok(updated.includes('status: in-progress'));
+	});
+
+	test('stripChecklistSection removes the checklist heading and content but keeps other sections', () => {
+		const stripped = stripChecklistSection(SAMPLE_PLAN);
+		assert.ok(!stripped.includes('## Implementation Checklist'));
+		assert.ok(!stripped.includes('First task'));
+		assert.ok(!stripped.includes('Second task'));
+		assert.ok(stripped.includes('## Overview'));
+		assert.ok(stripped.includes('## Testing Strategy'));
+		assert.ok(stripped.includes('Run tests.'));
+	});
+
+	test('stripChecklistSection is a no-op when there is no checklist section', () => {
+		const noChecklist = '## Overview\n\nJust an overview.';
+		assert.strictEqual(stripChecklistSection(noChecklist), noChecklist);
 	});
 
 	test('generatePlanSlug normalizes names', () => {

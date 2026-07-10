@@ -10,5 +10,7 @@
 export const VOID_SLASH_TOKEN_TEXT = 'void-slash-token-text';
 export const VOID_SLASH_TOKEN_TEXT_MUTED = 'void-slash-token-text--muted';
 export const VOID_SLASH_TOKEN_MIRROR = 'void-slash-token-mirror';
+/** Custom selection highlight painted by HighlightOverlay (native ::selection is hidden). */
+export const VOID_SLASH_TOKEN_MIRROR_SELECTION = 'void-slash-token-mirror-selection';
 export const VOID_CHAT_TEXTAREA_SLASH_MIRROR = 'void-chat-textarea--slash-mirror';
 export const VOID_SLASH_MENU = 'void-slash-menu';

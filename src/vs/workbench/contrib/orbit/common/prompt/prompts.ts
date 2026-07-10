@@ -1243,16 +1243,17 @@ const normalModeToolNames: BuiltinToolName[] = [
 	'task',
 ]
 
-// Plan mode: read-only tools plus plan management tools. StrReplace/Write are intentionally
-// included so the model can edit the plan file directly per create_plan's own docs; scoping
-// them to only the plan file is not enforced at the tool level.
+// Plan mode: read-only research tools plus plan authoring tools only. The
+// agent MUST author plans via `create_plan` — it does NOT get StrReplace/Write
+// (so it cannot edit code or bypass planning) and does NOT get Shell/AwaitShell
+// (no system mutation). Editing a saved plan file is a user action done in the
+// Plan Editor UI, not an LLM tool call. The runtime guards in toolsService.ts
+// remain as defense-in-depth even though the tools are absent from this list.
 const planModeToolNames: BuiltinToolName[] = [
 	...readOnlyToolNames,
 	'TodoWrite',
 	'AskQuestion',
 	'task',
-	'StrReplace',
-	'Write',
 	'create_plan',
 	'read_plan',
 ]
