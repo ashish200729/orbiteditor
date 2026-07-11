@@ -13,9 +13,12 @@ on:
 
 jobs:
   build-windows:
-    name: Build Windows x64
+    name: Build Windows ${{ matrix.arch }}
     runs-on: windows-latest
     timeout-minutes: 120
+    strategy:
+      matrix:
+        arch: [x64, arm64]
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -30,28 +33,42 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Compile production build
+        run: NODE_OPTIONS="--max-old-space-size=8192" npm run gulp -- compile-build-with-mangling
+
+      - name: Compile extensions
+        run: |
+          NODE_OPTIONS="--max-old-space-size=8192" npm run gulp -- compile-non-native-extensions-build
+          NODE_OPTIONS="--max-old-space-size=8192" npm run gulp -- compile-extension-media-build
+
       - name: Build React components
         run: npm run buildreact:prod
 
-      - name: Build Windows x64
-        run: NODE_OPTIONS="--max-old-space-size=8192" npm run gulp -- vscode-win32-x64-min
+      - name: Minify VS Code
+        run: NODE_OPTIONS="--max-old-space-size=8192" npm run gulp -- minify-vscode
+
+      - name: Package Windows ${{ matrix.arch }}
+        run: NODE_OPTIONS="--max-old-space-size=8192" npm run gulp -- vscode-win32-${{ matrix.arch }}-min-ci
 
       - name: Create installer
-        run: npm run gulp -- vscode-win32-x64-inno-updater
+        run: |
+          npm run gulp -- vscode-win32-${{ matrix.arch }}-inno-updater
+          npm run gulp -- vscode-win32-${{ matrix.arch }}-system-setup
 
       - name: Rename installer
         shell: pwsh
         run: |
           $version = "${{ github.event.inputs.version || '0.1.0' }}"
-          if (Test-Path ".build/win32-x64/system-setup/*.exe") {
-            Get-ChildItem ".build/win32-x64/system-setup/*.exe" | Rename-Item -NewName "Orbit-$version-win32-x64-setup.exe"
+          $src = ".build/win32-${{ matrix.arch }}/system-setup/VSCodeSetup.exe"
+          if (Test-Path $src) {
+            Move-Item $src "Orbit-$version-win32-${{ matrix.arch }}-setup.exe"
           }
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
         with:
-          name: orbit-win32-x64
-          path: .build/win32-x64/system-setup/Orbit-*.exe
+          name: orbit-win32-${{ matrix.arch }}
+          path: Orbit-*-win32-${{ matrix.arch }}-setup.exe
           retention-days: 7
 
       - name: Upload to Release
@@ -59,7 +76,7 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           tag_name: v${{ github.event.inputs.version || '0.1.0' }}
-          files: .build/win32-x64/system-setup/Orbit-*.exe
+          files: Orbit-*-win32-${{ matrix.arch }}-setup.exe
           draft: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

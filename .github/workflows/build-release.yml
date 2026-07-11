@@ -117,9 +117,12 @@ jobs:
           path: Orbit-*.AppImage
 
   build-windows:
-    name: Build Windows
+    name: Build Windows ${{ matrix.arch }}
     runs-on: windows-latest
     timeout-minutes: 120
+    strategy:
+      matrix:
+        arch: [x64, arm64]
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -134,26 +137,39 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Compile production build
+        run: NODE_OPTIONS="--max-old-space-size=8192" npm run gulp -- compile-build-with-mangling
+
+      - name: Compile extensions
+        run: |
+          NODE_OPTIONS="--max-old-space-size=8192" npm run gulp -- compile-non-native-extensions-build
+          NODE_OPTIONS="--max-old-space-size=8192" npm run gulp -- compile-extension-media-build
+
       - name: Build React components
         run: npm run buildreact:prod
 
-      - name: Build Windows x64
-        run: NODE_OPTIONS="--max-old-space-size=8192" npm run gulp -- vscode-win32-x64-min
+      - name: Minify VS Code
+        run: NODE_OPTIONS="--max-old-space-size=8192" npm run gulp -- minify-vscode
+
+      - name: Package Windows ${{ matrix.arch }}
+        run: NODE_OPTIONS="--max-old-space-size=8192" npm run gulp -- vscode-win32-${{ matrix.arch }}-min-ci
 
       - name: Create installer
-        run: npm run gulp -- vscode-win32-x64-system-setup
+        run: |
+          npm run gulp -- vscode-win32-${{ matrix.arch }}-inno-updater
+          npm run gulp -- vscode-win32-${{ matrix.arch }}-system-setup
 
       - name: Rename installer
         shell: pwsh
         run: |
           $version = (Get-Content product.json | ConvertFrom-Json).orbitVersion
-          Move-Item ".build/win32-x64/system-setup/VSCodeSetup.exe" "Orbit-$version-win32-x64-setup.exe"
+          Move-Item ".build/win32-${{ matrix.arch }}/system-setup/VSCodeSetup.exe" "Orbit-$version-win32-${{ matrix.arch }}-setup.exe"
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
         with:
-          name: orbit-win32-x64
-          path: Orbit-*-win32-x64-setup.exe
+          name: orbit-win32-${{ matrix.arch }}
+          path: Orbit-*-win32-${{ matrix.arch }}-setup.exe
 
   create-release:
     name: Create GitHub Release
@@ -205,7 +221,8 @@ jobs:
           - Open the DMG and drag Orbit to Applications
           
           ### Windows
-          - Download `Orbit-${{ steps.version.outputs.version }}-win32-x64-setup.exe`
+          - **x64 (Intel/AMD):** Download `Orbit-${{ steps.version.outputs.version }}-win32-x64-setup.exe`
+          - **ARM64 (Surface/ARM PCs):** Download `Orbit-${{ steps.version.outputs.version }}-win32-arm64-setup.exe`
           - Run the installer
           
           ### Linux
@@ -268,11 +285,13 @@ jobs:
           ARGS=(--version "$VERSION" --tag "$TAG" --commit "${{ github.sha }}")
           DARWIN_ARM64=$(find artifacts -iname '*darwin-arm64*.dmg' | head -1 || true)
           DARWIN_X64=$(find artifacts -iname '*darwin-x64*.dmg' | head -1 || true)
-          WIN32=$(find artifacts -iname '*win32*x64*setup*.exe' | head -1 || true)
+          WIN32_X64=$(find artifacts -iname '*win32*x64*setup*.exe' | head -1 || true)
+          WIN32_ARM64=$(find artifacts -iname '*win32*arm64*setup*.exe' | head -1 || true)
           LINUX=$(find artifacts -iname '*linux*x64*.AppImage' | head -1 || true)
           [[ -n "$DARWIN_ARM64" ]] && ARGS+=(--asset "darwin-arm64=${DARWIN_ARM64}")
           [[ -n "$DARWIN_X64" ]] && ARGS+=(--asset "darwin-x64=${DARWIN_X64}")
-          [[ -n "$WIN32" ]] && ARGS+=(--asset "win32-x64=${WIN32}")
+          [[ -n "$WIN32_X64" ]] && ARGS+=(--asset "win32-x64=${WIN32_X64}")
+          [[ -n "$WIN32_ARM64" ]] && ARGS+=(--asset "win32-arm64=${WIN32_ARM64}")
           [[ -n "$LINUX" ]] && ARGS+=(--asset "linux-x64=${LINUX}")
           node scripts/update-latest-json.js "${ARGS[@]}"
 

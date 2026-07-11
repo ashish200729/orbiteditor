@@ -69,28 +69,32 @@ release_linux() {
 	)
 }
 
+release_win32() {
+	local arch="$1"
+	local file="Orbit-$VERSION-win32-$arch-setup.exe"
+	NODE_OPTIONS="--max-old-space-size=8192" npm run gulp -- compile-build-with-mangling
+	NODE_OPTIONS="--max-old-space-size=8192" npm run gulp -- compile-non-native-extensions-build
+	NODE_OPTIONS="--max-old-space-size=8192" npm run gulp -- compile-extension-media-build
+	npm run buildreact:prod
+	NODE_OPTIONS="--max-old-space-size=8192" npm run gulp -- minify-vscode
+	NODE_OPTIONS="--max-old-space-size=8192" npm run gulp -- "vscode-win32-${arch}-min-ci"
+	NODE_OPTIONS="--max-old-space-size=8192" npm run gulp -- "vscode-win32-${arch}-inno-updater"
+	NODE_OPTIONS="--max-old-space-size=8192" npm run gulp -- "vscode-win32-${arch}-system-setup"
+	mv ".build/win32-${arch}/system-setup/VSCodeSetup.exe" "$file"
+	FILES+=("$file")
+	ASSET_ARGS+=(--asset "win32-$arch=$file")
+}
+
 case "$PLATFORM" in
 	darwin-arm64) release_darwin arm64 ;;
 	darwin-x64) release_darwin x64 ;;
-	win32-x64)
-		NODE_OPTIONS="--max-old-space-size=8192" npm run gulp -- compile-build-with-mangling
-		NODE_OPTIONS="--max-old-space-size=8192" npm run gulp -- compile-non-native-extensions-build
-		NODE_OPTIONS="--max-old-space-size=8192" npm run gulp -- compile-extension-media-build
-		npm run buildreact:prod
-		NODE_OPTIONS="--max-old-space-size=8192" npm run gulp -- minify-vscode
-		NODE_OPTIONS="--max-old-space-size=8192" npm run gulp -- vscode-win32-x64-min-ci
-		NODE_OPTIONS="--max-old-space-size=8192" npm run gulp -- vscode-win32-x64-inno-updater
-		NODE_OPTIONS="--max-old-space-size=8192" npm run gulp -- vscode-win32-x64-system-setup
-		file="Orbit-$VERSION-win32-x64-setup.exe"
-		mv .build/win32-x64/system-setup/VSCodeSetup.exe "$file"
-		FILES+=("$file")
-		ASSET_ARGS+=(--asset "win32-x64=$file")
-		;;
+	win32-x64) release_win32 x64 ;;
+	win32-arm64) release_win32 arm64 ;;
 	linux-x64) release_linux x64 ;;
 	linux-arm64) release_linux arm64 ;;
 	*)
 		echo "Unknown platform: $PLATFORM" >&2
-		echo "Supported: darwin-arm64, darwin-x64, win32-x64, linux-x64, linux-arm64" >&2
+		echo "Supported: darwin-arm64, darwin-x64, win32-x64, win32-arm64, linux-x64, linux-arm64" >&2
 		exit 1
 		;;
 esac
