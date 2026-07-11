@@ -1,0 +1,5 @@
+2026-07-04 13:23:52.144 [info] Started local extension host with pid 20196.
+2026-07-04 13:23:52.177 [info] Started initializing default profile extensions in extensions installation folder. file:///c%3A/Users/Gaming/.orbit-editor/extensions
+2026-07-04 13:23:52.343 [info] ChatSessionStore: Migrating 0 chat sessions from storage service to file system
+2026-07-04 13:23:52.410 [info] Completed initializing default profile extensions in extensions installation folder. file:///c%3A/Users/Gaming/.orbit-editor/extensions
+2026-07-04 13:23:55.391 [info] [perf] Render performance baseline is 17ms

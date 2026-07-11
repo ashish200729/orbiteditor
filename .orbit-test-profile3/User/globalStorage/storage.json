@@ -1,0 +1,34 @@
+{
+    "telemetry.machineId": "2cfee9ae56e65b8c71b3d9a07320a8968c52b4a71dd9b6f1da6760f4aeddc99a",
+    "telemetry.sqmId": "{4EAEA79D-C4A2-4851-99B1-192D611116FC}",
+    "telemetry.devDeviceId": "4d421a3e-7681-45ab-9dac-34e1f1d5a72d",
+    "backupWorkspaces": {
+        "workspaces": [],
+        "folders": [],
+        "emptyWindows": [
+            {
+                "backupFolder": "1783147151745"
+            }
+        ]
+    },
+    "windowControlHeight": 35,
+    "profileAssociations": {
+        "workspaces": {},
+        "emptyWindows": {
+            "1783147151745": "__default__profile__"
+        }
+    },
+    "windowsState": {
+        "lastActiveWindow": {
+            "backupPath": "F:\\orbiteditor\\.orbit-test-profile3\\Backups\\1783147151745",
+            "uiState": {
+                "mode": 1,
+                "x": 200,
+                "y": 50,
+                "width": 1200,
+                "height": 800
+            }
+        },
+        "openedWindows": []
+    }
+}

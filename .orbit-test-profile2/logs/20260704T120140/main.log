@@ -1,0 +1,73 @@
+2026-07-04 12:01:40.899 [trace] PolicyConfiguration#initialize
+2026-07-04 12:01:40.900 [trace] PolicyConfiguration#updatePolicyDefinitions ["update.mode","update.channel","update.enableWindowsBackgroundUpdates","update.showReleaseNotes","http.useLocalProxyConfiguration","http.electronFetch","http.proxy","http.proxyStrictSSL","http.proxyKerberosServicePrincipal","http.noProxy","http.proxyAuthorization","http.proxySupport","http.systemCertificates","http.experimental.systemCertificatesV2","http.fetchAdditionalSupport","telemetry.telemetryLevel","telemetry.feedback.enabled","telemetry.enableTelemetry"]
+2026-07-04 12:01:40.900 [trace] NativePolicyService#_updatePolicyDefinitions - Found 3 policy definitions
+2026-07-04 12:01:40.900 [trace] [File Watcher (node.js)] Request to start watching: f:\orbiteditor\.orbit-test-profile2\User (excludes: <none>, includes: <all>, filter: <none>, correlationId: <none>),f:\orbiteditor\.orbit-test-profile2\User\settings.json (excludes: <none>, includes: <all>, filter: <none>, correlationId: <none>)
+2026-07-04 12:01:40.913 [trace] [File Watcher (node.js)] ignoring a path for watching who's stat info failed to resolve: f:\orbiteditor\.orbit-test-profile2\User\settings.json (error: Error: ENOENT: no such file or directory, stat 'f:\orbiteditor\.orbit-test-profile2\User\settings.json')
+2026-07-04 12:01:40.913 [trace] [File Watcher (node.js)] starting fs.watchFile() on f:\orbiteditor\.orbit-test-profile2\User\settings.json (correlationId: undefined)
+2026-07-04 12:01:40.913 [trace] NativePolicyService#_onDidPolicyChange - Updated policy values: {}
+2026-07-04 12:01:40.913 [trace] PolicyConfiguration#update ["update.mode","telemetry.telemetryLevel","telemetry.feedback.enabled"]
+2026-07-04 12:01:40.913 [trace] PolicyConfiguration#updatePolicyDefinitions []
+2026-07-04 12:01:40.913 [trace] PolicyConfiguration#update []
+2026-07-04 12:01:40.913 [debug] Starting VS Code
+2026-07-04 12:01:40.913 [debug] from: f:\Orbit-win32-x64\resources\app
+2026-07-04 12:01:40.913 [debug] args: {"_":[],"diff":false,"merge":false,"add":false,"remove":false,"goto":false,"new-window":false,"reuse-window":false,"wait":false,"user-data-dir":"F:\\orbiteditor\\.orbit-test-profile2","help":false,"list-extensions":false,"show-versions":false,"pre-release":false,"update-extensions":false,"version":false,"verbose":false,"log":["trace"],"status":false,"prof-startup":false,"no-cached-data":false,"prof-v8-extensions":false,"disable-extensions":false,"disable-lcd-text":false,"disable-gpu":false,"disable-chromium-sandbox":false,"sandbox":false,"telemetry":false,"debugRenderer":false,"enable-smoke-test-driver":false,"logExtensionHostCommunication":false,"skip-release-notes":false,"skip-welcome":false,"disable-telemetry":false,"disable-updates":false,"use-inmemory-secretstorage":false,"disable-workspace-trust":false,"disable-crash-reporter":false,"skip-add-to-recently-opened":false,"open-url":false,"file-write":false,"file-chmod":false,"force":false,"do-not-sync":false,"do-not-include-pack-dependencies":false,"trace":false,"trace-memory-infra":false,"preserve-env":false,"force-user-env":false,"force-disable-user-env":false,"open-devtools":true,"disable-gpu-sandbox":false,"__enable-file-policy":false,"enable-coi":false,"no-proxy-server":false,"no-sandbox":false,"nolazy":false,"force-renderer-accessibility":false,"ignore-certificate-errors":false,"allow-insecure-localhost":false,"disable-dev-shm-usage":false,"profile-temp":false,"logsPath":"F:\\orbiteditor\\.orbit-test-profile2\\logs\\20260704T120140"}
+2026-07-04 12:01:40.913 [trace] Resolving machine identifier...
+2026-07-04 12:01:40.913 [trace] [File Watcher (node.js)] Started watching: 'f:\orbiteditor\.orbit-test-profile2\User'
+2026-07-04 12:01:40.913 [trace] Resolved machine identifier: 2cfee9ae56e65b8c71b3d9a07320a8968c52b4a71dd9b6f1da6760f4aeddc99a
+2026-07-04 12:01:40.913 [trace] Main->SharedProcess#connect
+2026-07-04 12:01:40.913 [trace] PolicyConfiguration#updatePolicyDefinitions ["terminal.integrated.automationProfile.linux","terminal.integrated.automationProfile.osx","terminal.integrated.automationProfile.windows","terminal.integrated.profiles.windows","terminal.integrated.profiles.osx","terminal.integrated.profiles.linux","terminal.integrated.useWslProfiles","terminal.integrated.inheritEnv","terminal.integrated.persistentSessionScrollback","terminal.integrated.showLinkHover","terminal.integrated.ignoreProcessNames"]
+2026-07-04 12:01:40.913 [trace] PolicyConfiguration#updatePolicyDefinitions ["terminal.integrated.defaultProfile.linux","terminal.integrated.defaultProfile.osx","terminal.integrated.defaultProfile.windows"]
+2026-07-04 12:01:40.913 [trace] PolicyConfiguration#update []
+2026-07-04 12:01:40.913 [trace] PolicyConfiguration#update []
+2026-07-04 12:01:40.913 [trace] StorageMainService: creating application storage
+2026-07-04 12:01:40.913 [trace] ElectronURLListener: waiting for window to be ready to handle URLs...
+2026-07-04 12:01:40.913 [trace] lifecycle (main): phase changed (value: 2)
+2026-07-04 12:01:40.913 [trace] windowsManager#open
+2026-07-04 12:01:40.913 [trace] windowsManager#open pathsToOpen [{}]
+2026-07-04 12:01:40.913 [trace] windowsManager#doOpenEmpty {"restore":false,"forceNewWindow":false}
+2026-07-04 12:01:40.913 [trace] IPC Object URL: Registered new channel vscode:3a1637bf-6fa9-4a87-92b6-33a022d8035e.
+2026-07-04 12:01:40.913 [trace] window#validateWindowState: validating window state on 1 display(s) {"width":1200,"height":800,"mode":1,"x":200,"y":50,"hasDefaultState":true}
+2026-07-04 12:01:40.913 [trace] window#validateWindowState: single monitor working area {"x":0,"y":0,"width":1600,"height":852}
+2026-07-04 12:01:40.913 [trace] window#ctor: using window state {"width":1200,"height":800,"mode":1,"x":200,"y":50,"hasDefaultState":true}
+2026-07-04 12:01:40.913 [trace] window#load: attempt to load window (id: 1)
+2026-07-04 12:01:40.913 [trace] windowsManager#open used window count 1 (workspacesToOpen: 0, foldersToOpen: 0, emptyToRestore: 0, maybeOpenEmptyWindow: true)
+2026-07-04 12:01:40.913 [trace] lifecycle (main): phase changed (value: 3)
+2026-07-04 12:01:40.913 [trace] resolveShellEnv(): skipped (Windows)
+2026-07-04 12:01:40.913 [info] update#setState disabled
+2026-07-04 12:01:40.913 [info] update#ctor - updates are disabled as there is no update URL
+2026-07-04 12:01:40.945 [trace] [File Watcher (node.js)] [raw] ["change"] globalStorage
+2026-07-04 12:01:40.945 [trace] [File Watcher (node.js)] [CHANGED] f:\orbiteditor\.orbit-test-profile2\User\globalStorage
+2026-07-04 12:01:40.978 [trace] [File Watcher (node.js)] [raw] ["change"] globalStorage
+2026-07-04 12:01:40.978 [trace] [File Watcher (node.js)] [CHANGED] f:\orbiteditor\.orbit-test-profile2\User\globalStorage
+2026-07-04 12:01:40.988 [trace] resolveShellEnv(): skipped (Windows)
+2026-07-04 12:01:41.023 [trace] [File Watcher (node.js)]  >> normalized [CHANGED] f:\orbiteditor\.orbit-test-profile2\User\globalStorage
+2026-07-04 12:01:41.024 [debug] User data changed
+2026-07-04 12:01:41.042 [trace] [File Watcher (node.js)] [raw] ["change"] globalStorage
+2026-07-04 12:01:41.043 [trace] [File Watcher (node.js)] [CHANGED] f:\orbiteditor\.orbit-test-profile2\User\globalStorage
+2026-07-04 12:01:41.045 [trace] [File Watcher (node.js)] [raw] ["change"] globalStorage
+2026-07-04 12:01:41.045 [trace] [File Watcher (node.js)] [CHANGED] f:\orbiteditor\.orbit-test-profile2\User\globalStorage
+2026-07-04 12:01:41.063 [trace] [File Watcher (node.js)] [raw] ["change"] globalStorage
+2026-07-04 12:01:41.063 [trace] [File Watcher (node.js)] [CHANGED] f:\orbiteditor\.orbit-test-profile2\User\globalStorage
+2026-07-04 12:01:41.085 [trace] [File Watcher (node.js)] [raw] ["change"] globalStorage
+2026-07-04 12:01:41.085 [trace] [File Watcher (node.js)] [CHANGED] f:\orbiteditor\.orbit-test-profile2\User\globalStorage
+2026-07-04 12:01:41.118 [trace] [File Watcher (node.js)]  >> normalized [CHANGED] f:\orbiteditor\.orbit-test-profile2\User\globalStorage
+2026-07-04 12:01:41.118 [debug] User data changed
+2026-07-04 12:01:41.191 [trace] [File Watcher (node.js)] [raw] ["change"] globalStorage
+2026-07-04 12:01:41.191 [trace] [File Watcher (node.js)] [CHANGED] f:\orbiteditor\.orbit-test-profile2\User\globalStorage
+2026-07-04 12:01:41.272 [trace] [File Watcher (node.js)]  >> normalized [CHANGED] f:\orbiteditor\.orbit-test-profile2\User\globalStorage
+2026-07-04 12:01:41.272 [debug] User data changed
+2026-07-04 12:01:41.287 [trace] [File Watcher (node.js)] [raw] ["change"] globalStorage
+2026-07-04 12:01:41.287 [trace] [File Watcher (node.js)] [CHANGED] f:\orbiteditor\.orbit-test-profile2\User\globalStorage
+2026-07-04 12:01:41.365 [trace] [File Watcher (node.js)]  >> normalized [CHANGED] f:\orbiteditor\.orbit-test-profile2\User\globalStorage
+2026-07-04 12:01:41.365 [debug] User data changed
+2026-07-04 12:01:41.533 [trace] [File Watcher (node.js)] Request to stop watching: f:\orbiteditor\.orbit-test-profile2\User\settings.json (excludes: <none>, includes: <all>, filter: <none>, correlationId: <none>)
+2026-07-04 12:01:41.533 [trace] [File Watcher (node.js)] stopping file watcher (f:\orbiteditor\.orbit-test-profile2\User\settings.json (excludes: <none>, includes: <all>, filter: <none>, correlationId: <none>))
+2026-07-04 12:01:41.659 [trace] [File Watcher (node.js)] [raw] ["change"] globalStorage
+2026-07-04 12:01:41.660 [trace] [File Watcher (node.js)] [CHANGED] f:\orbiteditor\.orbit-test-profile2\User\globalStorage
+2026-07-04 12:01:41.692 [trace] [File Watcher (node.js)] [raw] ["change"] globalStorage
+2026-07-04 12:01:41.692 [trace] [File Watcher (node.js)] [CHANGED] f:\orbiteditor\.orbit-test-profile2\User\globalStorage
+2026-07-04 12:01:41.693 [trace] [File Watcher (node.js)] [raw] ["change"] globalStorage
+2026-07-04 12:01:41.693 [trace] [File Watcher (node.js)] [CHANGED] f:\orbiteditor\.orbit-test-profile2\User\globalStorage
+2026-07-04 12:01:41.749 [trace] [File Watcher (node.js)]  >> normalized [CHANGED] f:\orbiteditor\.orbit-test-profile2\User\globalStorage
+2026-07-04 12:01:41.749 [debug] User data changed
+2026-07-04 12:01:43.397 [trace] lifecycle (main): phase changed (value: 4)

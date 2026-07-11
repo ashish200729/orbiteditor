@@ -1,0 +1,4 @@
+2026-07-04 12:09:11.089 [info] update#setState disabled
+2026-07-04 12:09:11.089 [info] update#ctor - updates are disabled as there is no update URL
+2026-07-04 12:09:11.102 [error] Error: Error mutex already exists
+    at bf.S (file:///F:/Orbit-win32-x64/resources/app/out/main.js:1368:20096)

@@ -1,0 +1,64 @@
+{
+    "telemetry.machineId": "2cfee9ae56e65b8c71b3d9a07320a8968c52b4a71dd9b6f1da6760f4aeddc99a",
+    "telemetry.sqmId": "{4EAEA79D-C4A2-4851-99B1-192D611116FC}",
+    "telemetry.devDeviceId": "4d421a3e-7681-45ab-9dac-34e1f1d5a72d",
+    "backupWorkspaces": {
+        "workspaces": [],
+        "folders": [],
+        "emptyWindows": [
+            {
+                "backupFolder": "1783151630954"
+            }
+        ]
+    },
+    "windowControlHeight": 35,
+    "profileAssociations": {
+        "workspaces": {},
+        "emptyWindows": {
+            "1783151630954": "__default__profile__"
+        }
+    },
+    "theme": "vs-dark",
+    "themeBackground": "#181818",
+    "windowSplash": {
+        "zoomLevel": 0,
+        "baseTheme": "vs-dark",
+        "colorInfo": {
+            "foreground": "#e4e4e4",
+            "background": "#181818",
+            "editorBackground": "#181818",
+            "titleBarBackground": "#141414",
+            "titleBarBorder": "rgba(228, 228, 228, 0.07)",
+            "activityBarBackground": "#141414",
+            "activityBarBorder": "rgba(228, 228, 228, 0.07)",
+            "sideBarBackground": "#141414",
+            "sideBarBorder": "rgba(228, 228, 228, 0.07)",
+            "statusBarBackground": "#141414",
+            "statusBarBorder": "rgba(228, 228, 228, 0.07)",
+            "statusBarNoFolderBackground": "#141414"
+        },
+        "layoutInfo": {
+            "sideBarSide": "left",
+            "editorPartMinWidth": 220,
+            "titleBarHeight": 35,
+            "activityBarWidth": 44,
+            "sideBarWidth": 0,
+            "auxiliarySideBarWidth": 300,
+            "statusBarHeight": 22,
+            "windowBorder": false
+        }
+    },
+    "windowsState": {
+        "lastActiveWindow": {
+            "backupPath": "F:\\orbiteditor\\.orbit-test-profile7\\Backups\\1783151630954",
+            "uiState": {
+                "mode": 0,
+                "x": 200,
+                "y": 50,
+                "width": 1200,
+                "height": 800
+            }
+        },
+        "openedWindows": []
+    }
+}
