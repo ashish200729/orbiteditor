@@ -11,6 +11,20 @@ if [[ "$VERSION" != "$PRODUCT_VERSION" ]]; then
 	echo "Requested version $VERSION does not match product.json orbitVersion $PRODUCT_VERSION." >&2
 	exit 1
 fi
+
+# Keep package.json version aligned with orbitVersion (used by Windows installers and embedded app metadata)
+node <<NODE
+const fs = require('fs');
+const pkgPath = 'package.json';
+const target = '$VERSION';
+const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+if (pkg.version !== target) {
+	pkg.version = target;
+	fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n');
+	console.log('Synced package.json version → ' + target);
+}
+NODE
+
 TAG="v$VERSION"
 PLATFORM="${2:-darwin-arm64}"
 FILES=()

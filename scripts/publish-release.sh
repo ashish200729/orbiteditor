@@ -51,15 +51,21 @@ if [[ -z "${ORBIT_UPDATE_SIGNING_KEY:-}" && "${ALLOW_UNSIGNED_MANIFEST:-}" != "1
 	exit 1
 fi
 
-# Keep product.json in sync when an explicit version is passed
+# Keep product.json and package.json in sync when an explicit version is passed
 if [[ -n "${1:-}" ]]; then
 	node <<NODE
 const fs = require('fs');
 const productPath = 'product.json';
+const pkgPath = 'package.json';
 const product = JSON.parse(fs.readFileSync(productPath, 'utf8'));
-product.orbitVersion = '${VERSION}';
+const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+const target = '${VERSION}';
+product.orbitVersion = target;
+pkg.version = target;
 fs.writeFileSync(productPath, JSON.stringify(product, null, '\t') + '\n');
+fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n');
 console.log('Updated product.json orbitVersion → ${VERSION}');
+console.log('Updated package.json version → ${VERSION}');
 NODE
 fi
 
