@@ -499,18 +499,38 @@ export class BrowserEditorPane extends EditorPane {
 		// mid-split, pane just created) so the native view gets real bounds and can composite
 		// a first frame. The real bounds arrive via scheduleLayoutBrowserView() below; without
 		// a fallback the page loads hidden at zero size and stays blank until a manual reload.
-		const openBounds = this.contentBounds() ?? this.estimatedOpenBounds();
-		const state = await this.browserViewService.open(id, { url: input.url, homeUrl: input.homeUrl, bounds: openBounds });
-		if (token.isCancellationRequested) {
+		const realBounds = this.contentBounds();
+		const openBounds = realBounds ?? this.estimatedOpenBounds();
+		// When the content area is not laid out yet, open hidden so the native view does
+		// not flash at a guessed (0,0) full-window rect on top of the workbench.
+		const state = await this.browserViewService.open(id, {
+			url: input.url,
+			homeUrl: input.homeUrl,
+			bounds: openBounds,
+			keepHidden: !realBounds,
+		});
+		if (token.isCancellationRequested || this.currentInput()?.id !== id) {
 			// The user already switched to another editor while open() was in flight; open()
-			// made the view visible (initial bounds), so hide it again or it floats on top
-			// of whatever input replaced this one.
+			// may have sized the view, so hide it or it floats on top of whatever replaced
+			// this tab — the classic "blank white window" restore race.
 			this.browserViewService.setVisible(id, false).catch(() => { /* ignore */ });
 			return;
 		}
 		this.applyNavigationState(state);
 		this.lastSentBounds = undefined;
 		this.scheduleLayoutBrowserView();
+		// Wait one frame so layoutBrowserView can apply real bounds before revealing.
+		await new Promise<void>(resolve => {
+			mainWindow.requestAnimationFrame(() => mainWindow.requestAnimationFrame(() => resolve()));
+		});
+		if (token.isCancellationRequested || this.currentInput()?.id !== id) {
+			this.browserViewService.setVisible(id, false).catch(() => { /* ignore */ });
+			return;
+		}
+		if (!this.isAuthoritativeForNativeView()) {
+			this.browserViewService.setVisible(id, false).catch(() => { /* ignore */ });
+			return;
+		}
 		this.browserViewService.setVisible(id, true);
 		this.browserViewService.bringToFront(id);
 		this.syncBrowserTheme();
@@ -559,6 +579,10 @@ export class BrowserEditorPane extends EditorPane {
 		const input = this.input;
 		if (input instanceof BrowserEditorInput) {
 		if (visible) {
+			if (!this.isAuthoritativeForNativeView()) {
+				this.browserViewService.setVisible(input.id, false).catch(() => { /* ignore */ });
+				return;
+			}
 			this.browserActiveKey.set(true);
 			this.lastSentBounds = undefined;
 			this.scheduleLayoutBrowserView();
@@ -618,6 +642,16 @@ export class BrowserEditorPane extends EditorPane {
 		return this.contentBounds();
 	}
 
+	/** True when this pane owns the active browser tab and the content area is laid out. */
+	private isAuthoritativeForNativeView(): boolean {
+		const input = this.currentInput();
+		if (!input || this.group.activeEditor !== input) {
+			return false;
+		}
+		const bounds = this.contentBounds();
+		return !!bounds && bounds.width > 0 && bounds.height > 0;
+	}
+
 	/** Current viewport-relative bounds of the content area, or `undefined` if not laid out yet. */
 	private contentBounds(): IBrowserViewBounds | undefined {
 		if (!this.content) {
@@ -645,8 +679,9 @@ export class BrowserEditorPane extends EditorPane {
 				return { x: hostRect.left, y: hostRect.top, width: hostRect.width, height: hostRect.height };
 			}
 		}
-		// Last-resort fallback: a reasonable default viewport so the view is never zero-size.
-		return { x: 0, y: 0, width: 1280, height: 800 };
+		// Last-resort fallback: tiny hidden rect at the origin. Never use a large (0,0)
+		// viewport — a visible native WebContentsView at that rect covers the workbench.
+		return { x: 0, y: 0, width: 1, height: 1 };
 	}
 
 	private applyNavigationState(state: INavigationState): void {

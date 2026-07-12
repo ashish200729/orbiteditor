@@ -5,6 +5,7 @@
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { getConnectedDocument, getConnectedWindow } from '../../contexts/ConnectedWindowContext.js';
 
 export type ToolHoverPreviewItem = {
 	name: React.ReactNode;
@@ -45,13 +46,16 @@ export const ToolHoverPreview = ({
 		const el = anchorRef.current;
 		if (!el) return;
 		const rect = el.getBoundingClientRect();
+		// Resolve the window this anchor is actually painted in (the pop-out when hosted there),
+		// so viewport clamping uses the correct dimensions.
+		const win = getConnectedWindow(el);
 
 		let left = Math.max(8, rect.left);
-		if (left + POPUP_WIDTH > window.innerWidth - 8) {
-			left = Math.max(8, window.innerWidth - POPUP_WIDTH - 8);
+		if (left + POPUP_WIDTH > win.innerWidth - 8) {
+			left = Math.max(8, win.innerWidth - POPUP_WIDTH - 8);
 		}
 
-		const spaceBelow = window.innerHeight - rect.bottom;
+		const spaceBelow = win.innerHeight - rect.bottom;
 		const showAbove = spaceBelow < POPUP_MAX_HEIGHT && rect.top > POPUP_MAX_HEIGHT;
 		const top = showAbove ? rect.top - 4 : rect.bottom + 4;
 
@@ -74,12 +78,13 @@ export const ToolHoverPreview = ({
 
 	useEffect(() => {
 		if (!isOpen) return;
+		const win = getConnectedWindow(anchorRef.current);
 		const onScroll = () => updatePosition();
-		window.addEventListener('scroll', onScroll, true);
-		window.addEventListener('resize', onScroll);
+		win.addEventListener('scroll', onScroll, true);
+		win.addEventListener('resize', onScroll);
 		return () => {
-			window.removeEventListener('scroll', onScroll, true);
-			window.removeEventListener('resize', onScroll);
+			win.removeEventListener('scroll', onScroll, true);
+			win.removeEventListener('resize', onScroll);
 		};
 	}, [isOpen, updatePosition]);
 
@@ -140,7 +145,7 @@ export const ToolHoverPreview = ({
 				)}
 			</div>
 		</div>,
-		document.body,
+		getConnectedDocument(anchorRef.current).body,
 	) : null;
 
 	return (

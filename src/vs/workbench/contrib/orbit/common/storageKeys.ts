@@ -22,3 +22,10 @@ export const THREAD_STORAGE_KEY = 'void.chatThreadStorageII'
 export const OPT_OUT_KEY = 'void.app.optOutAll'
 
 export const GITHUB_AUTH_STORAGE_KEY = 'orbit.githubAuth.credentials'
+
+/**
+ * Persists the pty-host ids of agent-window terminal tabs so they can be
+ * reattached after an IDE reload. Stores a JSON array of
+ * `{ id, title, cwd, workspaceFolderUri }` entries.
+ */
+export const AGENT_WINDOW_TERMINAL_STORAGE_KEY = 'orbit.agentWindow.terminals'

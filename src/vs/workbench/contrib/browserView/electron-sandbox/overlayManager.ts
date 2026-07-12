@@ -4,11 +4,14 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { Disposable, DisposableStore, toDisposable } from '../../../../base/common/lifecycle.js';
+import { addDisposableListener } from '../../../../base/browser/dom.js';
+import { mainWindow } from '../../../../base/browser/window.js';
 import { IWorkbenchContribution } from '../../../common/contributions.js';
 import { IContextViewService } from '../../../../platform/contextview/browser/contextView.js';
 import { IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
 import { IQuickInputService } from '../../../../platform/quickinput/common/quickInput.js';
 import { IEditorService } from '../../../services/editor/common/editorService.js';
+import { ILifecycleService, LifecyclePhase } from '../../../services/lifecycle/common/lifecycle.js';
 import { IBrowserViewBounds, IBrowserViewService } from '../../../../platform/browserView/common/browserView.js';
 import { BROWSER_VIEW_REEVALUATE_VISIBILITY_EVENT, BrowserEditorPane } from './browserEditorPane.js';
 import { BrowserEditorInput } from './browserEditorInput.js';
@@ -59,6 +62,7 @@ export class BrowserViewOverlayManager extends Disposable implements IWorkbenchC
 	private readonly appliedPaused = new WeakMap<BrowserEditorPane, boolean>();
 	private overlayUpdateTimer: ReturnType<typeof setTimeout> | undefined;
 	private forceNextUpdate = false;
+	private resizeSweepTimer: ReturnType<typeof setTimeout> | undefined;
 
 	constructor(
 		@IContextViewService private readonly contextViewService: IContextViewService,
@@ -66,6 +70,7 @@ export class BrowserViewOverlayManager extends Disposable implements IWorkbenchC
 		@IQuickInputService quickInputService: IQuickInputService,
 		@IEditorService private readonly editorService: IEditorService,
 		@IBrowserViewService private readonly browserViewService: IBrowserViewService,
+		@ILifecycleService private readonly lifecycleService: ILifecycleService,
 	) {
 		super();
 
@@ -102,12 +107,49 @@ export class BrowserViewOverlayManager extends Disposable implements IWorkbenchC
 		this._register(this.editorService.onDidEditorsChange(() => this.trackBrowserInputs()));
 		this.trackBrowserInputs();
 
+		// Safety net: a background browser tab's native view must never stay visible
+		// after restore races (setInput in flight while the active editor changes).
+		this._register(this.editorService.onDidActiveEditorChange(() => this.hideInactiveBrowserViews()));
+		this.hideInactiveBrowserViews();
+		this.scheduleRestoreVisibilitySweeps();
+
+		this._register(addDisposableListener(mainWindow, 'resize', () => this.scheduleResizeSweep()));
+
 		this._register(toDisposable(() => {
 			if (this.overlayUpdateTimer) {
 				clearTimeout(this.overlayUpdateTimer);
 				this.overlayUpdateTimer = undefined;
 			}
+			if (this.resizeSweepTimer) {
+				clearTimeout(this.resizeSweepTimer);
+				this.resizeSweepTimer = undefined;
+			}
 		}));
+	}
+
+	/** Re-hide background browser tabs during the first seconds after restore. */
+	private scheduleRestoreVisibilitySweeps(): void {
+		void this.lifecycleService.when(LifecyclePhase.Restored).then(() => {
+			const sweep = () => this.hideInactiveBrowserViews();
+			sweep();
+			mainWindow.requestAnimationFrame(() => {
+				sweep();
+				setTimeout(sweep, 100);
+				setTimeout(sweep, 500);
+				setTimeout(sweep, 2000);
+				setTimeout(sweep, 5000);
+			});
+		});
+	}
+
+	private scheduleResizeSweep(): void {
+		if (this.resizeSweepTimer) {
+			clearTimeout(this.resizeSweepTimer);
+		}
+		this.resizeSweepTimer = setTimeout(() => {
+			this.resizeSweepTimer = undefined;
+			this.hideInactiveBrowserViews();
+		}, 50);
 	}
 
 	private onContextViewShown(): void {
@@ -123,6 +165,21 @@ export class BrowserViewOverlayManager extends Disposable implements IWorkbenchC
 			const rect = element.getBoundingClientRect();
 			return rect.width > 0 && rect.height > 0 ? rect : undefined;
 		});
+	}
+
+	/** Hide native views for browser tabs that are not the active editor (restore-race safety). */
+	private hideInactiveBrowserViews(): void {
+		const active = this.editorService.activeEditor;
+		const activeId = active instanceof BrowserEditorInput ? active.id : undefined;
+		for (const editor of this.editorService.editors) {
+			if (!(editor instanceof BrowserEditorInput)) {
+				continue;
+			}
+			if (editor.id === activeId) {
+				continue;
+			}
+			this.browserViewService.setVisible(editor.id, false).catch(() => { /* ignore */ });
+		}
 	}
 
 	private trackBrowserInputs(): void {
@@ -163,18 +220,18 @@ export class BrowserViewOverlayManager extends Disposable implements IWorkbenchC
 				return;
 			}
 			const bounds = this.estimatePreloadBounds();
+			if (!bounds) {
+				// No laid-out browser pane yet — skip preload. Opening at a guessed (0,0)
+				// full-window rect leaves a native WebContentsView covering the workbench
+				// if it ever becomes visible (restore race), producing a blank white window.
+				return;
+			}
 			await this.browserViewService.open(editor.id, {
 				url: editor.url,
 				homeUrl: editor.homeUrl,
 				bounds,
 				keepHidden: true,
 			});
-			// Deliberately NO setVisible(false) here. `open(keepHidden:true)` already creates a
-			// NEW view hidden and leaves an already-open view's visibility untouched, so a hide
-			// call is redundant — and it raced the active pane. The pane opens the same id in
-			// parallel and calls setVisible(true); a trailing hide from this preload frequently
-			// landed AFTER it, leaving the visible tab hidden = black content area. If the tab
-			// became active while we were opening, the pane is now the visibility authority.
 			if (isActiveNow()) {
 				return;
 			}
@@ -183,15 +240,20 @@ export class BrowserViewOverlayManager extends Disposable implements IWorkbenchC
 		}
 	}
 
-	/** Prefer the active browser pane's content size; fall back to a usable default. */
-	private estimatePreloadBounds(): IBrowserViewBounds {
+	/** Bounds from a laid-out browser pane, or `undefined` when none is ready yet. */
+	private estimatePreloadBounds(): IBrowserViewBounds | undefined {
 		for (const pane of visibleBrowserPanes(this.editorService)) {
 			const b = pane.getContentBounds();
 			if (b && b.width > 0 && b.height > 0) {
-				return { x: 0, y: 0, width: Math.round(b.width), height: Math.round(b.height) };
+				return {
+					x: Math.round(b.x),
+					y: Math.round(b.y),
+					width: Math.round(b.width),
+					height: Math.round(b.height),
+				};
 			}
 		}
-		return { x: 0, y: 0, width: 1280, height: 800 };
+		return undefined;
 	}
 
 	private setOverlay(source: OverlaySource, region: OverlayRegion | undefined): void {

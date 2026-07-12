@@ -9,6 +9,7 @@ import { Disposable, DisposableStore, toDisposable } from '../../../base/common/
 import { isMacintosh } from '../../../base/common/platform.js';
 import { ILogService } from '../../log/common/log.js';
 import { IWindowsMainService } from '../../windows/electron-main/windows.js';
+import { IAuxiliaryWindowsMainService } from '../../auxiliaryWindow/electron-main/auxiliaryWindows.js';
 import {
 	BrowserViewId,
 	IBrowserViewBounds,
@@ -84,6 +85,12 @@ interface IBrowserViewEntry {
 	canGoForward: boolean;
 	/** Desired visibility as requested by the renderer (active pane + overlay state). */
 	visible: boolean;
+	/**
+	 * Preload/background opens keep the native view hidden until the owning pane
+	 * explicitly calls `setVisible(true)`. Prevents restore races where a sized but
+	 * inactive tab's white `about:blank` surface composites over the workbench.
+	 */
+	holdHidden: boolean;
 	/**
 	 * True once DevTools is open for this entry's window. Docked DevTools resizes the
 	 * *inspected page's own* viewport without moving the window-relative coordinate
@@ -177,10 +184,22 @@ export class BrowserViewMainService extends Disposable {
 
 	private readonly views = new Map<BrowserViewId, IBrowserViewEntry>();
 	private readonly windowDevToolsTracking = new Map<number, DisposableStore>();
+	/**
+	 * Windows we've already attached a native `closed` reaper to (see
+	 * {@link ensureWindowCloseTracking}). `onDidDestroyWindow` above only
+	 * covers MAIN windows — `IAuxiliaryWindowsMainService` exposes no destroy
+	 * event, so without this, closing the Agents pop-out while a Browser panel
+	 * is open leaks its `WebContentsView` (and the renderer process behind it):
+	 * cleanup relied entirely on the renderer's `close(id)` IPC call landing
+	 * before the aux window's webContents were torn down, which teardown
+	 * ordering does not guarantee.
+	 */
+	private readonly closeTrackedWindows = new Set<number>();
 
 	constructor(
 		@IWindowsMainService private readonly windowsMainService: IWindowsMainService,
 		@ILogService private readonly logService: ILogService,
+		@IAuxiliaryWindowsMainService private readonly auxiliaryWindowsMainService: IAuxiliaryWindowsMainService,
 	) {
 		super();
 		this._register(this.windowsMainService.onDidDestroyWindow(window => {
@@ -212,10 +231,13 @@ export class BrowserViewMainService extends Disposable {
 	async open(windowId: number, id: BrowserViewId, options: IBrowserViewOpenOptions): Promise<INavigationState> {
 		const existing = this.views.get(id);
 		if (existing) {
-			// NOTE: this branch deliberately never toggles `visible`. In particular
-			// `options.keepHidden` is ignored for an already-open view: a background
-			// preload must not hide a tab that the active pane is showing. The active
-			// pane is the sole authority on visibility (it calls setVisible(true/false)).
+			// NOTE: this branch deliberately never toggles `visible` for an already-visible
+			// tab. A background preload may set `holdHidden` so the view stays suppressed
+			// until the active pane calls `setVisible(true)`.
+			if (options.keepHidden === true && !existing.visible) {
+				existing.holdHidden = true;
+				this.applyVisibility(existing);
+			}
 			if (existing.windowId !== windowId) {
 				this.detachFromWindow(existing);
 				existing.windowId = windowId;
@@ -275,6 +297,7 @@ export class BrowserViewMainService extends Disposable {
 			canGoBack: false,
 			canGoForward: false,
 			visible: false,
+			holdHidden: options.keepHidden === true,
 			devToolsSuppressed: false,
 			initialLayoutDone: false,
 			lastBounds: undefined,
@@ -367,6 +390,7 @@ export class BrowserViewMainService extends Disposable {
 		// Preload path: size the surface so Chromium can composite, but stay hidden
 		// until the editor pane reveals this tab. Visible path: show immediately so
 		// the first navigation paints live (avoids blank-until-reload).
+		entry.holdHidden = keepHidden;
 		entry.visible = !keepHidden;
 		this.applyBoundsToView(entry, bounds);
 		entry.initialLayoutDone = true;
@@ -784,10 +808,17 @@ export class BrowserViewMainService extends Disposable {
 		if (!entry) {
 			return;
 		}
-		const wasVisible = entry.visible && !entry.devToolsSuppressed;
+		if (visible) {
+			if (entry.holdHidden && this.isUnsafeFullscreenBounds(entry)) {
+				this.logService.warn(`[browserView] Suppressed unsafe fullscreen show for ${id} (awaiting editor layout)`);
+				return;
+			}
+			entry.holdHidden = false;
+		}
+		const wasVisible = entry.visible && !entry.devToolsSuppressed && !entry.holdHidden;
 		entry.visible = visible;
 		this.applyVisibility(entry);
-		const isVisible = entry.visible && !entry.devToolsSuppressed;
+		const isVisible = entry.visible && !entry.devToolsSuppressed && !entry.holdHidden;
 		if (isVisible && !wasVisible) {
 			this.bringToFrontInternal(entry, true);
 			if (entry.lastBounds) {
@@ -802,7 +833,29 @@ export class BrowserViewMainService extends Disposable {
 	}
 
 	private applyVisibility(entry: IBrowserViewEntry): void {
-		entry.view.setVisible(entry.visible && !entry.devToolsSuppressed);
+		entry.view.setVisible(entry.visible && !entry.devToolsSuppressed && !entry.holdHidden);
+	}
+
+	/**
+	 * Detects a native view parked at the window origin covering nearly the entire
+	 * content area — the signature of a restore race / guessed-bounds preload.
+	 */
+	private isUnsafeFullscreenBounds(entry: IBrowserViewEntry): boolean {
+		const bounds = entry.lastBounds;
+		if (!bounds || bounds.width <= 0 || bounds.height <= 0) {
+			return false;
+		}
+		const win = this.getWindow(entry.windowId);
+		if (!win) {
+			return false;
+		}
+		const content = win.getContentBounds();
+		if (content.width <= 0 || content.height <= 0) {
+			return false;
+		}
+		const atOrigin = bounds.x <= 8 && bounds.y <= 8;
+		const coversWindow = bounds.width >= content.width * 0.9 && bounds.height >= content.height * 0.9;
+		return atOrigin && coversWindow && content.width > 480 && content.height > 320;
 	}
 
 	async focus(_windowId: number, id: BrowserViewId): Promise<void> {
@@ -1053,7 +1106,35 @@ export class BrowserViewMainService extends Disposable {
 	}
 
 	private getWindow(windowId: number): BrowserWindow | undefined {
-		return this.windowsMainService.getWindowById(windowId)?.win ?? undefined;
+		const main = this.windowsMainService.getWindowById(windowId)?.win;
+		if (main) {
+			return main;
+		}
+		// The standalone Agents window is an auxiliary window (its own BrowserWindow) that
+		// hosts browser tabs. Its `vscodeWindowId` is the aux webContents id — the same key
+		// AuxiliaryWindowsMainService uses — so resolve it here so `attachToWindow` can add
+		// the WebContentsView to the pop-out's contentView instead of failing to find it.
+		for (const aux of this.auxiliaryWindowsMainService.getWindows()) {
+			if (aux.id === windowId) {
+				return aux.win ?? undefined;
+			}
+		}
+		return undefined;
+	}
+
+	private ensureWindowCloseTracking(win: BrowserWindow, windowId: number): void {
+		if (this.closeTrackedWindows.has(windowId)) {
+			return;
+		}
+		this.closeTrackedWindows.add(windowId);
+		win.once('closed', () => {
+			this.closeTrackedWindows.delete(windowId);
+			for (const entry of Array.from(this.views.values())) {
+				if (entry.windowId === windowId) {
+					entry.disposables.dispose();
+				}
+			}
+		});
 	}
 
 	private attachToWindow(entry: IBrowserViewEntry): void {
@@ -1062,6 +1143,7 @@ export class BrowserViewMainService extends Disposable {
 			this.logService.warn(`[browserView] Cannot attach ${entry.id}: window ${entry.windowId} not found`);
 			return;
 		}
+		this.ensureWindowCloseTracking(win, entry.windowId);
 		if (entry.parentView) {
 			this.detachFromWindow(entry);
 		}

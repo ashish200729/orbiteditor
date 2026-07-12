@@ -205,8 +205,12 @@ class EditCodeService extends Disposable implements IEditCodeService {
 		// this function initializes data structures and listens for changes
 		const registeredModelURIs = new Set<string>()
 		const initializeModel = async (model: ITextModel) => {
-
-			await this._voidModelService.initializeModel(model.uri)
+			try {
+				await this._voidModelService.initializeModel(model.uri)
+			} catch {
+				// Model may be unreadable (binary, deleted, etc.) — skip Orbit tracking for it.
+				return
+			}
 
 			// do not add listeners to the same model twice - important, or will see duplicates
 			if (registeredModelURIs.has(model.uri.fsPath)) return
@@ -1154,7 +1158,13 @@ class EditCodeService extends Disposable implements IEditCodeService {
 	public async callBeforeApplyOrEdit(givenURI: URI | 'current') {
 		const uri = this._uriOfGivenURI(givenURI)
 		if (!uri) return
-		await this._voidModelService.initializeModel(uri)
+		try {
+			await this._voidModelService.initializeModel(uri)
+		} catch {
+			// Same tolerance as the onModelAdded path above — initializeModel can
+			// now reject for non-"file not found" errors; don't let that surface
+			// as an unhandled rejection here and abort the whole apply/edit.
+		}
 		await this._voidModelService.saveModel(uri) // save the URI
 	}
 

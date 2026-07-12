@@ -14,9 +14,26 @@ import { isLinux } from '../../../../../../../base/common/platform.js';
 const OVERRIDE_VALUE = false
 
 export const VoidOnboarding = () => {
+	const accessor = useAccessor()
+	const voidSettingsService = accessor.get('IVoidSettingsService')
 	const voidSettingsState = useSettingsState()
+	const [settingsReady, setSettingsReady] = useState(false)
 	const isOnboardingComplete = voidSettingsState.globalSettings.isOnboardingComplete || OVERRIDE_VALUE
 	const isDark = useIsDark()
+
+	useEffect(() => {
+		let disposed = false
+		void voidSettingsService.waitForInitState.then(() => {
+			if (!disposed) {
+				setSettingsReady(true)
+			}
+		})
+		return () => { disposed = true }
+	}, [voidSettingsService])
+
+	if (!settingsReady) {
+		return null
+	}
 
 	return (
 		<div className={`@@void-scope ${isDark ? 'dark' : ''}`}>

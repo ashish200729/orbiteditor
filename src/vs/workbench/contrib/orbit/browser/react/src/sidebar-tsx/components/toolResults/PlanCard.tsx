@@ -4,8 +4,8 @@
  *--------------------------------------------------------------------------------------------*/
 
 import React, { useEffect, useMemo, useState } from 'react';
-import { AnimatePresence, motion } from 'framer-motion';
 import { ChevronDown, FolderDown, ListChecks } from 'lucide-react';
+import { CollapsibleSection } from '../wrappers/CollapsibleSection.js';
 import { URI } from '../../../../../../../../../base/common/uri.js';
 import { ToolChildrenWrapper } from '../toolWrappers/ToolChildrenWrapper.js';
 import { EditToolCardWrapper } from '../editTool/EditToolCardWrapper.js';
@@ -169,23 +169,15 @@ export const PlanCard = ({
 					</div>
 				</div>
 
-				{/* Body */}
-				<AnimatePresence initial={false}>
-					{!collapsed && (
-						<motion.div
-							key="plan-card-body"
-							initial={{ height: 0, opacity: 0 }}
-							animate={{ height: 'auto', opacity: 1 }}
-							exit={{ height: 0, opacity: 0 }}
-							transition={{ duration: 0.2, ease: 'easeOut' }}
-							className="overflow-hidden border-t"
-							style={{ borderColor: 'rgba(var(--vscode-void-border-3-rgb, 64, 64, 64), 0.15)' }}
-						>
-							<motion.div
-								initial={{ opacity: 0 }}
-								animate={{ opacity: 1 }}
-								transition={{ duration: 0.18, ease: 'easeOut', delay: 0.04 }}
-								className="flex flex-col gap-2 px-2.5 pt-2.5 pb-2"
+				{/* Body — window-agnostic collapse (framer height:'auto' measures via the
+				    main-window getComputedStyle and hides content in the Agents pop-out). */}
+				<CollapsibleSection isOpen={!collapsed} duration={0.2}>
+					<div
+						className="border-t"
+						style={{ borderColor: 'rgba(var(--vscode-void-border-3-rgb, 64, 64, 64), 0.15)' }}
+					>
+						<div
+								className="orbit-card-enter flex flex-col gap-2 px-2.5 pt-2.5 pb-2"
 							>
 								<h3 className="text-void-fg-0 text-[13px] font-semibold leading-tight tracking-tight m-0">
 									{displayTitle}
@@ -235,7 +227,7 @@ export const PlanCard = ({
 										This plan has no overview or steps yet. Open the plan to add detail.
 									</p>
 								)}
-							</motion.div>
+							</div>
 
 							{/* Footer */}
 							<div
@@ -258,9 +250,8 @@ export const PlanCard = ({
 									/>
 								</div>
 							</div>
-						</motion.div>
-					)}
-				</AnimatePresence>
+					</div>
+				</CollapsibleSection>
 			</EditToolCardWrapper>
 		</ToolChildrenWrapper>
 	);

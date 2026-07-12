@@ -4,6 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { useState, useEffect, useCallback, useRef, RefObject } from 'react';
+import { getConnectedWindow } from '../../util/connectedWindow.js';
 
 /**
  * Hook for sticky user messages.
@@ -122,11 +123,13 @@ export const useStickyUserMessages = (
 		updateStickyMessageRef.current();
 	});
 
-	// Window resize + unmount cleanup.
+	// Window resize + unmount cleanup. Bind to the window the scroll container is painted in
+	// (the pop-out when hosted there) so a pop-out resize recomputes sticky offsets.
 	useEffect(() => {
-		window.addEventListener('resize', handler, { passive: true });
+		const win = getConnectedWindow(attachedElRef.current);
+		win.addEventListener('resize', handler, { passive: true });
 		return () => {
-			window.removeEventListener('resize', handler);
+			win.removeEventListener('resize', handler);
 			if (rafIdRef.current !== null) {
 				cancelAnimationFrame(rafIdRef.current);
 			}

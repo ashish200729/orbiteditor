@@ -4,7 +4,6 @@
  *--------------------------------------------------------------------------------------------*/
 
 import React from 'react';
-import { motion } from 'framer-motion';
 import { ToolMessage } from '../../../../../../common/chatThreadServiceTypes.js';
 import { ToolName } from '../../../../../../common/toolsServiceTypes.js';
 import { useChatThreadsStreamState } from '../../../util/services.js';
@@ -66,11 +65,7 @@ export const PendingToolRequest = ({ toolMessage, threadId }: { toolMessage: Too
 	);
 
 	return (
-		<motion.div
-			initial={{ opacity: 0, y: 4 }}
-			animate={{ opacity: 1, y: 0 }}
-			transition={{ duration: 0.2, ease: 'easeOut' }}
-		>
+		<div className="orbit-card-enter">
 			<ToolApprovalCardShell
 				header={header}
 				isActive={isActive}
@@ -86,6 +81,6 @@ export const PendingToolRequest = ({ toolMessage, threadId }: { toolMessage: Too
 			>
 				<ToolApprovalPreview toolMessage={toolMessage} />
 			</ToolApprovalCardShell>
-		</motion.div>
+		</div>
 	);
 };

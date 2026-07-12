@@ -11,6 +11,7 @@ import { listSkills, onSkillsChanged } from '../../../../../common/skillRegistry
 import type { SkillDefinition } from '../../../../../common/orbitSkillTypes.js';
 import { listSlashCategories } from './registry.js';
 import { isSubsequence, scoreSubsequence } from './fuzzy.js';
+import { getConnectedDocument, focusInConnectedWindow } from '../helpers.js';
 import type { SlashCategoryId, SlashMenuItem, SlashProviderContext } from './types.js';
 
 const TOP_PER_CATEGORY = 3;
@@ -58,8 +59,8 @@ export const useSlashMenu = ({ accessor, enabled, textAreaRef, onChangeText, adj
 		placement: 'bottom',
 		middleware: [
 			offset({ mainAxis: 2, crossAxis: 2 }),
-			flip({ boundary: document.body, padding: 8 }),
-			shift({ boundary: document.body, padding: 8 }),
+			flip({ boundary: getConnectedDocument(textAreaRef.current).body, padding: 8 }),
+			shift({ boundary: getConnectedDocument(textAreaRef.current).body, padding: 8 }),
 			size({
 				apply({ elements, rects }) {
 					const refW = rects.reference.width;
@@ -68,7 +69,7 @@ export const useSlashMenu = ({ accessor, enabled, textAreaRef, onChangeText, adj
 					setMenuWidth(w);
 				},
 				padding: 8,
-				boundary: document.body,
+				boundary: getConnectedDocument(textAreaRef.current).body,
 			}),
 		],
 		whileElementsMounted: autoUpdate,
@@ -171,7 +172,7 @@ export const useSlashMenu = ({ accessor, enabled, textAreaRef, onChangeText, adj
 		const after = val.slice(end);
 		ta.value = before + replacement + after;
 		const newPos = (before + replacement).length;
-		ta.focus();
+		focusInConnectedWindow(ta);
 		ta.setSelectionRange(newPos, newPos);
 		onChangeText?.(ta.value);
 		adjustHeight();
@@ -239,8 +240,9 @@ export const useSlashMenu = ({ accessor, enabled, textAreaRef, onChangeText, adj
 				close();
 			}
 		};
-		document.addEventListener('mousedown', handle);
-		return () => document.removeEventListener('mousedown', handle);
+		const menuDoc = getConnectedDocument(textAreaRef.current);
+		menuDoc.addEventListener('mousedown', handle);
+		return () => menuDoc.removeEventListener('mousedown', handle);
 	}, [isOpen, refs.floating, refs.reference, close]);
 
 	// Memoize the returned object so the consumer's useCallbacks (onInput/onChange/onKeyDown

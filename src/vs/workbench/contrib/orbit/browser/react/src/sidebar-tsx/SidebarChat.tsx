@@ -15,6 +15,8 @@ import { isFeatureNameDisabled } from '../../../../common/orbitSettingsTypes.js'
 import { isABuiltinToolName } from '../../../../common/prompt/prompts.js';
 
 import { TextAreaFns, VoidInputBox2 } from '../util/inputs.js';
+import { focusInConnectedWindow } from '../util/helpers.js';
+import { getConnectedWindow } from '../util/connectedWindow.js';
 import { VOID_CTRL_L_ACTION_ID } from '../../../actionIDs.js';
 import { VOID_OPEN_SETTINGS_ACTION_ID } from '../../../orbitSettingsPane.js';
 
@@ -102,6 +104,7 @@ export const SidebarChat = () => {
 
 	const accessor = useAccessor()
 	const commandService = accessor.get('ICommandService')
+	const agentWindowService = accessor.get('IAgentWindowService')
 	const chatThreadsService = accessor.get('IChatThreadService')
 
 	const settingsState = useSettingsState()
@@ -199,7 +202,7 @@ export const SidebarChat = () => {
 		setSelections([]) // clear staging
 		setImages([]) // clear images
 		textAreaFnsRef.current?.setValue('')
-		textAreaRef.current?.focus() // focus input after submit
+		focusInConnectedWindow(textAreaRef.current) // focus input after submit (keeps Agents pop-out frontmost)
 
 	}, [chatThreadsService, isDisabled, isRunning, textAreaRef, textAreaFnsRef, setSelections, settingsState, images])
 
@@ -374,8 +377,19 @@ export const SidebarChat = () => {
 	const chatAreaRef = useRef<HTMLDivElement | null>(null)
 
 	const handleBrowserButtonClick = useCallback(() => {
-		commandService.executeCommand('simpleBrowser.show', 'https://www.google.com')
-	}, [commandService])
+		const url = 'https://www.google.com'
+		// When this composer is rendered inside the agents pop-out window, open the
+		// browser in that window's own right-side workspace column instead of a
+		// Simple Browser editor in the main IDE. Detect the agents window by the
+		// composer's connected window differing from the main renderer window.
+		const node = chatAreaRef.current
+		const inAgentWindow = !!node && getConnectedWindow(node) !== window && agentWindowService.isOpen()
+		if (inAgentWindow) {
+			agentWindowService.requestWorkspacePanel('browser', url)
+			return
+		}
+		commandService.executeCommand('simpleBrowser.show', url)
+	}, [commandService, agentWindowService])
 
 	const inputChatArea = <VoidChatArea
 		featureName='Chat'
@@ -387,7 +401,7 @@ export const SidebarChat = () => {
 		// showProspectiveSelections={previousMessagesHTML.length === 0}
 		selections={selections}
 		setSelections={setSelections}
-		onClickAnywhere={() => { textAreaRef.current?.focus() }}
+		onClickAnywhere={() => { focusInConnectedWindow(textAreaRef.current) }}
 		divRef={chatAreaRef}
 		imageButton={
 			<>
@@ -417,6 +431,7 @@ export const SidebarChat = () => {
 			onDrop={dragHandlers.handleDrop}
 		>
 			<VoidInputBox2
+				isThreadComposer
 				enableAtToMention
 				enableSlashCommands
 className={`min-h-[40px] px-0.5 py-0.5 resize-none placeholder:text-void-fg-4`}

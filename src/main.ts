@@ -330,7 +330,7 @@ function configureCommandlineSwitchesSync(cliArgs: NativeParsedArgs) {
 		`FontMatchingCTMigration,StandardizedBrowserZoom,${app.commandLine.getSwitchValue('disable-blink-features')}`;
 	app.commandLine.appendSwitch('disable-blink-features', blinkFeaturesToDisable);
 
-	// Support JS Flags
+	// Support JS Flags (V8/Chromium flags only — never pass Node.js flags here).
 	const jsFlags = getJSFlags(cliArgs);
 	if (jsFlags) {
 		app.commandLine.appendSwitch('js-flags', jsFlags);

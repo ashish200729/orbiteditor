@@ -9,9 +9,11 @@ import { ChatMessage, StagingSelectionItem, TodoItem } from '../../../../../../c
 import { parseSlashTokenNames } from '../../../../../../common/slashCommands/slashTokens.js';
 import { TodoMessageAttachment } from '../toolResults/todo/TodoMessageAttachment.js';
 import { useAccessor } from '../../../util/services.js';
+import { focusInConnectedWindow } from '../../../util/helpers.js';
 import { VoidInputBox2, TextAreaFns } from '../../../util/inputs.js';
 import { SlashTokenContent } from '../../../util/slashMenu/SlashTokenContent.js';
 import { VoidChatArea } from '../chat/orbitChatArea.js';
+import { useConnectedDocument } from '../../contexts/ConnectedWindowContext.js';
 import { SelectedFiles } from '../files/SelectedFiles.js';
 import { IconX } from '../icons/IconX.js';
 import { Checkpoint } from '../chatComponents/Checkpoint.js';
@@ -34,9 +36,11 @@ export const UserMessageComponent = React.memo(({ chatMessage, messageIdx, isChe
 
 	const accessor = useAccessor()
 	const chatThreadsService = accessor.get('IChatThreadService')
+	const connectedDocument = useConnectedDocument()
 
 	// global state
 	let isBeingEdited = false
+	let editingWindowId: number | undefined
 	let stagingSelections: StagingSelectionItem[] = []
 	let setIsBeingEdited = (_: boolean) => { }
 	let setStagingSelections = (_: StagingSelectionItem[]) => { }
@@ -44,14 +48,24 @@ export const UserMessageComponent = React.memo(({ chatMessage, messageIdx, isChe
 	if (messageIdx !== undefined) {
 		const _state = chatThreadsService.getCurrentMessageState(messageIdx)
 		isBeingEdited = _state.isBeingEdited
+		editingWindowId = _state.editingWindowId
 		stagingSelections = _state.stagingSelections
-		setIsBeingEdited = (v) => chatThreadsService.setCurrentMessageState(messageIdx, { isBeingEdited: v })
+		setIsBeingEdited = (v) => chatThreadsService.setCurrentMessageState(messageIdx, {
+			isBeingEdited: v,
+			editingWindowId: v
+				? (connectedDocument.defaultView as (Window & { vscodeWindowId?: number }) | null)?.vscodeWindowId
+				: undefined,
+		})
 		setStagingSelections = (s) => chatThreadsService.setCurrentMessageState(messageIdx, { stagingSelections: s })
 	}
 
 
 	// local state
-	const mode: ChatBubbleMode = isBeingEdited ? 'edit' : 'display'
+	const connectedWindowId = (connectedDocument.defaultView as (Window & { vscodeWindowId?: number }) | null)?.vscodeWindowId
+	// The same message is rendered in the IDE and Agents window. Only the window
+	// that initiated editing should replace its bubble with the inline editor.
+	const isBeingEditedHere = isBeingEdited && (editingWindowId === undefined || editingWindowId === connectedWindowId)
+	const mode: ChatBubbleMode = isBeingEditedHere ? 'edit' : 'display'
 	const [isFocused, setIsFocused] = useState(false)
 	const [isHovered, setIsHovered] = useState(false)
 	const [isDisabled, setIsDisabled] = useState(false)
@@ -91,7 +105,14 @@ export const UserMessageComponent = React.memo(({ chatMessage, messageIdx, isChe
 			if (textAreaFnsRef.current)
 				textAreaFnsRef.current.setValue(chatMessage.displayContent || '')
 
-			textAreaRefState.focus();
+			// focusInConnectedWindow (not a bare .focus()) so entering edit mode inside the
+			// Agents pop-out keeps that window frontmost instead of raising the main IDE window.
+			// Both the IDE sidebar and Agents window observe the shared edit flag.
+			// Only the surface where the user clicked Edit may claim focus; the other
+			// mounted copy still initializes so it remains consistent and usable.
+			if (_justEnabledEdit.current) {
+				focusInConnectedWindow(textAreaRefState);
+			}
 
 			_justEnabledEdit.current = false
 			_mustInitialize.current = false
@@ -263,8 +284,16 @@ export const UserMessageComponent = React.memo(({ chatMessage, messageIdx, isChe
 			} catch (e) {
 				console.error('Error while editing message:', e)
 			}
-			await chatThreadsService.focusCurrentChat()
-			requestAnimationFrame(() => scrollActions?.scrollToTurnAnchor())
+			// Focus the composer in the same connected document. A thread can be
+			// mounted in the IDE and Agents window simultaneously, so the service's
+			// legacy single mounted ref is not sufficient to choose the right surface.
+			connectedDocument.defaultView?.requestAnimationFrame(() => {
+				const composer = connectedDocument.querySelector<HTMLTextAreaElement>(
+					'textarea[data-orbit-thread-composer="true"]',
+				)
+				focusInConnectedWindow(composer)
+				scrollActions?.scrollToTurnAnchor()
+			})
 		}
 
 		const onAbort = async () => {

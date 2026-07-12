@@ -8,6 +8,8 @@ import { createPortal } from 'react-dom';
 import { Check, X } from 'lucide-react';
 import { ChatMessage } from '../../../../../../common/chatThreadServiceTypes.js';
 import { useAccessor, useChatThreadsStreamState, useIsDark, useToolProgressOverlay } from '../../../util/services.js';
+import { useConnectedDocument } from '../../contexts/ConnectedWindowContext.js';
+import { focusInConnectedWindow } from '../../../util/helpers.js';
 import { TextShimmer } from '../../../util/TextShimmer.js';
 import { ButtonStop } from '../buttons/ButtonStop.js';
 import { ChatBubble } from '../chatComponents/ChatBubble.js';
@@ -229,6 +231,9 @@ export const SubAgentPopup = ({
 	onStop,
 }: SubAgentPopupProps) => {
 	const isDark = useIsDark();
+	// The document this popup is painted in (pop-out when hosted there). Portal, global listeners
+	// and activeElement checks must use this rather than the global (main-window) document.
+	const doc = useConnectedDocument();
 	const streamState = useChatThreadsStreamState(threadId);
 	const toolProgressOverlay = useToolProgressOverlay(threadId);
 	const contentRef = useRef<HTMLDivElement | null>(null);
@@ -244,13 +249,15 @@ export const SubAgentPopup = ({
 
 	useEffect(() => {
 		if (!isOpen) return;
-		document.addEventListener('keydown', handleKeyDown);
-		return () => document.removeEventListener('keydown', handleKeyDown);
-	}, [isOpen, handleKeyDown]);
+		doc.addEventListener('keydown', handleKeyDown);
+		return () => doc.removeEventListener('keydown', handleKeyDown);
+	}, [isOpen, handleKeyDown, doc]);
 
 	useEffect(() => {
 		if (!isOpen) return;
-		closeButtonRef.current?.focus();
+		// focusInConnectedWindow keeps the pop-out frontmost (a bare .focus() would raise the
+		// main IDE window, since these nodes report ownerDocument === main).
+		focusInConnectedWindow(closeButtonRef.current);
 	}, [isOpen]);
 
 	useEffect(() => {
@@ -263,17 +270,17 @@ export const SubAgentPopup = ({
 			if (focusable.length === 0) return;
 			const first = focusable[0];
 			const last = focusable[focusable.length - 1];
-			if (e.shiftKey && document.activeElement === first) {
+			if (e.shiftKey && doc.activeElement === first) {
 				e.preventDefault();
-				last.focus();
-			} else if (!e.shiftKey && document.activeElement === last) {
+				focusInConnectedWindow(last);
+			} else if (!e.shiftKey && doc.activeElement === last) {
 				e.preventDefault();
-				first.focus();
+				focusInConnectedWindow(first);
 			}
 		};
-		document.addEventListener('keydown', trapFocus);
-		return () => document.removeEventListener('keydown', trapFocus);
-	}, [isOpen]);
+		doc.addEventListener('keydown', trapFocus);
+		return () => doc.removeEventListener('keydown', trapFocus);
+	}, [isOpen, doc]);
 
 	useEffect(() => {
 		if (!isOpen || !contentRef.current) return;
@@ -380,5 +387,5 @@ export const SubAgentPopup = ({
 		</div>
 	);
 
-	return createPortal(panel, document.body);
+	return createPortal(panel, doc.body);
 };

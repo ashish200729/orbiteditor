@@ -14,6 +14,12 @@ import './sidebarPane.js'
 // register quick edit (Ctrl+K)
 import './quickEditActions.js'
 
+// register standalone Agents window (Cursor-style pop-out)
+import './agentWindowService.js'
+import './agentWindowActions.js'
+import './agentWindowTerminalStore.js'
+import './media/agentWindow.css'
+
 
 // register Autocomplete
 import './autocomplete/index.js'
@@ -74,6 +80,7 @@ import './fileService.js'
 
 // register source control management
 import './orbitSCMService.js'
+import './agentGitService.js'
 
 // register native notifications
 import './nativeNotificationService.js'

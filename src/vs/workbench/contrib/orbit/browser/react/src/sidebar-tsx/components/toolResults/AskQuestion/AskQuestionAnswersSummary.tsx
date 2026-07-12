@@ -4,7 +4,6 @@
  *--------------------------------------------------------------------------------------------*/
 
 import React from 'react';
-import { motion } from 'framer-motion';
 import { Check, MessageCircleQuestion, Minus } from 'lucide-react';
 import { AskQuestionItem, AskQuestionUserAnswer } from '../../../../../../../common/chatThreadServiceTypes.js';
 import { EditToolCardWrapper } from '../../editTool/EditToolCardWrapper.js';
@@ -23,12 +22,7 @@ export const AskQuestionAnswersSummary = ({
 	wasSkipped: boolean;
 }) => {
 	return (
-		<motion.div
-			className="w-full my-1"
-			initial={{ opacity: 0, y: 4 }}
-			animate={{ opacity: 1, y: 0 }}
-			transition={{ duration: 0.2, ease: 'easeOut' }}
-		>
+		<div className="orbit-card-enter w-full my-1">
 			<EditToolCardWrapper>
 				<div
 					className="flex items-center gap-2 px-3 py-2.5"
@@ -115,6 +109,6 @@ export const AskQuestionAnswersSummary = ({
 					)}
 				</div>
 			</EditToolCardWrapper>
-		</motion.div>
+		</div>
 	);
 };

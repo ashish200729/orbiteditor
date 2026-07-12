@@ -22,7 +22,7 @@ class ConvertContribWorkbenchContribution extends Disposable implements IWorkben
 		const initializeURI = (uri: URI) => {
 			this.workspaceContext.getWorkspace()
 			const orbitRulesURI = URI.joinPath(uri, '.orbitrules')
-			this.voidModelService.initializeModel(orbitRulesURI)
+			void this.voidModelService.initializeModel(orbitRulesURI).catch(() => { /* optional file */ })
 		}
 
 		// call

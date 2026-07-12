@@ -1,0 +1,304 @@
+/*--------------------------------------------------------------------------------------
+ *  Copyright 2025 Orbit Editor. All rights reserved.
+ *  Licensed under the Apache License, Version 2.0. See LICENSE.txt for more information.
+ *--------------------------------------------------------------------------------------*/
+
+import * as React from 'react';
+import { SquareTerminal } from 'lucide-react';
+import { TerminalLocation, TerminalExitReason } from '../../../../../../../../platform/terminal/common/terminal.js';
+import { ConfirmOnKill } from '../../../../../../../../workbench/contrib/terminal/common/terminal.js';
+import type { ITerminalInstance } from '../../../../../../terminal/browser/terminal.js';
+import { URI } from '../../../../../../../../base/common/uri.js';
+import { useAccessor } from '../../util/services.js';
+import { getConnectedDocument, getConnectedWindow } from '../../util/connectedWindow.js';
+import type { WorkspacePanelProps } from './workspaceTypes.js';
+
+/**
+ * Resolve the cwd for a new agent-window terminal.
+ *
+ * Matches VS Code's own terminal-creation precedence: the last-active workspace
+ * root (so a multi-root workspace opens the terminal where the user was last
+ * working), falling back to the first workspace folder, then undefined (which
+ * lets the terminal backend pick the default — typically the user's home or the
+ * workspace root).
+ */
+const resolveCwd = (
+	historyService: { getLastActiveWorkspaceRoot: (scheme?: string) => URI | undefined },
+	workspaceContextService: { getWorkspace: () => { folders: { uri: URI }[] } },
+): URI | undefined => {
+	const lastActive = historyService.getLastActiveWorkspaceRoot();
+	if (lastActive) {
+		return lastActive;
+	}
+	return workspaceContextService.getWorkspace().folders[0]?.uri;
+};
+
+export const TerminalPanel = ({ tab, isActive, setTitle }: WorkspacePanelProps) => {
+	const accessor = useAccessor();
+	const terminalInstanceService = accessor.get('ITerminalInstanceService');
+	const terminalService = accessor.get('ITerminalService');
+	const terminalConfigService = accessor.get('ITerminalConfigurationService');
+	const workspaceContextService = accessor.get('IWorkspaceContextService');
+	const historyService = accessor.get('IHistoryService');
+	const terminalStore = accessor.get('IAgentWindowTerminalStore');
+
+	const hostRef = React.useRef<HTMLDivElement | null>(null);
+	const termHostRef = React.useRef<HTMLDivElement | null>(null);
+	const instanceRef = React.useRef<ITerminalInstance | null>(null);
+	const handleRef = React.useRef<{ setPtyId: (id: number) => void; setTitle: (t: string) => void; dispose: () => void } | null>(null);
+	const [error, setError] = React.useState<string | null>(null);
+	const [exited, setExited] = React.useState<number | boolean | null>(null);
+	// The mount effect below runs once ([] deps) but its body resumes after an
+	// `await`; by then the `isActive` value closed over at mount time can be
+	// stale (the user may have already switched tabs). Read the current value
+	// through this ref instead of the effect's captured `isActive`.
+	const isActiveRef = React.useRef(isActive);
+	isActiveRef.current = isActive;
+
+	// Create (or adopt a reattached) terminal once and attach its xterm surface
+	// into this pane's DOM. The instance is NOT registered with
+	// ITerminalGroupService, so it never appears as a tab in the main IDE's
+	// terminal panel — it lives entirely inside this agent-window tab.
+	React.useEffect(() => {
+		const host = hostRef.current;
+		if (!host) {
+			return;
+		}
+		let disposed = false;
+		let ro: ResizeObserver | undefined;
+		const listeners: { dispose(): void }[] = [];
+
+		const layoutNow = () => {
+			const inst = instanceRef.current;
+			if (!inst || inst.isDisposed) {
+				return;
+			}
+			const rect = host.getBoundingClientRect();
+			if (rect.width > 0 && rect.height > 0) {
+				inst.layout({ width: rect.width, height: rect.height });
+			}
+		};
+
+		const applyTitle = (title: string | undefined) => {
+			const t = title || 'Terminal';
+			setTitle(t);
+			handleRef.current?.setTitle(t);
+		};
+
+		const wireInstance = (instance: ITerminalInstance) => {
+			instanceRef.current = instance;
+			// Mirror the shell title into the tab strip + the persisted store entry.
+			applyTitle(instance.title);
+			listeners.push(instance.onTitleChanged(() => applyTitle(instance.title)));
+			// Once the pty has spawned, record its persistent id so the store can
+			// reattach this shell after an IDE reload.
+			listeners.push(instance.onProcessIdReady(() => {
+				const pid = instance.persistentProcessId;
+				if (typeof pid === 'number') {
+					handleRef.current?.setPtyId(pid);
+				}
+			}));
+			// If the process exits on its own, clear the persisted entry so we
+			// don't try to reattach a dead pty next launch, and show an "exited"
+			// placeholder instead of leaving a dead, unresponsive terminal surface
+			// with a stale instance ref sitting behind it.
+			listeners.push(instance.onExit((code) => {
+				handleRef.current?.dispose();
+				handleRef.current = null;
+				instanceRef.current = null;
+				if (!disposed) { setExited(typeof code === 'number' ? code : true); }
+			}));
+		};
+
+		(async () => {
+			try {
+				await terminalService.whenConnected;
+				if (disposed) {
+					return;
+				}
+
+				// 1) Adopt a reattached instance if the store pre-created one for
+				//    this tab id (happens after an IDE reload with a surviving pty).
+				let instance = terminalStore.takeReattachedInstance(tab.id);
+
+				// 2) Otherwise create a fresh, ungrouped terminal instance. Using
+				//    ITerminalInstanceService.createInstance directly (instead of
+				//    ITerminalService.createTerminal) skips the group registration
+				//    that would add a tab to the main IDE's terminal panel.
+				if (!instance) {
+					// Prefer this tab's own persisted cwd (its pty died but the entry
+					// survived) over the generic last-active-root fallback, so a fresh
+					// shell reopens where the old one was rather than at the workspace
+					// root.
+					const persistedCwd = terminalStore.entries.find(e => e.id === tab.id)?.cwd;
+					const cwd = persistedCwd ?? resolveCwd(historyService, workspaceContextService);
+					instance = terminalInstanceService.createInstance(
+						{
+							cwd,
+							name: 'Agent · Terminal',
+							forceShellIntegration: true,
+						},
+						TerminalLocation.Panel, // target metadata only; NOT added to any group
+					);
+				}
+
+				if (disposed) {
+					try { instance.dispose(); } catch { /* ignore */ }
+					return;
+				}
+
+				// Register a store entry (or adopt the existing one for this tab id)
+				// so the pty id + title persist across reloads.
+				if (!handleRef.current) {
+					handleRef.current = terminalStore.registerTerminal({
+						id: tab.id,
+						title: instance.title || 'Terminal',
+						cwd: typeof instance.shellLaunchConfig.cwd === 'string'
+							? instance.shellLaunchConfig.cwd
+							: instance.shellLaunchConfig.cwd?.toString(),
+						ptyId: typeof instance.persistentProcessId === 'number'
+							? instance.persistentProcessId
+							: undefined,
+					});
+				}
+
+				wireInstance(instance);
+				// Reattached instances often already have a pty id before
+				// onProcessIdReady fires (or before we subscribe to it).
+				const existingPtyId = instance.persistentProcessId;
+				if (typeof existingPtyId === 'number') {
+					handleRef.current?.setPtyId(existingPtyId);
+				}
+				// Build the xterm host from the CONNECTED (aux) document so xterm's
+				// internal getWindow(host) resolves the aux window, not the main
+				// window (delegateNodeFactories makes hostRef.current.ownerDocument
+				// the main document). Same cross-window fix as FileEditorPanel.
+				const auxDoc = getConnectedDocument(host);
+				const termHost = auxDoc.createElement('div');
+				termHost.style.position = 'absolute';
+				termHost.style.inset = '0';
+				termHost.style.width = '100%';
+				termHost.style.height = '100%';
+				host.appendChild(termHost);
+				termHostRef.current = termHost;
+				instance.attachToElement(termHost);
+				layoutNow();
+				// Use the ref, not the `isActive` captured when this effect was
+				// created — we're resuming after an `await`, and the user may have
+				// already switched to a different tab by now.
+				instance.setVisible(isActiveRef.current);
+				if (isActiveRef.current) {
+					instance.focus();
+				}
+
+				// Resize observer from the CONNECTED (pop-out) window.
+				const win = getConnectedWindow(termHost) as Window & typeof globalThis;
+				if (typeof win.ResizeObserver === 'function') {
+					ro = new win.ResizeObserver(() => layoutNow());
+					ro.observe(termHost);
+					ro.observe(host);
+				}
+			} catch (e: unknown) {
+				if (!disposed) {
+					setError(String((e as { message?: string })?.message ?? e));
+				}
+			}
+		})();
+
+		return () => {
+			disposed = true;
+			ro?.disconnect();
+			for (const l of listeners) {
+				try { l.dispose(); } catch { /* ignore */ }
+			}
+			listeners.length = 0;
+
+			const inst = instanceRef.current;
+			instanceRef.current = null;
+			if (inst) {
+				// Kill-confirm consistent with the IDE's `terminal.integrated.confirmOnKill`
+				// setting. We only treat it as "needs confirming" when the shell has
+				// child processes (closing a bare prompt shell is never surprising).
+				//
+				// This used to show an async confirm dialog here and kill/detach based
+				// on the answer — but a React effect cleanup can't be awaited, so that
+				// dialog was fire-and-forget: it could still be pending when the whole
+				// window (or the app) tears down, stacking dialogs across several
+				// terminals closing at once, and a slow answer could race a *new* mount
+				// for the same tab id and dispose ITS store entry instead of the old
+				// one's. Default to the same safe choice a veto would make — detach and
+				// keep the pty alive, dropping the store entry so it isn't
+				// auto-reattached — without a dialog that can't correctly gate anything
+				// during an unmount anyway.
+				const confirmOnKill: ConfirmOnKill = terminalConfigService.config.confirmOnKill;
+				const needsConfirm = (confirmOnKill === 'always' || confirmOnKill === 'panel') && inst.hasChildProcesses;
+				if (needsConfirm) {
+					try { inst.detachFromElement(); } catch { /* ignore */ }
+					try { inst.detachProcessAndDispose(TerminalExitReason.User); } catch { /* ignore */ }
+					handleRef.current?.dispose();
+					handleRef.current = null;
+				} else {
+					try {
+						inst.detachFromElement();
+						inst.dispose(TerminalExitReason.User);
+					} catch { /* ignore */ }
+					handleRef.current?.dispose();
+					handleRef.current = null;
+				}
+			} else {
+				handleRef.current?.dispose();
+				handleRef.current = null;
+			}
+			// Remove the dynamically created xterm host (created in the aux doc).
+			if (termHostRef.current && termHostRef.current.parentNode) {
+				termHostRef.current.parentNode.removeChild(termHostRef.current);
+			}
+			termHostRef.current = null;
+		};
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, []);
+
+	// Pause rendering + relayout/focus when this tab becomes active/inactive.
+	// setVisible(false) stops the xterm WebGL renderer and data processing while
+	// the host is display:none'd, which saves GPU/CPU and avoids zero-size
+	// renderer glitches.
+	React.useEffect(() => {
+		const inst = instanceRef.current;
+		const host = hostRef.current;
+		if (!inst || inst.isDisposed) {
+			return;
+		}
+		inst.setVisible(isActive);
+		if (isActive) {
+			if (host) {
+				const rect = host.getBoundingClientRect();
+				if (rect.width > 0 && rect.height > 0) {
+					inst.layout({ width: rect.width, height: rect.height });
+				}
+			}
+			inst.focus();
+		}
+	}, [isActive]);
+
+	return (
+		<div className="agent-workspace-terminal">
+			{error ? (
+				<div className="agent-workspace-placeholder">
+					<SquareTerminal size={22} strokeWidth={1.5} className="agent-workspace-placeholder-icon" />
+					<div className="agent-workspace-placeholder-label">Terminal failed to start</div>
+					<div className="agent-workspace-placeholder-detail">{error}</div>
+				</div>
+			) : exited !== null ? (
+				<div className="agent-workspace-placeholder">
+					<SquareTerminal size={22} strokeWidth={1.5} className="agent-workspace-placeholder-icon" />
+					<div className="agent-workspace-placeholder-label">Shell exited</div>
+					{typeof exited === 'number' && (
+						<div className="agent-workspace-placeholder-detail">Exit code {exited}</div>
+					)}
+				</div>
+			) : (
+				<div className="agent-workspace-terminal-surface" ref={hostRef} />
+			)}
+		</div>
+	);
+};

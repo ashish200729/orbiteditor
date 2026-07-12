@@ -34,11 +34,14 @@ export const VsCodeFileIcon = ({
 	uri,
 	size = 14,
 	className = '',
+	isFolder = false,
 }: {
 	filename?: string;
 	uri?: URI;
 	size?: number;
 	className?: string;
+	/** When true, render the folder icon from the active file icon theme. */
+	isFolder?: boolean;
 }) => {
 	const accessor = useAccessor();
 	const modelService = accessor.get('IModelService');
@@ -48,10 +51,10 @@ export const VsCodeFileIcon = ({
 
 	const iconClasses = useMemo(() => {
 		if (!resource) {
-			return ['file-icon'];
+			return [isFolder ? 'folder-icon' : 'file-icon'];
 		}
-		return getIconClasses(modelService, languageService, resource, FileKind.FILE);
-	}, [resource, modelService, languageService]);
+		return getIconClasses(modelService, languageService, resource, isFolder ? FileKind.FOLDER : FileKind.FILE);
+	}, [resource, modelService, languageService, isFolder]);
 
 	if (!resource && !filename) {
 		return null;

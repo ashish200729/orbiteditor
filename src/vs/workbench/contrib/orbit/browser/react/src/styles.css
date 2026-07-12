@@ -485,6 +485,35 @@ select:-webkit-autofill:focus {
 	0%, 80%, 100% { opacity: 0.25; }
 	40% { opacity: 1; }
 }
+/* Card entrance (fade + slight rise). CSS-driven (compositor) so it works in the
+   standalone Agents auxiliary window too — framer-motion's JS rAF frameloop is
+   bound to the MAIN renderer window, so a framer `initial:{opacity:0}` entrance
+   never advances while the pop-out is frontmost and the card stays invisible. */
+@keyframes orbit-card-enter {
+	from { opacity: 0; transform: translateY(4px); }
+	to { opacity: 1; transform: none; }
+}
+.orbit-card-enter {
+	animation: orbit-card-enter 0.18s ease-out;
+}
+
+/* Directional question-slide entrance (AskQuestion multi-question nav). CSS-driven,
+   enter-only (no exit) so it advances inside the Agents pop-out where framer's rAF
+   loop is bound to the main window. Forward nav enters from the right, back from the left. */
+@keyframes orbit-q-slide-from-right {
+	from { opacity: 0; transform: translateX(10px); }
+	to { opacity: 1; transform: none; }
+}
+@keyframes orbit-q-slide-from-left {
+	from { opacity: 0; transform: translateX(-10px); }
+	to { opacity: 1; transform: none; }
+}
+.orbit-q-enter-right {
+	animation: orbit-q-slide-from-right 0.16s ease-out;
+}
+.orbit-q-enter-left {
+	animation: orbit-q-slide-from-left 0.16s ease-out;
+}
 
 /* Plan editor breadcrumb actions */
 .plan-editor-breadcrumbs-row {

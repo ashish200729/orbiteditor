@@ -115,6 +115,8 @@ export type ChatMessage =
 		state: {
 			stagingSelections: StagingSelectionItem[];
 			isBeingEdited: boolean;
+			/** Renderer window that owns the active inline editor when a thread is mounted twice. */
+			editingWindowId?: number;
 		}
 	} | {
 		role: 'assistant';

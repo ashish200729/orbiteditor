@@ -17,6 +17,7 @@ import { IClipboardService } from '../../../../../../../platform/clipboard/commo
 import { IContextViewService, IContextMenuService } from '../../../../../../../platform/contextview/browser/contextView.js';
 import { IMenuService } from '../../../../../../../platform/actions/common/actions.js';
 import { IFileService } from '../../../../../../../platform/files/common/files.js';
+import { IDialogService, IFileDialogService } from '../../../../../../../platform/dialogs/common/dialogs.js';
 import { IHoverService } from '../../../../../../../platform/hover/browser/hover.js';
 import { IThemeService } from '../../../../../../../platform/theme/common/themeService.js';
 import { IWorkbenchThemeService } from '../../../../../../services/themes/common/workbenchThemeService.js';
@@ -38,6 +39,8 @@ import { IKeybindingService } from '../../../../../../../platform/keybinding/com
 import { IEnvironmentService } from '../../../../../../../platform/environment/common/environment.js'
 import { IConfigurationService } from '../../../../../../../platform/configuration/common/configuration.js'
 import { IPathService } from '../../../../../../services/path/common/pathService.js'
+import { IHistoryService } from '../../../../../../services/history/common/history.js'
+import { IOpenerService } from '../../../../../../../platform/opener/common/opener.js'
 import { IMetricsService } from '../../../../common/metricsService.js'
 import { IOpenAiCodexAuthService, OpenAiCodexAuthState } from '../../../../common/openAiCodexAuthService.js'
 import { IGitHubAuthService, GitHubAuthState } from '../../../../common/githubAuthService.js'
@@ -46,6 +49,9 @@ import type { OrbitUsageStats } from '../../../../common/orbitUsageTypes.js'
 import { URI } from '../../../../../../../base/common/uri.js'
 import { IChatThreadService, IsRunningType, ThreadsState, ThreadStreamState } from '../../../chatThreadService.js'
 import { ITerminalToolService } from '../../../terminalToolService.js'
+import { IAgentWindowTerminalStore } from '../../../agentWindowTerminalStore.js'
+import { IAgentWindowService } from '../../../agentWindowService.js'
+import { IAgentGitService } from '../../../agentGitService.js'
 import { ISubAgentService } from '../../../subAgentService.js'
 import { ISkillImportService } from '../../../skillImportService.js'
 import { ILanguageService } from '../../../../../../../editor/common/languages/language.js'
@@ -53,14 +59,17 @@ import { IVoidModelService } from '../../../../common/orbitModelService.js'
 import { IWorkspaceContextService } from '../../../../../../../platform/workspace/common/workspace.js'
 import { IVoidCommandBarService } from '../../../orbitCommandBarService.js'
 import { INativeHostService } from '../../../../../../../platform/native/common/native.js';
+import { IMainProcessService } from '../../../../../../../platform/ipc/common/mainProcessService.js';
 import { IEditCodeService } from '../../../editCodeServiceInterface.js'
 import { IToolsService } from '../../../../common/toolsServiceTypes.js'
 import { IConvertToLLMMessageService } from '../../../convertToLLMMessageService.js'
-import { ITerminalGroup, ITerminalGroupService, ITerminalInstance, ITerminalService } from '../../../../../terminal/browser/terminal.js'
+import { ITerminalConfigurationService, ITerminalGroup, ITerminalGroupService, ITerminalInstance, ITerminalInstanceService, ITerminalService } from '../../../../../terminal/browser/terminal.js'
 import { ISearchService } from '../../../../../../services/search/common/search.js'
 import { IExtensionManagementService } from '../../../../../../../platform/extensionManagement/common/extensionManagement.js'
 import { IMCPService } from '../../../../common/mcpService.js';
 import { IStorageService, StorageScope } from '../../../../../../../platform/storage/common/storage.js'
+import { ITextFileService } from '../../../../../../services/textfile/common/textfiles.js'
+import { ITextModelService } from '../../../../../../../editor/common/services/resolverService.js'
 import { OPT_OUT_KEY } from '../../../../common/storageKeys.js'
 
 
@@ -319,6 +328,8 @@ const getReactAccessor = (accessor: ServicesAccessor) => {
 		IContextMenuService: accessor.get(IContextMenuService),
 		IMenuService: accessor.get(IMenuService),
 		IFileService: accessor.get(IFileService),
+		IFileDialogService: accessor.get(IFileDialogService),
+		IDialogService: accessor.get(IDialogService),
 		IHoverService: accessor.get(IHoverService),
 		IThemeService: accessor.get(IThemeService),
 		IWorkbenchThemeService: accessor.get(IWorkbenchThemeService),
@@ -344,12 +355,16 @@ const getReactAccessor = (accessor: ServicesAccessor) => {
 		IEnvironmentService: accessor.get(IEnvironmentService),
 		IConfigurationService: accessor.get(IConfigurationService),
 		IPathService: accessor.get(IPathService),
+		IHistoryService: accessor.get(IHistoryService),
+		IOpenerService: accessor.get(IOpenerService),
 		IMetricsService: accessor.get(IMetricsService),
 		ITerminalToolService: accessor.get(ITerminalToolService),
 		ISubAgentService: accessor.get(ISubAgentService),
 		ISkillImportService: accessor.get(ISkillImportService),
 		ILanguageService: accessor.get(ILanguageService),
 		IVoidModelService: accessor.get(IVoidModelService),
+		ITextFileService: accessor.get(ITextFileService),
+		ITextModelService: accessor.get(ITextModelService),
 		IWorkspaceContextService: accessor.get(IWorkspaceContextService),
 		IOpenAiCodexAuthService: accessor.get(IOpenAiCodexAuthService),
 		IGitHubAuthService: accessor.get(IGitHubAuthService),
@@ -357,10 +372,16 @@ const getReactAccessor = (accessor: ServicesAccessor) => {
 
 		IVoidCommandBarService: accessor.get(IVoidCommandBarService),
 		INativeHostService: accessor.get(INativeHostService),
+		IMainProcessService: accessor.get(IMainProcessService),
 		IToolsService: accessor.get(IToolsService),
 		IConvertToLLMMessageService: accessor.get(IConvertToLLMMessageService),
 		ITerminalService: accessor.get(ITerminalService),
 		ITerminalGroupService: accessor.get(ITerminalGroupService),
+		ITerminalInstanceService: accessor.get(ITerminalInstanceService),
+		ITerminalConfigurationService: accessor.get(ITerminalConfigurationService),
+		IAgentWindowTerminalStore: accessor.get(IAgentWindowTerminalStore),
+		IAgentWindowService: accessor.get(IAgentWindowService),
+		IAgentGitService: accessor.get(IAgentGitService),
 		IExtensionManagementService: accessor.get(IExtensionManagementService),
 		IExtensionTransferService: accessor.get(IExtensionTransferService),
 		IMCPService: accessor.get(IMCPService),

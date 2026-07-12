@@ -10,6 +10,7 @@ import { BrowserAutomationMainService } from '../../../../../platform/browserVie
 import { BrowserViewMainService } from '../../../../../platform/browserView/electron-main/browserViewMainService.js';
 import { BROWSER_AUTOMATION_IPC_CHANNELS, makeBrowserAutomationReplyChannel } from '../../../../../platform/browserView/common/browserView.js';
 import { IWindowsMainService } from '../../../../../platform/windows/electron-main/windows.js';
+import { IAuxiliaryWindowsMainService } from '../../../../../platform/auxiliaryWindow/electron-main/auxiliaryWindows.js';
 import { CancellationToken } from '../../../../../base/common/cancellation.js';
 import { MCPTool, RawMCPToolCall } from '../../common/mcpServiceTypes.js';
 import { IOrbitBuiltinMcpServer } from './orbitBuiltinMcpRegistry.js';
@@ -26,6 +27,39 @@ import {
  * reports `status: 'offline'` and its tools are hidden from the agent.
  */
 export type BrowserAutomationEnabledProvider = () => boolean;
+
+/**
+ * Blocks the two agent-navigation targets that have no legitimate use for a
+ * web-dev-testing agent but a clear exfiltration/SSRF payoff:
+ *  - `file://` — would let a prompt-injected agent read arbitrary local files
+ *    (SSH keys, .env, source of other projects) via navigate+snapshot/CDP.
+ *  - the cloud-metadata link-local address — a classic SSRF target for
+ *    exfiltrating instance credentials.
+ * Deliberately does NOT block localhost/private-network hosts: agents driving
+ * the browser against `http://localhost:*` (the app they're building) is the
+ * primary use case for this tool.
+ */
+function isAgentNavigableUrl(url: string): boolean {
+	if (url === 'about:blank') { return true; }
+	let parsed: URL;
+	try {
+		parsed = new URL(url);
+	} catch {
+		return false;
+	}
+	if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') { return false; }
+	if (parsed.hostname === '169.254.169.254' || parsed.hostname === 'metadata.google.internal') { return false; }
+	return true;
+}
+
+/**
+ * Minimal window surface the browser MCP server needs to dispatch tab-orchestration
+ * IPC to a renderer: the backing `BrowserWindow` and a `sendWhenReady` that queues
+ * the message until the renderer is ready. Both `ICodeWindow` and the concrete
+ * `AuxiliaryWindow` (the standalone Agents pop-out) satisfy this — they both extend
+ * `BaseWindow`, which declares `win` and `sendWhenReady`.
+ */
+type BrowserAutomationTargetWindow = { readonly id: number; readonly win: Electron.BrowserWindow | null; sendWhenReady(channel: string, token: CancellationToken, ...args: any[]): void };
 
 /** Events emitted when the lock state or active tab changes (for the chat UI). */
 export interface IOrbitIdeBrowserMcpEvents {
@@ -69,6 +103,7 @@ export class OrbitIdeBrowserMcpServer extends Disposable implements IOrbitBuilti
 		private readonly browserAutomationService: BrowserAutomationMainService,
 		private readonly browserViewMainService: BrowserViewMainService,
 		private readonly windowsMainService: IWindowsMainService,
+		private readonly auxiliaryWindowsMainService: IAuxiliaryWindowsMainService,
 		private readonly enabledProvider: BrowserAutomationEnabledProvider,
 		@ILogService private readonly logService: ILogService,
 	) {
@@ -224,6 +259,9 @@ export class OrbitIdeBrowserMcpServer extends Disposable implements IOrbitBuilti
 		if (!url) {
 			return this.error('browser_navigate requires a `url` parameter.');
 		}
+		if (!isAgentNavigableUrl(url)) {
+			return this.error(`browser_navigate: "${url}" is not allowed (only http/https URLs are navigable by the agent).`);
+		}
 		const newTab = params.newTab === true;
 		const position = params.position === 'active' || params.position === 'side' ? params.position : undefined;
 		const existingViewId = typeof params.viewId === 'string' ? params.viewId : undefined;
@@ -314,6 +352,9 @@ export class OrbitIdeBrowserMcpServer extends Disposable implements IOrbitBuilti
 			}
 			case 'new': {
 				const url = String(params.url ?? 'about:blank');
+				if (!isAgentNavigableUrl(url)) {
+					return this.error(`browser_tabs new: "${url}" is not allowed (only http/https URLs are navigable by the agent).`);
+				}
 				const position = params.position === 'active' || params.position === 'side' ? params.position : undefined;
 				const id = await this.openTabInRenderer(url, position);
 				await this.waitForViewReady(id);
@@ -675,8 +716,17 @@ export class OrbitIdeBrowserMcpServer extends Disposable implements IOrbitBuilti
 		return win;
 	}
 
-	/** Resolves the Orbit window that owns a view, falling back to focused/last-active. */
-	private codeWindowForView(viewId?: string) {
+	/**
+	 * Resolves the Orbit window that owns a view, falling back to focused/last-active.
+	 * Returns the minimal `BrowserAutomationTargetWindow` surface (id + win +
+	 * sendWhenReady) so callers can dispatch tab-orchestration IPC. Both main
+	 * `CodeWindow`s and auxiliary (pop-out) windows — including the standalone
+	 * Agents window — satisfy it. Without the auxiliary fallback, browser tools
+	 * driven from the Agents pop-out would route their `openTab`/`selectTab`/
+	 * `closeTab` IPC to the main window, where the aux window's
+	 * `BrowserTabRegistryService` never receives it and the call times out.
+	 */
+	private codeWindowForView(viewId?: string): BrowserAutomationTargetWindow | undefined {
 		if (viewId) {
 			const windowId = this.browserViewMainService.getWindowIdForView(viewId);
 			if (windowId !== undefined) {
@@ -684,7 +734,26 @@ export class OrbitIdeBrowserMcpServer extends Disposable implements IOrbitBuilti
 				if (owned) {
 					return owned;
 				}
+				// The view may live in an auxiliary window (e.g. the standalone Agents
+				// pop-out) whose id is the aux webContents id, not a main-window id.
+				// The concrete `AuxiliaryWindow` extends `BaseWindow` and thus has
+				// `sendWhenReady`, even though the `IAuxiliaryWindow` interface omits it.
+				for (const aux of this.auxiliaryWindowsMainService.getWindows()) {
+					if (aux.id === windowId) {
+						return aux as unknown as BrowserAutomationTargetWindow;
+					}
+				}
 			}
+		}
+		// Prefer the focused auxiliary window (the Agents pop-out is typically focused
+		// when the agent is driving the browser), then fall back to main windows.
+		const focusedAux = this.auxiliaryWindowsMainService.getFocusedWindow();
+		if (focusedAux) {
+			return focusedAux as unknown as BrowserAutomationTargetWindow;
+		}
+		const lastAux = this.auxiliaryWindowsMainService.getLastActiveWindow();
+		if (lastAux) {
+			return lastAux as unknown as BrowserAutomationTargetWindow;
 		}
 		return this.windowsMainService.getFocusedWindow() ?? this.windowsMainService.getLastActiveWindow();
 	}
@@ -698,6 +767,9 @@ export class OrbitIdeBrowserMcpServer extends Disposable implements IOrbitBuilti
 		const codeWindow = this.codeWindowForView();
 		if (!codeWindow) {
 			throw new Error('No Orbit window available to open a browser tab.');
+		}
+		if (this.isAuxiliaryCodeWindow(codeWindow)) {
+			return this.openAgentWindowBrowserTab(codeWindow, url);
 		}
 		const replyChannel = makeBrowserAutomationReplyChannel(BROWSER_AUTOMATION_IPC_CHANNELS.openTab, `${Date.now()}.${Math.random().toString(36).slice(2)}`);
 		const result = new Promise<string>((resolve, reject) => {
@@ -789,11 +861,129 @@ export class OrbitIdeBrowserMcpServer extends Disposable implements IOrbitBuilti
 	}
 
 	private async selectTabInRenderer(id: string): Promise<void> {
+		if (this.isAuxiliaryBrowserView(id)) {
+			await this.awaitAgentRendererBool(BROWSER_AUTOMATION_IPC_CHANNELS.agentSelectTab, id);
+			return;
+		}
 		await this.awaitRendererBool(id, BROWSER_AUTOMATION_IPC_CHANNELS.selectTab, id);
 	}
 
 	private async closeTabInRenderer(id: string): Promise<void> {
+		if (this.isAuxiliaryBrowserView(id)) {
+			await this.browserViewMainService.close(this.windowIdForView(id), id);
+			return;
+		}
 		await this.awaitRendererBool(id, BROWSER_AUTOMATION_IPC_CHANNELS.closeTab, id);
+	}
+
+	/** True when `viewId` is a native browser view owned by an auxiliary window. */
+	private isAuxiliaryBrowserView(viewId: string): boolean {
+		const windowId = this.browserViewMainService.getWindowIdForView(viewId);
+		if (windowId === undefined) {
+			return false;
+		}
+		return this.auxiliaryWindowsMainService.getWindows().some(aux => aux.id === windowId);
+	}
+
+	private isAuxiliaryCodeWindow(codeWindow: BrowserAutomationTargetWindow): boolean {
+		return this.auxiliaryWindowsMainService.getWindows().some(aux => aux.id === codeWindow.id);
+	}
+
+	/**
+	 * Renderer IPC for agents-window browser tabs is handled by
+	 * `AgentWindowService` in the MAIN workbench renderer (the React bundle
+	 * shares the main window's `ServicesAccessor`). Route there explicitly.
+	 */
+	private mainRendererCodeWindow(): BrowserAutomationTargetWindow | undefined {
+		return this.windowsMainService.getFocusedWindow() ?? this.windowsMainService.getLastActiveWindow();
+	}
+
+	private async openAgentWindowBrowserTab(_auxWindow: BrowserAutomationTargetWindow, url: string): Promise<string> {
+		const codeWindow = this.mainRendererCodeWindow();
+		if (!codeWindow) {
+			throw new Error('No Orbit main window available for agents-window browser tab.');
+		}
+		const replyChannel = makeBrowserAutomationReplyChannel(BROWSER_AUTOMATION_IPC_CHANNELS.agentOpenTab, `${Date.now()}.${Math.random().toString(36).slice(2)}`);
+		const result = new Promise<string>((resolve, reject) => {
+			const win = codeWindow.win;
+			if (!win) {
+				reject(new Error('Orbit window has no BrowserWindow.'));
+				return;
+			}
+			let settled = false;
+			const timer = setTimeout(() => {
+				if (settled) {
+					return;
+				}
+				settled = true;
+				ipcMain.removeListener(replyChannel, onReply);
+				reject(new Error('Timed out waiting for agents-window browser tab.'));
+			}, 10_000);
+			const onReply = (_event: Electron.IpcMainEvent, id: unknown) => {
+				if (settled) {
+					return;
+				}
+				settled = true;
+				clearTimeout(timer);
+				ipcMain.removeListener(replyChannel, onReply);
+				const idStr = typeof id === 'string' ? id : String(id ?? '');
+				if (idStr) {
+					resolve(idStr);
+				} else {
+					reject(new Error('Agents window returned no browser view id.'));
+				}
+			};
+			ipcMain.once(replyChannel, onReply);
+		});
+		codeWindow.sendWhenReady(BROWSER_AUTOMATION_IPC_CHANNELS.agentOpenTab, CancellationToken.None, {
+			url,
+			replyChannel,
+		});
+		const id = await result;
+		if (url && url !== 'about:blank') {
+			await this.browserViewMainService.navigate(this.windowIdForView(id), id, url);
+		}
+		return id;
+	}
+
+	private async awaitAgentRendererBool(channel: typeof BROWSER_AUTOMATION_IPC_CHANNELS.agentSelectTab, id: string): Promise<void> {
+		const codeWindow = this.mainRendererCodeWindow();
+		if (!codeWindow) {
+			throw new Error(`No Orbit main window available for ${channel}.`);
+		}
+		const replyChannel = makeBrowserAutomationReplyChannel(channel, `${Date.now()}.${Math.random().toString(36).slice(2)}`);
+		const result = new Promise<void>((resolve, reject) => {
+			const win = codeWindow.win;
+			if (!win) {
+				reject(new Error('Orbit window has no BrowserWindow.'));
+				return;
+			}
+			let settled = false;
+			const timer = setTimeout(() => {
+				if (settled) {
+					return;
+				}
+				settled = true;
+				ipcMain.removeListener(replyChannel, onReply);
+				reject(new Error(`Timed out waiting for agents-window ${channel}.`));
+			}, 10_000);
+			const onReply = (_event: Electron.IpcMainEvent, ok: unknown) => {
+				if (settled) {
+					return;
+				}
+				settled = true;
+				clearTimeout(timer);
+				ipcMain.removeListener(replyChannel, onReply);
+				if (ok) {
+					resolve();
+				} else {
+					reject(new Error(`Agents window failed to ${channel === BROWSER_AUTOMATION_IPC_CHANNELS.agentSelectTab ? 'select' : 'handle'} tab ${id}.`));
+				}
+			};
+			ipcMain.once(replyChannel, onReply);
+		});
+		codeWindow.sendWhenReady(channel, CancellationToken.None, { id, replyChannel });
+		return result;
 	}
 
 	/**

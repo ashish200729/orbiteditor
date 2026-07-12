@@ -5,7 +5,6 @@
 
 import React, { useCallback, useMemo, useState } from 'react';
 import { ChevronDown, ListTodo } from 'lucide-react';
-import { AnimatePresence, motion } from 'framer-motion';
 import { TodoItem } from '../../../../../../../common/chatThreadServiceTypes.js';
 import { getTodoDisplayText, normalizeTodoList } from '../../../../../../../common/todoToolHelpers.js';
 import { TextShimmer } from '../../../../util/TextShimmer.js';
@@ -19,6 +18,7 @@ import {
 } from './todoState.js';
 import { TodoRow } from './TodoRow.js';
 import { TodoStatusIcon } from './TodoStatusIcon.js';
+import { CollapsibleSection } from '../../wrappers/CollapsibleSection.js';
 
 const BUBBLE_EXPANDED_MAX_ROWS = 8;
 
@@ -120,25 +120,18 @@ const InlineTodoCompactCard = ({
 				</div>
 
 				{visibleTodos.length > 0 && (
-					<AnimatePresence initial={false}>
-						<motion.div
-							key={isExpanded ? 'expanded' : 'collapsed'}
-							initial={{ height: 0, opacity: 0 }}
-							animate={{ height: 'auto', opacity: 1 }}
-							exit={{ height: 0, opacity: 0 }}
-							transition={{ duration: 0.18, ease: 'easeInOut' }}
-							className="overflow-hidden border-t"
+					<CollapsibleSection isOpen={visibleTodos.length > 0} duration={0.18}>
+						<div
+							className="overflow-y-auto overflow-x-hidden py-0.5 max-h-[280px] border-t"
 							style={{ borderColor: 'var(--vscode-panel-border)' }}
 						>
-							<div className="overflow-y-auto overflow-x-hidden py-0.5 max-h-[280px]">
-								{visibleTodos.map(todo => (
-									<div key={todo.id} className="px-1">
-										<TodoRow todo={todo} />
-									</div>
-								))}
-							</div>
-						</motion.div>
-					</AnimatePresence>
+							{visibleTodos.map(todo => (
+								<div key={todo.id} className="px-1">
+									<TodoRow todo={todo} />
+								</div>
+							))}
+						</div>
+					</CollapsibleSection>
 				)}
 			</div>
 		</div>
@@ -249,26 +242,15 @@ const BubbleTodoCompactCard = ({
 						)}
 					</button>
 
-					<AnimatePresence initial={false}>
-						{isExpanded && expandedTodos.length > 0 && (
-							<motion.div
-								key="bubble-expanded"
-								initial={{ height: 0, opacity: 0 }}
-								animate={{ height: 'auto', opacity: 1 }}
-								exit={{ height: 0, opacity: 0 }}
-								transition={{ duration: 0.18, ease: 'easeInOut' }}
-								className="overflow-hidden"
-							>
-								<div className="overflow-y-auto overflow-x-hidden pb-0.5 max-h-[140px] space-y-0.5">
-									{expandedTodos.map(todo => (
-										<div key={`${todo.id}-${todo.status}`} className="pl-0.5">
-											<TodoRow todo={todo} compact />
-										</div>
-									))}
+					<CollapsibleSection isOpen={isExpanded && expandedTodos.length > 0} duration={0.18}>
+						<div className="overflow-y-auto overflow-x-hidden pb-0.5 max-h-[140px] space-y-0.5">
+							{expandedTodos.map(todo => (
+								<div key={`${todo.id}-${todo.status}`} className="pl-0.5">
+									<TodoRow todo={todo} compact />
 								</div>
-							</motion.div>
-						)}
-					</AnimatePresence>
+							))}
+						</div>
+					</CollapsibleSection>
 				</>
 			)}
 		</div>

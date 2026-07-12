@@ -7,6 +7,7 @@ import React, { useEffect, useLayoutEffect, useMemo, useRef, useState, MutableRe
 import { BUILTIN_COMMANDS } from '../../../../../common/slashCommands/builtinCommands.js';
 import { listSkills, onSkillsChanged } from '../../../../../common/skillRegistry.js';
 import { buildSlashSegments, SlashSegment } from './slashTokenSegments.js';
+import { getConnectedDocument, getConnectedWindow } from '../helpers.js';
 import {
 	VOID_SLASH_TOKEN_MIRROR,
 	VOID_SLASH_TOKEN_MIRROR_SELECTION,
@@ -106,7 +107,7 @@ export const HighlightOverlay = ({ textareaRef, text, mirrorClassName }: {
 		const ov = overlayRef.current;
 		if (!ta || !ov) return;
 		try {
-			const cs = getComputedStyle(ta);
+			const cs = getConnectedWindow(ta).getComputedStyle(ta);
 			for (const prop of COPIED_STYLE_PROPS) {
 				(ov.style as any)[prop] = cs[prop as any];
 			}
@@ -146,6 +147,9 @@ export const HighlightOverlay = ({ textareaRef, text, mirrorClassName }: {
 	useLayoutEffect(() => {
 		const ta = textareaRef.current;
 		if (!ta) return;
+		// Document the textarea is painted in (pop-out-safe): selectionchange/mouse listeners
+		// and activeElement must be read from it, not the global (main-window) document.
+		const doc = getConnectedDocument(ta);
 
 		syncMetrics();
 		syncScroll();
@@ -154,7 +158,7 @@ export const HighlightOverlay = ({ textareaRef, text, mirrorClassName }: {
 		const onScroll = () => scheduleScrollSync();
 		const onSelect = () => readSelection();
 		const onSelectionChange = () => {
-			if (document.activeElement === ta || selectingRef.current) readSelection();
+			if (doc.activeElement === ta || selectingRef.current) readSelection();
 		};
 		const onMouseDown = () => { selectingRef.current = true; };
 		const onMouseUp = () => {
@@ -175,14 +179,14 @@ export const HighlightOverlay = ({ textareaRef, text, mirrorClassName }: {
 		ta.addEventListener('keyup', onKeyUp);
 		ta.addEventListener('input', onInput);
 		ta.addEventListener('mousedown', onMouseDown);
-		document.addEventListener('mouseup', onMouseUp);
-		document.addEventListener('selectionchange', onSelectionChange);
+		doc.addEventListener('mouseup', onMouseUp);
+		doc.addEventListener('selectionchange', onSelectionChange);
 
 		// While dragging a selection, keep the highlight in sync even if selectionchange is sparse.
 		const onMouseMove = () => {
 			if (selectingRef.current) readSelection();
 		};
-		document.addEventListener('mousemove', onMouseMove);
+		doc.addEventListener('mousemove', onMouseMove);
 
 		let ro: ResizeObserver | undefined;
 		try {
@@ -193,7 +197,7 @@ export const HighlightOverlay = ({ textareaRef, text, mirrorClassName }: {
 			ro.observe(ta);
 		} catch { /* ResizeObserver unavailable */ }
 
-		const fonts = (document as any).fonts;
+		const fonts = (doc as any).fonts;
 		const onFonts = () => { syncMetrics(); syncScroll(); };
 		try { fonts?.addEventListener?.('loadingdone', onFonts); } catch { /* ignore */ }
 
@@ -203,9 +207,9 @@ export const HighlightOverlay = ({ textareaRef, text, mirrorClassName }: {
 			ta.removeEventListener('keyup', onKeyUp);
 			ta.removeEventListener('input', onInput);
 			ta.removeEventListener('mousedown', onMouseDown);
-			document.removeEventListener('mouseup', onMouseUp);
-			document.removeEventListener('selectionchange', onSelectionChange);
-			document.removeEventListener('mousemove', onMouseMove);
+			doc.removeEventListener('mouseup', onMouseUp);
+			doc.removeEventListener('selectionchange', onSelectionChange);
+			doc.removeEventListener('mousemove', onMouseMove);
 			ro?.disconnect();
 			try { fonts?.removeEventListener?.('loadingdone', onFonts); } catch { /* ignore */ }
 			if (scrollRafRef.current) {

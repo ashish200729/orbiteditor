@@ -4,7 +4,6 @@
  *--------------------------------------------------------------------------------------------*/
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
 import { ChevronRight, Terminal, Check, AlertTriangle, Clock, Zap, MoreHorizontal, Square } from 'lucide-react';
 import { ToolMessage } from '../../../../../../common/chatThreadServiceTypes.js';
 import { useAccessor, useChatThreadsStreamState } from '../../../util/services.js';
@@ -21,6 +20,7 @@ import {
 	ShellOutputLine,
 } from './shellToolCardHelpers.js';
 import { useIsReadOnlyChat } from '../../contexts/ReadOnlyChatContext.js';
+import { CollapsibleSection } from '../wrappers/CollapsibleSection.js';
 
 type ShellToolCardProps = {
 	toolMessage: Exclude<ToolMessage<'Shell' | 'AwaitShell'>, { type: 'invalid_params' }>;
@@ -152,7 +152,11 @@ export const ShellToolCard = ({ toolMessage, threadId }: ShellToolCardProps) => 
 	}, [toolMessage, params, toolName]);
 
 	const [liveOutput, setLiveOutput] = useState('');
-	const [isExpanded, setIsExpanded] = useState(() => !isRunning && (isSuccess || isError));
+	// Expand by default while the command is RUNNING (so the command line + live
+	// streaming output are visible during execution, Cursor-style) and when it has
+	// finished (success/error). A collapsed running card shows only a thin header
+	// with no command/output, which reads as "nothing rendered" while streaming.
+	const [isExpanded, setIsExpanded] = useState(() => isRunning || isSuccess || isError);
 
 	const title = useMemo(() => getShellCardTitle(toolName, params), [toolName, params]);
 	const metaTags = useMemo(() => getShellCardMetaTags(toolName, params), [toolName, params]);
@@ -188,6 +192,12 @@ export const ShellToolCard = ({ toolMessage, threadId }: ShellToolCardProps) => 
 	useEffect(() => {
 		if (isSuccess && outputText.trim()) setIsExpanded(true);
 	}, [isSuccess, outputText]);
+
+	// Auto-expand the moment the command starts running (fires once on the
+	// transition into running; the user can still collapse it afterwards).
+	useEffect(() => {
+		if (isRunning) setIsExpanded(true);
+	}, [isRunning]);
 
 	// Live output polling only while expanded and running
 	useEffect(() => {
@@ -249,12 +259,7 @@ export const ShellToolCard = ({ toolMessage, threadId }: ShellToolCardProps) => 
 	const toggleExpanded = hasExpandableContent ? () => setIsExpanded(v => !v) : undefined;
 
 	return (
-		<motion.div
-			className="w-full"
-			initial={{ opacity: 0, y: 4 }}
-			animate={{ opacity: 1, y: 0 }}
-			transition={{ duration: 0.18, ease: 'easeOut' }}
-		>
+		<div className="orbit-card-enter w-full">
 			<EditToolCardWrapper
 				isRunning={isRunning}
 				className={isRejected ? 'opacity-70' : ''}
@@ -313,50 +318,42 @@ export const ShellToolCard = ({ toolMessage, threadId }: ShellToolCardProps) => 
 					</div>
 				</div>
 
-				<AnimatePresence initial={false}>
-					{showBody && (
-						<motion.div
-							key="shell-body"
-							initial={{ height: 0, opacity: 0 }}
-							animate={{ height: 'auto', opacity: 1 }}
-							exit={{ height: 0, opacity: 0 }}
-							transition={{ duration: 0.2, ease: 'easeOut' }}
-							className="overflow-hidden"
-						>
-							<div
-								ref={outputRef}
-								className="font-mono text-[11px] leading-[1.5] px-3 py-2 max-h-[140px] overflow-y-auto overflow-x-auto void-custom-scrollable"
-								style={{
-									background: 'rgba(var(--vscode-void-bg-2-rgb, 16, 16, 16), 0.35)',
-									borderTop: showBody ? 'none' : undefined,
-								}}
-							>
-								{commandLine && (
-									<div className={`text-[11.5px] whitespace-pre ${(outputText.trim() || errorText) ? 'mb-1.5' : ''}`}>
-										<span className="text-void-fg-4/70 select-none">$ </span>
-										<ShellCommandHighlight command={commandLine} />
-									</div>
-								)}
-
-								{(!errorText && ((outputText.trim() && !isRunning) || (isRunning && isExpanded && outputText.trim()))) &&
-									outputText.split('\n').map((line, idx) => (
-										<ShellOutputLine key={idx} line={line} />
-									))}
-
-								{errorText && (
-									<div className="text-[#E06C75]/90 whitespace-pre-wrap break-words">
-										{errorText}
-									</div>
-								)}
+				{/* Window-agnostic expand/collapse. Framer's `height: 'auto'` measures via
+				    the bundle's main-window getComputedStyle, so it collapses to height 0
+				    inside the standalone Agents pop-out (aux window) and hides the output.
+				    CollapsibleSection uses a grid-rows transition with zero JS measurement. */}
+				<CollapsibleSection isOpen={showBody} duration={0.2}>
+					<div
+						ref={outputRef}
+						className="font-mono text-[11px] leading-[1.5] px-3 py-2 max-h-[140px] overflow-y-auto overflow-x-auto void-custom-scrollable"
+						style={{
+							background: 'rgba(var(--vscode-void-bg-2-rgb, 16, 16, 16), 0.35)',
+						}}
+					>
+						{commandLine && (
+							<div className={`text-[11.5px] whitespace-pre ${(outputText.trim() || errorText) ? 'mb-1.5' : ''}`}>
+								<span className="text-void-fg-4/70 select-none">$ </span>
+								<ShellCommandHighlight command={commandLine} />
 							</div>
-						</motion.div>
-					)}
-				</AnimatePresence>
+						)}
+
+						{(!errorText && ((outputText.trim() && !isRunning) || (isRunning && isExpanded && outputText.trim()))) &&
+							outputText.split('\n').map((line, idx) => (
+								<ShellOutputLine key={idx} line={line} />
+							))}
+
+						{errorText && (
+							<div className="text-[#E06C75]/90 whitespace-pre-wrap break-words">
+								{errorText}
+							</div>
+						)}
+					</div>
+				</CollapsibleSection>
 			</EditToolCardWrapper>
 
 			{showWaitingFooter && (
 				<ShellWaitingFooter waitingCount={1} onRunInBackground={runInBackground} />
 			)}
-		</motion.div>
+		</div>
 	);
 };

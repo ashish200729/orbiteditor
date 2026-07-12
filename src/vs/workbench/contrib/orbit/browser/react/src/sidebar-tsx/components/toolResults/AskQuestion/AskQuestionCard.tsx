@@ -4,13 +4,13 @@
  *--------------------------------------------------------------------------------------------*/
 
 import React, { useCallback, useMemo, useState } from 'react';
-import { AnimatePresence, motion } from 'framer-motion';
 import { ChevronDown, ChevronUp, MessageCircleQuestion } from 'lucide-react';
 import { AskQuestionItem, AskQuestionUserAnswer } from '../../../../../../../common/chatThreadServiceTypes.js';
 import { useAccessor } from '../../../../util/services.js';
 import { TextShimmer } from '../../../../util/TextShimmer.js';
 import { getTitle, getToolStatusIconMeta, toolNameToDesc } from '../../../constants/toolHelpers.js';
 import { EditToolCardWrapper } from '../../editTool/EditToolCardWrapper.js';
+import { CollapsibleSection } from '../../wrappers/CollapsibleSection.js';
 import {
 	ApprovalGhostButton,
 	ApprovalPrimaryButton,
@@ -217,11 +217,8 @@ export const AskQuestionCard = ({
 	const isLastStep = activeIdx >= total - 1;
 
 	return (
-		<motion.div
-			className="w-full my-1"
-			initial={{ opacity: 0, y: 6 }}
-			animate={{ opacity: 1, y: 0 }}
-			transition={{ duration: 0.22, ease: 'easeOut' }}
+		<div
+			className="orbit-card-enter w-full my-1"
 			onClick={(e) => e.stopPropagation()}
 		>
 			<EditToolCardWrapper isAwaitingApproval={isInteractive} isRunning={isStreaming}>
@@ -276,28 +273,19 @@ export const AskQuestionCard = ({
 					</span>
 				</button>
 
-				<AnimatePresence initial={false}>
-					{isOpen && (
-						<motion.div
-							key="body"
+				<CollapsibleSection isOpen={isOpen} duration={0.18}>
+						<div
 							tabIndex={isInteractive ? 0 : undefined}
 							onKeyDown={handleCardKeyDown}
-							initial={{ height: 0, opacity: 0 }}
-							animate={{ height: 'auto', opacity: 1 }}
-							exit={{ height: 0, opacity: 0 }}
-							transition={{ duration: 0.18, ease: 'easeOut' }}
-							className="overflow-hidden outline-none"
+							className="px-3 py-3 flex flex-col gap-3 outline-none"
 							style={{ borderTop: `1px solid ${askQuestionTheme.subtleDivider}` }}
 						>
-							<div className="px-3 py-3 flex flex-col gap-3">
-								<AnimatePresence mode="wait" initial={false}>
-									<motion.div
+								{/* Keyed on the question id so React remounts on nav, replaying the
+								    CSS slide-in. Enter-only (no framer exit) — window-agnostic for the
+								    Agents pop-out. Direction: forward enters from right, back from left. */}
+								<div
 										key={currentQ.id}
-										initial={{ opacity: 0, x: slideDirection * 10 }}
-										animate={{ opacity: 1, x: 0 }}
-										exit={{ opacity: 0, x: slideDirection * -10 }}
-										transition={{ duration: 0.16, ease: 'easeOut' }}
-										className="flex flex-col gap-3"
+										className={`flex flex-col gap-3 ${slideDirection === -1 ? 'orbit-q-enter-left' : 'orbit-q-enter-right'}`}
 									>
 										<div className="flex gap-2.5 items-start">
 											<span
@@ -346,25 +334,18 @@ export const AskQuestionCard = ({
 												isOther
 												onClick={() => toggleOption(currentQ, OTHER_OPTION_ID)}
 											/>
-											{isOtherOpen && (
-												<motion.div
-													initial={{ opacity: 0, height: 0 }}
-													animate={{ opacity: 1, height: 'auto' }}
-													transition={{ duration: 0.15 }}
-												>
-													<AskQuestionOtherInput
-														value={drafts[currentQ.id]?.otherText ?? ''}
-														disabled={!isInteractive}
-														placeholder={ASK_QUESTION_OTHER_PLACEHOLDER}
-														onChange={(text) => setOtherText(currentQ, text)}
-														onEnter={advanceOrSubmit}
-														onBack={canGoBack ? goBack : undefined}
-													/>
-												</motion.div>
-											)}
+											<CollapsibleSection isOpen={isOtherOpen} duration={0.15}>
+												<AskQuestionOtherInput
+													value={drafts[currentQ.id]?.otherText ?? ''}
+													disabled={!isInteractive}
+													placeholder={ASK_QUESTION_OTHER_PLACEHOLDER}
+													onChange={(text) => setOtherText(currentQ, text)}
+													onEnter={advanceOrSubmit}
+													onBack={canGoBack ? goBack : undefined}
+												/>
+											</CollapsibleSection>
 										</div>
-									</motion.div>
-								</AnimatePresence>
+								</div>
 
 					<div
 						className="flex items-center justify-end gap-2 pt-1 min-h-[30px]"
@@ -397,10 +378,8 @@ export const AskQuestionCard = ({
 						</div>
 					</div>
 							</div>
-						</motion.div>
-					)}
-				</AnimatePresence>
+									</CollapsibleSection>
 			</EditToolCardWrapper>
-		</motion.div>
+		</div>
 	);
 };

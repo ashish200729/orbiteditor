@@ -49,6 +49,8 @@ import { ISubAgentService } from './subAgentService.js';
 import { getSubAgent } from '../common/subAgentRegistry.js';
 import { ITerminalToolService } from './terminalToolService.js';
 import { applyTodoWrite, normalizeTodoList, todoListsEqual } from '../common/todoToolHelpers.js';
+import { getActiveWindow } from '../../../../base/browser/dom.js';
+import { findThreadComposerInWindow, focusInConnectedWindow } from './connectedWindowDom.js';
 
 
 // related to retrying when LLM message has error
@@ -656,18 +658,28 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 		const threadId = this.state.currentThreadId
 		const thread = this.state.allThreads[threadId]
 		if (!thread) return
-		const s = await thread.state.mountedInfo?.whenMounted
+		// Wait for the composer to actually exist before querying for it — a
+		// caller that just called `openViewContainer` (e.g. the "open sidebar" /
+		// "new chat" actions) races the React composer's mount, and without this
+		// the very first focus after opening the sidebar was silently a no-op.
+		if (thread.state.mountedInfo) {
+			await thread.state.mountedInfo.whenMounted
+		}
 		if (!this.isCurrentlyFocusingMessage()) {
-			s?.textAreaRef.current?.focus()
+			const activeWindow = getActiveWindow()
+			const composerToFocus = findThreadComposerInWindow(activeWindow)
+			if (composerToFocus) {
+				focusInConnectedWindow(composerToFocus)
+			}
 		}
 	}
 	async blurCurrentChat() {
 		const threadId = this.state.currentThreadId
 		const thread = this.state.allThreads[threadId]
 		if (!thread) return
-		const s = await thread.state.mountedInfo?.whenMounted
 		if (!this.isCurrentlyFocusingMessage()) {
-			s?.textAreaRef.current?.blur()
+			const activeWindow = getActiveWindow()
+			findThreadComposerInWindow(activeWindow)?.blur()
 		}
 	}
 

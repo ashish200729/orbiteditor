@@ -2,6 +2,7 @@ import { Disposable, IReference } from '../../../../base/common/lifecycle.js';
 import { URI } from '../../../../base/common/uri.js';
 import { ITextModel } from '../../../../editor/common/model.js';
 import { IResolvedTextEditorModel, ITextModelService } from '../../../../editor/common/services/resolverService.js';
+import { FileOperationError, FileOperationResult } from '../../../../platform/files/common/files.js';
 import { registerSingleton, InstantiationType } from '../../../../platform/instantiation/common/extensions.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { ITextFileService } from '../../../services/textfile/common/textfiles.js';
@@ -41,15 +42,29 @@ class VoidModelService extends Disposable implements IVoidModelService {
 		})
 	}
 
+	/** Prefer uri.toString() as the cache key (stable across schemes); keep fsPath alias for callers. */
+	private _key(uri: URI): string {
+		return uri.toString();
+	}
+
 	initializeModel = async (uri: URI) => {
-		try {
-			if (uri.fsPath in this._modelRefOfURI) return;
-			const editorModelRef = await this._textModelService.createModelReference(uri);
-			// Keep a strong reference to prevent disposal
-			this._modelRefOfURI[uri.fsPath] = editorModelRef;
+		const key = this._key(uri);
+		const fsKey = uri.fsPath;
+		if (key in this._modelRefOfURI || fsKey in this._modelRefOfURI) {
+			return;
 		}
-		catch (e) {
-			console.log('InitializeModel error:', e)
+		try {
+			const editorModelRef = await this._textModelService.createModelReference(uri);
+			this._modelRefOfURI[key] = editorModelRef;
+			// Legacy alias so getModelFromFsPath still works.
+			this._modelRefOfURI[fsKey] = editorModelRef;
+		} catch (e) {
+			// Optional workspace files (e.g. `.orbitrules`) are often absent — treat as a
+			// no-op so startup contributions don't throw unhandled rejections.
+			if (e instanceof FileOperationError && e.fileOperationResult === FileOperationResult.FILE_NOT_FOUND) {
+				return;
+			}
+			throw e;
 		}
 	};
 
@@ -69,20 +84,33 @@ class VoidModelService extends Disposable implements IVoidModelService {
 	};
 
 	getModel = (uri: URI) => {
-		return this.getModelFromFsPath(uri.fsPath)
+		const byUri = this._modelRefOfURI[this._key(uri)];
+		if (byUri) {
+			const model = byUri.object.textEditorModel;
+			return { model: model ?? null, editorModel: byUri.object };
+		}
+		return this.getModelFromFsPath(uri.fsPath);
 	}
 
 
 	getModelSafe = async (uri: URI): Promise<VoidModelType> => {
-		if (!(uri.fsPath in this._modelRefOfURI)) await this.initializeModel(uri);
+		const key = this._key(uri);
+		if (!(key in this._modelRefOfURI) && !(uri.fsPath in this._modelRefOfURI)) {
+			await this.initializeModel(uri);
+		}
 		return this.getModel(uri);
-
 	};
 
 	override dispose() {
 		super.dispose();
+		// Keys may alias the same ref (uri.toString() + fsPath) — dispose once.
+		const seen = new Set<IReference<IResolvedTextEditorModel>>();
 		for (const ref of Object.values(this._modelRefOfURI)) {
-			ref.dispose(); // release reference to allow disposal
+			if (seen.has(ref)) {
+				continue;
+			}
+			seen.add(ref);
+			ref.dispose();
 		}
 	}
 }

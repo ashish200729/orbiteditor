@@ -7,6 +7,8 @@ import React, { useMemo, useState, useEffect, useRef, useCallback } from 'react'
 import { Check, Copy, LoaderCircle, MessageCircleQuestion, Plus, Search, Trash2, X } from 'lucide-react';
 import { useAccessor, useChatThreadsState, useRunningThreadIds, useIsDark } from '../../../util/services.js';
 import { IsRunningType, ThreadType } from '../../../../../chatThreadService.js';
+import { getConnectedDocument } from '../../contexts/ConnectedWindowContext.js';
+import { focusInConnectedWindow } from '../../../util/helpers.js';
 
 type ThreadHistoryDropdownProps = {
 	onClose: () => void;
@@ -36,29 +38,32 @@ export const ThreadHistoryDropdown = ({ onClose }: ThreadHistoryDropdownProps) =
 	const runningThreadIds = useRunningThreadIds();
 
 	useEffect(() => {
-		searchInputRef.current?.focus();
+		focusInConnectedWindow(searchInputRef.current);
 	}, []);
 
-	// Close on outside click
+	// Close on outside click — bind to the document the dropdown is actually painted in
+	// (the pop-out when hosted there), otherwise clicks in the pop-out never reach this listener.
 	useEffect(() => {
+		const doc = getConnectedDocument(dropdownRef.current);
 		const handleClick = (e: MouseEvent) => {
 			if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
 				onClose();
 			}
 		};
-		document.addEventListener('mousedown', handleClick, true);
-		return () => document.removeEventListener('mousedown', handleClick, true);
+		doc.addEventListener('mousedown', handleClick, true);
+		return () => doc.removeEventListener('mousedown', handleClick, true);
 	}, [onClose]);
 
 	// Close on Escape
 	useEffect(() => {
+		const doc = getConnectedDocument(dropdownRef.current);
 		const handleKeyDown = (e: KeyboardEvent) => {
 			if (e.key === 'Escape') {
 				onClose();
 			}
 		};
-		document.addEventListener('keydown', handleKeyDown);
-		return () => document.removeEventListener('keydown', handleKeyDown);
+		doc.addEventListener('keydown', handleKeyDown);
+		return () => doc.removeEventListener('keydown', handleKeyDown);
 	}, [onClose]);
 
 	const sortedThreads = useMemo(() => {

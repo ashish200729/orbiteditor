@@ -1,0 +1,2101 @@
+/*--------------------------------------------------------------------------------------
+ *  Copyright 2025 Orbit Editor. All rights reserved.
+ *  Licensed under the Apache License, Version 2.0. See LICENSE.txt for more information.
+ *--------------------------------------------------------------------------------------*/
+
+/* ======================================================================
+   Main-window title bar pill button ("Agents Window")
+   Must sit above the full-width drag region (z-index 2500, same as layout toolbar).
+   ====================================================================== */
+
+.monaco-workbench .part.titlebar > .titlebar-container > .titlebar-right > .agent-window-pill {
+	position: relative;
+	z-index: 2500;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	flex-shrink: 0;
+	gap: 6px;
+	height: 24px;
+	margin: 0 6px 0 10px;
+	padding: 0 12px;
+	border: 1px solid var(--vscode-titleBar-border);
+	border-radius: 12px;
+	font-size: 11px;
+	font-weight: 500;
+	line-height: 1;
+	white-space: nowrap;
+	cursor: pointer;
+	-webkit-app-region: no-drag;
+	pointer-events: auto;
+	color: var(--vscode-titleBar-activeForeground);
+	background: var(--vscode-titleBar-activeBackground);
+	transition: background-color 100ms ease, border-color 100ms ease, box-shadow 100ms ease;
+}
+
+.monaco-workbench .part.titlebar > .titlebar-container > .titlebar-right > .agent-window-pill,
+.monaco-workbench .part.titlebar > .titlebar-container > .titlebar-right > .agent-window-pill * {
+	-webkit-app-region: no-drag;
+	pointer-events: auto;
+}
+
+.monaco-workbench .part.titlebar > .titlebar-container > .titlebar-right > .agent-window-pill:hover {
+	background: var(--vscode-toolbar-hoverBackground);
+	border-color: var(--vscode-focusBorder);
+}
+
+.monaco-workbench .part.titlebar > .titlebar-container > .titlebar-right > .agent-window-pill:active {
+	background: var(--vscode-toolbar-activeBackground);
+}
+
+.monaco-workbench .part.titlebar > .titlebar-container > .titlebar-right > .agent-window-pill.active {
+	border-color: var(--vscode-focusBorder);
+	box-shadow: 0 0 0 1px var(--vscode-focusBorder);
+}
+
+.monaco-workbench .part.titlebar > .titlebar-container > .titlebar-right > .agent-window-pill .agent-window-pill-icon {
+	font-size: 11px;
+	opacity: 0.75;
+}
+
+.monaco-workbench .part.titlebar > .titlebar-container > .titlebar-right > .agent-window-pill .agent-window-pill-label {
+	font-size: 11px;
+	letter-spacing: 0.01em;
+}
+
+/* Light title bar */
+.monaco-workbench.light .part.titlebar > .titlebar-container > .titlebar-right > .agent-window-pill {
+	color: var(--vscode-titleBar-activeForeground);
+	background: var(--vscode-titleBar-activeBackground);
+	border-color: var(--vscode-titleBar-border);
+}
+
+.monaco-workbench.light .part.titlebar > .titlebar-container > .titlebar-right > .agent-window-pill:hover {
+	background: var(--vscode-toolbar-hoverBackground);
+	border-color: var(--vscode-focusBorder);
+}
+
+.monaco-workbench.windows .part.titlebar > .titlebar-container > .titlebar-right > .agent-window-pill,
+.monaco-workbench.linux .part.titlebar > .titlebar-container > .titlebar-right > .agent-window-pill {
+	margin-right: 4px;
+}
+
+.monaco-workbench.mac:not(.web) .part.titlebar > .titlebar-container > .titlebar-right > .agent-window-pill {
+	margin-right: 8px;
+}
+
+/* ======================================================================
+   Agents window shell — per-column headers + body layout (Cursor layout)
+   The shell is appended to the auxiliary window's container, which already
+   inherits `monaco-workbench` + platform classes from the main window body
+   via `trackAttributes` in the auxiliary window service.
+
+   There is no separate full-width title band. Each column (sidebar / chat /
+   workspace) owns a 35px header flush at the top of the window, so the vertical
+   dividers run full height and each column reads as one continuous surface with
+   its header. Each header is a `-webkit-app-region: drag` surface for window
+   dragging; interactive controls re-assert no-drag. OS window controls (macOS
+   traffic lights top-left, Windows/Linux WCO top-right) are drawn by the OS —
+   we only reserve space for them. No manually-rendered min/max/close buttons.
+   ====================================================================== */
+
+.agent-window.agent-window-shell {
+	position: relative;
+	display: flex;
+	flex: 1 1 auto;
+	flex-direction: column;
+	min-height: 0;
+	height: 100%;
+	background: var(--vscode-editor-background);
+	color: var(--vscode-foreground);
+}
+
+/* Visible fallback if the React mount fails (never a silently-blank window). */
+.agent-window .agent-window-mount-error {
+	padding: 24px;
+	font-size: 12.5px;
+	line-height: 1.5;
+	color: var(--vscode-errorForeground, var(--vscode-foreground));
+}
+
+/* --- Per-column headers (Cursor layout) ---
+   There is no separate full-width title band. Each column owns a 36px header
+   flush at the top of the window; the vertical dividers run the full height so a
+   column reads as one continuous surface with its own header. The OS draws the
+   window controls as an overlay (macOS traffic lights top-left, Windows/Linux
+   WCO top-right) — we only reserve space for them. Each header is a drag surface;
+   interactive children re-assert no-drag. */
+.agent-window .agent-window-pane-header {
+	position: relative;
+	z-index: 5;
+	flex: 0 0 auto;
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	/* 36px matches the workspace tab strip so all three column tops align. */
+	height: 36px;
+	min-height: 36px;
+	padding: 0 8px;
+	box-sizing: border-box;
+	user-select: none;
+	-webkit-user-select: none;
+	-webkit-app-region: drag;
+}
+/* Only the interactive controls opt out of dragging; the title text and empty
+   space stay draggable so the window can be moved by any header. */
+.agent-window .agent-window-pane-header button,
+.agent-window .agent-window-pane-header .agent-window-ide-btn {
+	-webkit-app-region: no-drag;
+}
+
+/* Sidebar header shares the sidebar surface, so header and list read as one. */
+.agent-window .agent-window-sidebar-header {
+	background: var(--vscode-sideBar-background);
+	border-bottom: 1px solid transparent;
+	padding-left: 8px;
+}
+/* Chat header. */
+.agent-window .agent-window-main-header {
+	background: var(--vscode-editor-background);
+	border-bottom: 1px solid var(--vscode-panel-border);
+	gap: 6px;
+	padding-left: 10px;
+	padding-right: 6px;
+}
+
+/* Portal targets below each header. */
+.agent-window .agent-window-sidebar-content,
+.agent-window .agent-window-main-content {
+	position: relative;
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow: hidden;
+}
+
+/* --- Window-controls reservation (OS overlay) --- */
+.agent-window .agent-window-controls-spacer {
+	display: flex;
+	flex: 0 0 auto;
+	height: 100%;
+}
+.monaco-workbench.mac .agent-window .agent-window-sidebar-header {
+	padding-left: 0;
+}
+.monaco-workbench.mac .agent-window .agent-window-sidebar-header .agent-window-controls-spacer {
+	width: 70px;
+}
+/* Sidebar collapsed on macOS: traffic lights now fall over the chat header. */
+.monaco-workbench.mac .agent-window.sidebar-collapsed .agent-window-main-header {
+	padding-left: 78px;
+}
+/* Windows/Linux: reserve WCO space top-right (over the workspace tab strip, or
+   the chat header when the workspace is hidden). */
+.monaco-workbench:not(.mac) .agent-window.reserve-wco .void-agent-workspace-tabbar {
+	padding-right: 140px;
+}
+.monaco-workbench:not(.mac) .agent-window.reserve-wco.workspace-collapsed .agent-window-main-header {
+	padding-right: 140px;
+}
+
+/* --- Header icon buttons (sidebar / workspace / expand) --- */
+.agent-window .agent-window-titlebar-icon {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	flex: 0 0 auto;
+	width: 26px;
+	height: 24px;
+	border: none;
+	border-radius: 5px;
+	background: transparent;
+	color: var(--vscode-foreground);
+	cursor: pointer;
+	opacity: 0.72;
+	transition: background-color 100ms ease, opacity 100ms ease;
+}
+.agent-window .agent-window-titlebar-icon:hover {
+	background: var(--vscode-toolbar-hoverBackground);
+	opacity: 1;
+}
+.agent-window .agent-window-titlebar-icon:active {
+	background: var(--vscode-toolbar-activeBackground);
+}
+.agent-window .agent-window-titlebar-icon .codicon {
+	font-size: 15px;
+}
+.agent-window.sidebar-collapsed .agent-window-sidebar-header .agent-window-sidebar-toggle {
+	opacity: 0.5;
+}
+/* Alt sidebar toggle: only present in the chat header while the sidebar is
+   collapsed, so the control never vanishes with its column. */
+.agent-window .agent-window-sidebar-toggle-alt {
+	display: none;
+}
+.agent-window.sidebar-collapsed .agent-window-main-header .agent-window-sidebar-toggle-alt {
+	display: inline-flex;
+}
+
+/* --- Chat title + flexible spacer --- */
+.agent-window .agent-window-chat-title {
+	min-width: 0;
+	flex: 0 1 auto;
+	font-size: 12.5px;
+	font-weight: 500;
+	letter-spacing: 0.01em;
+	color: var(--vscode-foreground);
+	opacity: 0.92;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	cursor: default;
+}
+.agent-window .agent-window-header-spacer {
+	flex: 1 1 auto;
+	min-width: 8px;
+	align-self: stretch;
+}
+
+/* Inactive-window dimming. */
+.agent-window.inactive .agent-window-pane-header {
+	opacity: 0.86;
+}
+
+/* --- IDE button --- */
+.agent-window .agent-window-ide-btn {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	flex: 0 0 auto;
+	height: 24px;
+	padding: 0 10px;
+	border: 1px solid var(--vscode-panel-border);
+	border-radius: 12px;
+	background: transparent;
+	color: var(--vscode-foreground);
+	font-size: 11px;
+	font-weight: 500;
+	cursor: pointer;
+	opacity: 0.82;
+	transition: background-color 100ms ease, border-color 100ms ease, opacity 100ms ease;
+}
+.agent-window .agent-window-ide-btn:hover {
+	background: var(--vscode-toolbar-hoverBackground);
+	border-color: var(--vscode-focusBorder);
+	opacity: 1;
+}
+.agent-window .agent-window-ide-btn:active {
+	background: var(--vscode-toolbar-activeBackground);
+}
+.agent-window .agent-window-ide-btn .agent-window-ide-label {
+	font-size: 11px;
+	letter-spacing: 0.02em;
+}
+.agent-window .agent-window-ide-btn .codicon {
+	font-size: 12px;
+	opacity: 0.85;
+}
+
+/* Draggable empty area of the workspace tab strip (its own top-of-column header). */
+.agent-window .void-agent-workspace-tabbar {
+	-webkit-app-region: drag;
+}
+.agent-window .void-agent-workspace-tab,
+.agent-window .void-agent-workspace-add-wrap {
+	-webkit-app-region: no-drag;
+}
+
+/* Responsive: drop the IDE label to an icon in a narrow window. */
+@media (max-width: 680px) {
+	.agent-window .agent-window-ide-btn .agent-window-ide-label {
+		display: none;
+	}
+	.agent-window .agent-window-ide-btn {
+		padding: 0 7px;
+	}
+}
+
+/* --- body: sidebar | divider | main --- */
+
+.agent-window .agent-window-body {
+	display: flex;
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow: hidden;
+}
+
+.agent-window .agent-window-sidebar {
+	flex: 0 0 auto;
+	width: 280px;
+	min-width: 200px;
+	max-width: 460px;
+	height: 100%;
+	overflow: hidden;
+	background: var(--vscode-sideBar-background);
+	border-right: 1px solid var(--vscode-panel-border);
+	display: flex;
+	flex-direction: column;
+	min-height: 0;
+}
+
+.agent-window .agent-window-divider {
+	flex: 0 0 auto;
+	width: 4px;
+	height: 100%;
+	cursor: col-resize;
+	background: transparent;
+	transition: background-color 80ms ease;
+}
+
+.agent-window .agent-window-divider:hover,
+.agent-window .agent-window-divider.dragging {
+	background: var(--vscode-focusBorder);
+}
+
+.monaco-workbench .agent-window-pill:focus-visible,
+.agent-window .agent-window-titlebar-icon:focus-visible,
+.agent-window .agent-window-ide-btn:focus-visible,
+.agent-window .agent-window-divider:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+.agent-window .agent-window-main {
+	flex: 1 1 auto;
+	min-width: 0;
+	height: 100%;
+	overflow: hidden;
+	background: var(--vscode-editor-background);
+	display: flex;
+	flex-direction: column;
+}
+
+.agent-window.sidebar-collapsed .agent-window-sidebar,
+.agent-window.sidebar-collapsed .agent-window-divider:not(.agent-window-workspace-divider) {
+	display: none;
+}
+
+/* Hide the main-IDE chat-history toggle; agent window provides its own sidebar toggle in the title bar.
+   Use high specificity to override the .void-scope .chat-history-topbar { display: flex !important } rule. */
+.agent-window .agent-window-sidebar .void-scope .chat-history-topbar,
+.agent-window .chat-history-topbar {
+	display: none !important;
+}
+
+/* Ensure the portal-mounted React components fill their containers (the content
+   node below each header). These rules are critical — without them the void-scope
+   wrapper divs collapse to zero height and the column appears blank. */
+.agent-window .agent-window-sidebar-content > *,
+.agent-window .agent-window-main-content > * {
+	width: 100% !important;
+	height: 100% !important;
+	display: block;
+}
+
+/* The void-scope wrapper from ChatHistory/Sidebar uses inline style
+   width:100%; height:100% — reinforce with flex so inner content
+   (flex-col layouts) can compute their heights. */
+.agent-window .agent-window-sidebar-content > .void-scope,
+.agent-window .agent-window-main-content > .void-scope {
+	display: flex !important;
+	flex-direction: column !important;
+	overflow: hidden;
+}
+
+/* Center the chat content in a clean, contained column (Cursor-style) instead of
+   letting it stretch the full window width. One rule centers everything —
+   messages, composer, and the empty/new-agent state — so the layout stays simple
+   and consistent. The vertical scrollbar sits at this column's right edge. */
+.agent-window .agent-window-main-content > .void-scope {
+	max-width: 720px;
+	margin-left: auto;
+	margin-right: auto;
+}
+
+/* Hidden React root host in the main window — portals render into the aux-window panes */
+.agent-window-react-host {
+	display: none !important;
+}
+
+/* Tooltip container — react-tooltip portals into this; keep it above body content */
+.agent-window .void-tooltip-container {
+	position: absolute;
+	top: 0;
+	left: 0;
+	width: 100%;
+	height: 100%;
+	pointer-events: none;
+	z-index: 10000;
+}
+
+.agent-window .void-tooltip-container > * {
+	pointer-events: auto;
+}
+
+/* ===================================================================== */
+/* Right-side workspace pane (Changes / Terminal / File / Browser)        */
+/* ===================================================================== */
+
+.agent-window .agent-window-workspace {
+	flex: 0 0 auto;
+	width: 520px;
+	min-width: 360px;
+	max-width: 1000px;
+	height: 100%;
+	overflow: hidden;
+	background: var(--vscode-editor-background);
+	border-left: 1px solid var(--vscode-panel-border);
+	display: flex;
+	flex-direction: column;
+}
+
+/* The workspace divider sits on main's right edge; grows the workspace when dragged left. */
+.agent-window .agent-window-workspace-divider {
+	margin-left: -2px;
+}
+
+.agent-window.workspace-collapsed .agent-window-workspace,
+.agent-window.workspace-collapsed .agent-window-workspace-divider {
+	display: none;
+}
+
+/* Workspace toggle dims when the workspace is hidden (shares the base icon look). */
+.agent-window.workspace-collapsed .agent-window-titlebar-icon.agent-window-workspace-toggle {
+	opacity: 0.5;
+}
+
+/* The portal mounts <AgentWorkspace/> directly into the pane; make it fill.
+   NOTE: the workspace React classNames are scope-tailwind–prefixed (`void-…`) by the
+   react build, but this workbench CSS is NOT run through that pipeline — so its
+   selectors are authored with the `void-` prefix by hand to match the rendered DOM.
+   The `.agent-window-*` shell classes above are raw DOM (unprefixed) and stay literal. */
+.agent-window .agent-window-workspace > * {
+	width: 100% !important;
+	height: 100% !important;
+}
+
+/* The workspace subtree is not wrapped in `.void-scope`, so it does not inherit the
+   tailwind preflight reset. Apply the essentials locally. */
+.void-agent-workspace,
+.void-agent-workspace *,
+.void-agent-workspace *::before,
+.void-agent-workspace *::after {
+	box-sizing: border-box;
+}
+.void-agent-workspace button {
+	font-family: inherit;
+	font-size: inherit;
+	line-height: inherit;
+}
+
+.void-agent-workspace {
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+	min-height: 0;
+	color: var(--vscode-foreground);
+	font-family: var(--vscode-font-family);
+}
+
+/* --- Tab strip --- */
+.void-agent-workspace-tabbar {
+	/* Stack above the panel body so the "+" menu (which extends below the
+	   tabbar into the body) paints over inactive HTML panels. The active
+	   browser WebContentsView is hidden while the menu is open (see
+	   BrowserPanel overlayOpen), so this z-index is enough for the rest. */
+	position: relative;
+	z-index: 20;
+	flex: 0 0 auto;
+	display: flex;
+	align-items: stretch;
+	height: 36px;
+	border-bottom: 1px solid var(--vscode-panel-border);
+	background: var(--vscode-editorGroupHeader-tabsBackground, var(--vscode-editor-background));
+}
+
+.void-agent-workspace-tabs {
+	flex: 1 1 auto;
+	display: flex;
+	align-items: stretch;
+	min-width: 0;
+	overflow-x: auto;
+	overflow-y: hidden;
+	scrollbar-width: none;
+}
+.void-agent-workspace-tabs::-webkit-scrollbar {
+	display: none;
+}
+
+.void-agent-workspace-tab {
+	position: relative;
+	flex: 0 0 auto;
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	max-width: 180px;
+	padding: 0 8px 0 10px;
+	border-right: 1px solid var(--vscode-panel-border);
+	color: var(--vscode-tab-inactiveForeground, var(--vscode-descriptionForeground));
+	background: var(--vscode-tab-inactiveBackground, transparent);
+	cursor: pointer;
+	user-select: none;
+	font-size: 12px;
+	transition: background-color 100ms ease, color 100ms ease;
+}
+.void-agent-workspace-tab:hover {
+	background: var(--vscode-tab-hoverBackground, var(--vscode-toolbar-hoverBackground));
+}
+.void-agent-workspace-tab.void-active {
+	color: var(--vscode-tab-activeForeground, var(--vscode-foreground));
+	background: var(--vscode-tab-activeBackground, var(--vscode-editor-background));
+}
+.void-agent-workspace-tab.void-active::after {
+	content: '';
+	position: absolute;
+	left: 0;
+	right: 0;
+	bottom: -1px;
+	height: 1px;
+	background: var(--vscode-focusBorder);
+}
+.void-agent-workspace-tab-icon {
+	flex: 0 0 auto;
+	opacity: 0.85;
+}
+.void-agent-workspace-tab-label {
+	flex: 1 1 auto;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+/* Trailing slot — a dirty dot and the close (×) share one 18px box and swap.
+   Clean tab: empty until hover/active reveals ×. Dirty tab: dot, replaced by ×
+   on hover. This mirrors Cursor / VS Code and keeps the strip calm at rest. */
+.void-agent-workspace-tab-endcap {
+	position: relative;
+	flex: 0 0 auto;
+	width: 18px;
+	height: 18px;
+	margin-left: 1px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+}
+.void-agent-workspace-tab-dot {
+	width: 7px;
+	height: 7px;
+	border-radius: 50%;
+	background: currentColor;
+	opacity: 0.75;
+	transition: opacity 120ms ease;
+}
+.void-agent-workspace-tab-close {
+	position: absolute;
+	inset: 0;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	padding: 0;
+	border: none;
+	border-radius: 5px;
+	background: transparent;
+	color: inherit;
+	opacity: 0;
+	cursor: pointer;
+	transition: opacity 120ms ease, background-color 120ms ease, color 120ms ease;
+}
+/* Reveal × on tab hover (and for the active clean tab); hide the dirty dot when
+   the × takes the slot. */
+.void-agent-workspace-tab:hover .void-agent-workspace-tab-close,
+.void-agent-workspace-tab.void-active:not(.void-dirty) .void-agent-workspace-tab-close {
+	opacity: 0.8;
+}
+.void-agent-workspace-tab:hover .void-agent-workspace-tab-dot {
+	opacity: 0;
+}
+.void-agent-workspace-tab-close:hover {
+	background: var(--vscode-toolbar-hoverBackground);
+	color: var(--vscode-foreground);
+	opacity: 1 !important;
+}
+.void-agent-workspace-tab-close:active {
+	background: var(--vscode-toolbar-activeBackground);
+}
+.void-agent-workspace-tab-close:focus-visible {
+	opacity: 1;
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+/* --- Add ("+") button + menu --- */
+.void-agent-workspace-add-wrap {
+	position: relative;
+	flex: 0 0 auto;
+	display: flex;
+	align-items: center;
+	padding: 0 4px;
+}
+.void-agent-workspace-add-btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 26px;
+	height: 26px;
+	border: none;
+	border-radius: 4px;
+	background: transparent;
+	color: var(--vscode-foreground);
+	opacity: 0.8;
+	cursor: pointer;
+	transition: background-color 100ms ease, opacity 100ms ease;
+}
+.void-agent-workspace-add-btn:hover {
+	background: var(--vscode-toolbar-hoverBackground);
+	opacity: 1;
+}
+.void-agent-workspace-add-menu {
+	position: absolute;
+	top: 32px;
+	right: 4px;
+	/* High enough to clear any in-panel HTML chrome (browser toolbar, find bar,
+	   terminal header). Native WebContentsView is temporarily hidden while this
+	   menu is open, so CSS z-index alone is sufficient for the rest. */
+	z-index: 1000;
+	min-width: 168px;
+	padding: 4px;
+	border: 1px solid var(--vscode-menu-border, var(--vscode-panel-border));
+	border-radius: 8px;
+	background: var(--vscode-menu-background, var(--vscode-editorWidget-background));
+	box-shadow: 0 8px 24px rgba(0, 0, 0, 0.36);
+	display: flex;
+	flex-direction: column;
+	gap: 1px;
+}
+.void-agent-workspace-add-menu-item {
+	display: flex;
+	align-items: center;
+	gap: 9px;
+	padding: 7px 9px;
+	border: none;
+	border-radius: 5px;
+	background: transparent;
+	color: var(--vscode-menu-foreground, var(--vscode-foreground));
+	font-size: 12.5px;
+	text-align: left;
+	cursor: pointer;
+}
+.void-agent-workspace-add-menu-item:hover {
+	background: var(--vscode-menu-selectionBackground, var(--vscode-list-hoverBackground));
+	color: var(--vscode-menu-selectionForeground, var(--vscode-foreground));
+}
+
+/* --- Body / panel host --- */
+/* Cursor layout: main panel column + optional right-side file explorer. */
+.void-agent-workspace-body {
+	position: relative;
+	flex: 1 1 auto;
+	min-height: 0;
+	display: flex;
+	flex-direction: row;
+	overflow: hidden;
+}
+.void-agent-workspace-main-col {
+	position: relative;
+	flex: 1 1 auto;
+	min-width: 0;
+	min-height: 0;
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+}
+.void-agent-workspace-body.void-with-explorer .void-agent-workspace-main-col {
+	border-right: 1px solid var(--vscode-panel-border);
+}
+.void-agent-workspace-side-explorer {
+	flex: 0 0 220px;
+	width: 220px;
+	max-width: 45%;
+	min-width: 150px;
+	min-height: 0;
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+	background: var(--vscode-sideBar-background, var(--vscode-editor-background));
+}
+.void-agent-workspace-panel-host {
+	position: absolute;
+	inset: 0;
+	display: flex;
+	flex-direction: column;
+	width: 100%;
+	height: 100%;
+	min-height: 0;
+	overflow: hidden;
+}
+/* Inactive hosts still use inline display:none from React. */
+.void-agent-workspace-side-explorer.void-hidden {
+	display: none !important;
+}
+.void-agent-workspace-tab-fileicon {
+	flex: 0 0 auto;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 14px;
+	height: 14px;
+}
+
+/* --- Empty-state launcher (2×2 grid) --- */
+.void-agent-workspace-empty {
+	position: absolute;
+	inset: 0;
+	flex: 1 1 auto;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: 24px;
+}
+.void-agent-workspace-empty-grid {
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+	gap: 12px;
+	width: 100%;
+	max-width: 320px;
+}
+.void-agent-workspace-launch-card {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	gap: 8px;
+	aspect-ratio: 1 / 0.72;
+	padding: 16px;
+	border: 1px solid var(--vscode-panel-border);
+	border-radius: 12px;
+	background: var(--vscode-editorWidget-background, transparent);
+	color: var(--vscode-foreground);
+	cursor: pointer;
+	transition: background-color 120ms ease, border-color 120ms ease, transform 120ms ease;
+}
+.void-agent-workspace-launch-card:hover {
+	background: var(--vscode-list-hoverBackground);
+	border-color: var(--vscode-focusBorder);
+}
+.void-agent-workspace-launch-card:active {
+	transform: translateY(1px);
+}
+.void-agent-workspace-launch-icon {
+	opacity: 0.85;
+}
+.void-agent-workspace-launch-label {
+	font-size: 12.5px;
+	font-weight: 500;
+}
+
+/* --- Placeholder body (panels awaiting their real implementation) --- */
+.void-agent-workspace-placeholder {
+	flex: 1 1 auto;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	gap: 8px;
+	padding: 24px;
+	text-align: center;
+	color: var(--vscode-descriptionForeground);
+}
+.void-agent-workspace-placeholder-icon {
+	opacity: 0.6;
+}
+.void-agent-workspace-placeholder-label {
+	font-size: 13px;
+	font-weight: 500;
+	color: var(--vscode-foreground);
+}
+.void-agent-workspace-placeholder-detail {
+	font-size: 12px;
+	max-width: 240px;
+}
+
+/* --- Side file explorer (Cursor right column) --- */
+.void-agent-workspace-explorer {
+	display: flex;
+	flex-direction: column;
+	flex: 1 1 auto;
+	min-height: 0;
+	height: 100%;
+}
+.void-agent-workspace-explorer.void-compact .void-agent-workspace-explorer-header {
+	height: 28px;
+	text-transform: none;
+	letter-spacing: 0;
+	font-weight: 500;
+	font-size: 12px;
+}
+.void-agent-workspace-explorer-header {
+	flex: 0 0 auto;
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	height: 30px;
+	padding: 0 6px 0 10px;
+	border-bottom: 1px solid var(--vscode-panel-border);
+	font-size: 11px;
+	font-weight: 600;
+	letter-spacing: 0.02em;
+	text-transform: uppercase;
+	color: var(--vscode-descriptionForeground);
+}
+.void-agent-workspace-explorer-title {
+	flex: 1 1 auto;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.void-agent-workspace-explorer-actions {
+	flex: 0 0 auto;
+	display: flex;
+	align-items: center;
+	gap: 1px;
+}
+.void-agent-workspace-explorer-action {
+	flex: 0 0 auto;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 22px;
+	height: 22px;
+	padding: 0;
+	border: none;
+	border-radius: 4px;
+	background: transparent;
+	color: var(--vscode-icon-foreground, var(--vscode-foreground));
+	cursor: pointer;
+	opacity: 0.7;
+}
+.void-agent-workspace-explorer-action:hover {
+	opacity: 1;
+	background: var(--vscode-toolbar-hoverBackground);
+}
+.void-agent-workspace-explorer-tree {
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow: auto;
+	padding: 2px 0 8px;
+	outline: none;
+}
+.void-agent-workspace-explorer-row {
+	display: flex;
+	align-items: center;
+	gap: 3px;
+	height: 22px;
+	padding-right: 6px;
+	color: var(--vscode-foreground);
+	font-size: 12px;
+	cursor: pointer;
+	user-select: none;
+	outline: none;
+}
+.void-agent-workspace-explorer-row:hover {
+	background: var(--vscode-list-hoverBackground);
+}
+.void-agent-workspace-explorer-row.void-selected,
+.void-agent-workspace-explorer-row:focus {
+	background: var(--vscode-list-activeSelectionBackground, var(--vscode-list-hoverBackground));
+	color: var(--vscode-list-activeSelectionForeground, var(--vscode-foreground));
+}
+.void-agent-workspace-explorer-row.void-active-file:not(.void-selected) {
+	background: var(--vscode-list-inactiveSelectionBackground, var(--vscode-list-hoverBackground));
+}
+.void-agent-workspace-explorer-row.void-drop-target {
+	background: var(--vscode-list-dropBackground, var(--vscode-list-hoverBackground)) !important;
+	outline: 1px solid var(--vscode-focusBorder, transparent);
+	outline-offset: -1px;
+}
+.void-agent-workspace-explorer-row.void-cut {
+	opacity: 0.5;
+}
+.void-agent-workspace-explorer-row.void-root {
+	font-weight: 600;
+}
+.void-agent-workspace-explorer-row[draggable="true"] {
+	cursor: grab;
+}
+.void-agent-workspace-explorer-row[draggable="true"]:active {
+	cursor: grabbing;
+}
+.void-agent-workspace-explorer-row.void-editing {
+	background: var(--vscode-list-hoverBackground);
+}
+.void-agent-workspace-explorer-chevron {
+	flex: 0 0 auto;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 14px;
+	height: 14px;
+	color: var(--vscode-foreground);
+	opacity: 0.65;
+}
+.void-agent-workspace-explorer-chevron.void-spacer {
+	visibility: hidden;
+}
+.void-agent-workspace-explorer-icon {
+	flex: 0 0 auto;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 16px;
+	height: 16px;
+}
+.void-agent-workspace-explorer-name {
+	flex: 1 1 auto;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.void-agent-workspace-explorer-input {
+	flex: 1 1 auto;
+	min-width: 0;
+	height: 18px;
+	padding: 0 4px;
+	border: 1px solid var(--vscode-focusBorder, var(--vscode-input-border));
+	border-radius: 2px;
+	background: var(--vscode-input-background);
+	color: var(--vscode-input-foreground);
+	font-size: 12px;
+	font-family: inherit;
+	outline: none;
+}
+.void-agent-workspace-explorer-status {
+	flex: 0 0 auto;
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+}
+.void-agent-workspace-explorer-error {
+	font-size: 11px;
+	color: var(--vscode-errorForeground);
+	padding: 2px 8px 6px;
+	opacity: 0.9;
+}
+.void-agent-workspace-explorer-menu {
+	position: fixed;
+	z-index: 1000;
+	min-width: 200px;
+	padding: 4px 0;
+	border: 1px solid var(--vscode-menu-border, var(--vscode-panel-border));
+	border-radius: 6px;
+	background: var(--vscode-menu-background, var(--vscode-editorWidget-background));
+	box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+	color: var(--vscode-menu-foreground, var(--vscode-foreground));
+}
+.void-agent-workspace-explorer-menu-item {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 16px;
+	width: 100%;
+	padding: 5px 12px;
+	border: none;
+	background: transparent;
+	color: inherit;
+	font-size: 12px;
+	text-align: left;
+	cursor: pointer;
+}
+.void-agent-workspace-explorer-menu-item:hover {
+	background: var(--vscode-menu-selectionBackground, var(--vscode-list-activeSelectionBackground));
+	color: var(--vscode-menu-selectionForeground, var(--vscode-list-activeSelectionForeground));
+}
+.void-agent-workspace-explorer-menu-item.void-danger:hover {
+	background: var(--vscode-inputValidation-errorBackground, rgba(255, 0, 0, 0.15));
+	color: var(--vscode-errorForeground);
+}
+.void-agent-workspace-explorer-menu-kbd {
+	font-size: 11px;
+	opacity: 0.55;
+}
+.void-agent-workspace-explorer-menu-sep {
+	height: 1px;
+	margin: 4px 0;
+	background: var(--vscode-menu-separatorBackground, var(--vscode-panel-border));
+}
+
+/* Filter-on-type input (mirrors the main explorer's "Filter in Files" box). */
+.void-agent-workspace-explorer-filter {
+	flex: 0 0 auto;
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	height: 26px;
+	padding: 0 8px;
+	border-bottom: 1px solid var(--vscode-panel-border);
+	background: var(--vscode-sideBar-background, transparent);
+}
+.void-agent-workspace-explorer-filter-icon {
+	flex: 0 0 auto;
+	color: var(--vscode-descriptionForeground);
+	opacity: 0.7;
+}
+.void-agent-workspace-explorer-filter-input {
+	flex: 1 1 auto;
+	min-width: 0;
+	height: 20px;
+	padding: 0 6px;
+	border: 1px solid var(--vscode-input-border, transparent);
+	border-radius: 2px;
+	background: var(--vscode-input-background);
+	color: var(--vscode-input-foreground);
+	font-size: 12px;
+	font-family: inherit;
+	outline: none;
+}
+.void-agent-workspace-explorer-filter-input::placeholder {
+	color: var(--vscode-input-placeholderForeground);
+}
+.void-agent-workspace-explorer-filter-input:focus {
+	border-color: var(--vscode-focusBorder, var(--vscode-input-border));
+}
+
+/* "Select for Compare" highlight: subtle dotted underline + tinted bg so the
+   user can see which file is the compare baseline without confusion with the
+   active selection. */
+.void-agent-workspace-explorer-row.void-compare-selected {
+	background: var(--vscode-list-inactiveSelectionBackground, var(--vscode-list-hoverBackground));
+	outline: 1px dotted var(--vscode-focusBorder, var(--vscode-foreground));
+	outline-offset: -1px;
+}
+
+/* File loading placeholder (shown while stat resolves). */
+.void-agent-workspace-file-loading {
+	padding: 8px 12px;
+	font-size: 12px;
+	color: var(--vscode-descriptionForeground);
+}
+
+/* --- File editor panel (Cursor chrome) --- */
+.void-agent-workspace-file {
+	display: flex;
+	flex-direction: column;
+	flex: 1 1 auto;
+	min-height: 0;
+	height: 100%;
+	background: var(--vscode-editor-background);
+}
+.void-agent-workspace-file-chrome {
+	flex: 0 0 auto;
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+	height: 30px;
+	padding: 0 6px 0 4px;
+	border-bottom: 1px solid var(--vscode-panel-border);
+	background: var(--vscode-editor-background);
+}
+.void-agent-workspace-file-chrome-left {
+	flex: 1 1 auto;
+	min-width: 0;
+	display: flex;
+	align-items: center;
+	gap: 2px;
+}
+.void-agent-workspace-file-chrome-right {
+	flex: 0 0 auto;
+	display: flex;
+	align-items: center;
+	gap: 2px;
+}
+.void-agent-workspace-file-navbtn,
+.void-agent-workspace-file-iconbtn {
+	flex: 0 0 auto;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 24px;
+	height: 24px;
+	padding: 0;
+	border: none;
+	border-radius: 4px;
+	background: transparent;
+	color: var(--vscode-icon-foreground, var(--vscode-foreground));
+	cursor: pointer;
+	opacity: 0.75;
+}
+.void-agent-workspace-file-navbtn:hover:not(:disabled),
+.void-agent-workspace-file-iconbtn:hover {
+	opacity: 1;
+	background: var(--vscode-toolbar-hoverBackground);
+}
+.void-agent-workspace-file-navbtn:disabled {
+	opacity: 0.3;
+	cursor: default;
+}
+.void-agent-workspace-file-iconbtn.void-active {
+	opacity: 1;
+	background: var(--vscode-toolbar-activeBackground, var(--vscode-toolbar-hoverBackground));
+}
+.void-agent-workspace-file-crumbs {
+	flex: 1 1 auto;
+	min-width: 0;
+	display: flex;
+	align-items: center;
+	gap: 2px;
+	overflow: hidden;
+	font-size: 12px;
+	color: var(--vscode-descriptionForeground);
+}
+.void-agent-workspace-file-crumb {
+	flex: 0 1 auto;
+	min-width: 0;
+	max-width: 120px;
+	padding: 1px 4px;
+	border: none;
+	border-radius: 3px;
+	background: transparent;
+	color: var(--vscode-descriptionForeground);
+	font-size: 12px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	cursor: pointer;
+}
+.void-agent-workspace-file-crumb:hover {
+	background: var(--vscode-toolbar-hoverBackground);
+	color: var(--vscode-foreground);
+}
+.void-agent-workspace-file-crumb-sep {
+	flex: 0 0 auto;
+	opacity: 0.45;
+	font-size: 11px;
+}
+.void-agent-workspace-file-crumb-current {
+	flex: 0 1 auto;
+	min-width: 0;
+	padding: 1px 4px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	color: var(--vscode-foreground);
+	font-weight: 500;
+}
+.void-agent-workspace-file-menu-wrap {
+	position: relative;
+}
+.void-agent-workspace-file-menu {
+	position: absolute;
+	top: calc(100% + 4px);
+	right: 0;
+	z-index: 50;
+	min-width: 220px;
+	padding: 4px 0;
+	border: 1px solid var(--vscode-menu-border, var(--vscode-panel-border));
+	border-radius: 6px;
+	background: var(--vscode-menu-background, var(--vscode-editorWidget-background));
+	box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+	color: var(--vscode-menu-foreground, var(--vscode-foreground));
+}
+.void-agent-workspace-file-menu-item {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 16px;
+	width: 100%;
+	padding: 5px 12px;
+	border: none;
+	background: transparent;
+	color: inherit;
+	font-size: 12px;
+	text-align: left;
+	cursor: pointer;
+}
+.void-agent-workspace-file-menu-item:hover:not(:disabled) {
+	background: var(--vscode-menu-selectionBackground, var(--vscode-list-activeSelectionBackground));
+	color: var(--vscode-menu-selectionForeground, var(--vscode-list-activeSelectionForeground));
+}
+.void-agent-workspace-file-menu-item:disabled {
+	opacity: 0.4;
+	cursor: default;
+}
+.void-agent-workspace-file-menu-kbd {
+	font-size: 11px;
+	opacity: 0.55;
+}
+.void-agent-workspace-file-menu-sep {
+	height: 1px;
+	margin: 4px 0;
+	background: var(--vscode-menu-separatorBackground, var(--vscode-panel-border));
+}
+.void-agent-workspace-file-menu-toggle {
+	width: 28px;
+	height: 16px;
+	border-radius: 999px;
+	background: var(--vscode-input-background, #3a3a3a);
+	position: relative;
+	flex: 0 0 auto;
+}
+.void-agent-workspace-file-menu-toggle::after {
+	content: '';
+	position: absolute;
+	top: 2px;
+	left: 2px;
+	width: 12px;
+	height: 12px;
+	border-radius: 50%;
+	background: var(--vscode-foreground);
+	opacity: 0.7;
+	transition: transform 0.12s ease;
+}
+.void-agent-workspace-file-menu-toggle.void-on {
+	background: var(--vscode-button-background, #0e639c);
+}
+.void-agent-workspace-file-menu-toggle.void-on::after {
+	transform: translateX(12px);
+	opacity: 1;
+	background: var(--vscode-button-foreground, #fff);
+}
+.void-agent-workspace-file-banner {
+	flex: 0 0 auto;
+	padding: 4px 8px;
+	font-size: 11.5px;
+	color: var(--vscode-errorForeground);
+	background: var(--vscode-inputValidation-errorBackground, transparent);
+	border-bottom: 1px solid var(--vscode-inputValidation-errorBorder, var(--vscode-panel-border));
+}
+.void-agent-workspace-file-editor {
+	position: relative;
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow: hidden;
+	display: flex;
+	flex-direction: column;
+}
+/* Monaco host — must fill the pane; React must never put children inside this node. */
+.void-agent-workspace-file-editor-host {
+	position: absolute;
+	inset: 0;
+	width: 100%;
+	height: 100%;
+	min-height: 0;
+}
+.void-agent-workspace-file-editor-host .monaco-editor,
+.void-agent-workspace-file-editor-host .monaco-editor .overflow-guard {
+	width: 100% !important;
+	height: 100% !important;
+}
+/* Surface that the imperatively-created Monaco host is appended into. React keeps
+   it empty; overlays (loading / empty / error) are siblings, never children. */
+.void-agent-workspace-file-editor-surface {
+	position: absolute;
+	inset: 0;
+	min-height: 0;
+}
+/* Empty / error overlay — opaque so the (empty) editor surface never shows through. */
+.void-agent-workspace-file-overlay {
+	position: absolute;
+	inset: 0;
+	z-index: 3;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	gap: 8px;
+	padding: 24px;
+	text-align: center;
+	background: var(--vscode-editor-background);
+}
+/* Read-only chip in the breadcrumb row. */
+.void-agent-workspace-file-readonly {
+	display: inline-flex;
+	align-items: center;
+	gap: 3px;
+	margin-left: 8px;
+	padding: 1px 6px;
+	border-radius: 4px;
+	font-size: 10.5px;
+	line-height: 1.4;
+	color: var(--vscode-descriptionForeground);
+	background: var(--vscode-badge-background, var(--vscode-list-hoverBackground));
+	white-space: nowrap;
+}
+.void-agent-workspace-file-loading {
+	position: absolute;
+	inset: 0;
+	z-index: 2;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	color: var(--vscode-descriptionForeground);
+	font-size: 12px;
+	background: var(--vscode-editor-background);
+	pointer-events: none;
+}
+.void-agent-workspace-file-openbtn {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	height: 26px;
+	padding: 0 12px;
+	border: 1px solid var(--vscode-panel-border);
+	border-radius: 6px;
+	background: transparent;
+	color: var(--vscode-foreground);
+	font-size: 12px;
+	cursor: pointer;
+}
+.void-agent-workspace-file-openbtn:hover {
+	background: var(--vscode-list-hoverBackground);
+	border-color: var(--vscode-focusBorder);
+}
+.void-agent-workspace-file--empty .void-agent-workspace-placeholder {
+	flex: 1 1 auto;
+}
+
+/* ============================ Git Changes panel ============================ */
+.void-agent-git {
+	display: flex;
+	flex-direction: column;
+	flex: 1 1 auto;
+	min-height: 0;
+	font-size: 12px;
+	color: var(--vscode-foreground);
+	background: var(--vscode-editor-background);
+	--agent-git-radius: 8px;
+	--agent-git-ease: cubic-bezier(0.22, 1, 0.36, 1);
+}
+.void-agent-git *::-webkit-scrollbar { width: 10px; height: 10px; }
+.void-agent-git *::-webkit-scrollbar-thumb { background: var(--vscode-scrollbarSlider-background, rgba(127,127,127,0.3)); border-radius: 6px; border: 2px solid transparent; background-clip: padding-box; }
+.void-agent-git *::-webkit-scrollbar-thumb:hover { background: var(--vscode-scrollbarSlider-hoverBackground, rgba(127,127,127,0.5)); border: 2px solid transparent; background-clip: padding-box; }
+.void-agent-git *::-webkit-scrollbar-corner { background: transparent; }
+
+/* empty / loading */
+.void-agent-git-empty {
+	flex: 1 1 auto;
+	display: flex; flex-direction: column; align-items: center; justify-content: center;
+	gap: 10px; padding: 28px; text-align: center;
+	color: var(--vscode-descriptionForeground);
+}
+.void-agent-git-empty-icon { opacity: 0.4; margin-bottom: 2px; }
+.void-agent-git-empty-label { font-size: 13px; color: var(--vscode-foreground); font-weight: 600; }
+.void-agent-git-empty-detail { font-size: 11.5px; max-width: 260px; line-height: 1.55; opacity: 0.85; }
+.void-agent-git-spin { animation: void-agent-git-spin 0.8s linear infinite; }
+@keyframes void-agent-git-spin { to { transform: rotate(360deg); } }
+
+/* generic icon buttons — modifiers must use void- (scope-tailwind) */
+.void-agent-git-iconbtn {
+	display: inline-flex; align-items: center; justify-content: center;
+	width: 27px; height: 27px; border: none; border-radius: 6px;
+	background: transparent; color: var(--vscode-icon-foreground, var(--vscode-foreground));
+	opacity: 0.72; cursor: pointer; flex: 0 0 auto;
+	transition: background-color 0.14s var(--agent-git-ease), color 0.14s var(--agent-git-ease), opacity 0.14s var(--agent-git-ease);
+}
+.void-agent-git-iconbtn.void-sm { width: 22px; height: 22px; border-radius: 5px; }
+.void-agent-git-iconbtn:hover { opacity: 1; background: var(--vscode-toolbar-hoverBackground); }
+.void-agent-git-iconbtn:active { transform: translateY(0.5px); }
+.void-agent-git-iconbtn:disabled { opacity: 0.25; cursor: default; background: transparent; transform: none; }
+.void-agent-git-iconbtn.void-active { color: var(--vscode-inputOption-activeForeground, var(--vscode-foreground)); background: var(--vscode-inputOption-activeBackground, var(--vscode-toolbar-hoverBackground)); opacity: 1; }
+.void-agent-git-iconbtn.void-danger:hover { color: var(--vscode-errorForeground, #e5534b); background: color-mix(in srgb, var(--vscode-errorForeground, #e5534b) 12%, transparent); }
+.void-agent-git-iconbtn:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+
+/* row 1: scope / repo / branch / … / primary */
+.void-agent-git-topbar {
+	flex: 0 0 auto;
+	display: flex; align-items: center; gap: 8px;
+	height: 44px; padding: 0 12px;
+	border-bottom: 1px solid var(--vscode-panel-border);
+	background: var(--vscode-editor-background);
+}
+.void-agent-git-scope {
+	display: inline-flex; align-items: center; gap: 5px;
+	height: 22px; padding: 0 8px; border-radius: 999px;
+	background: color-mix(in srgb, var(--vscode-badge-background, var(--vscode-button-secondaryBackground)) 80%, transparent);
+	color: var(--vscode-badge-foreground, var(--vscode-foreground));
+	font-size: 11px; font-weight: 500; flex: 0 0 auto; letter-spacing: 0.01em;
+}
+.void-agent-git-scope svg { opacity: 0.85; }
+.void-agent-git-repo { color: var(--vscode-foreground); font-weight: 600; flex: 0 0 auto; letter-spacing: 0.01em; }
+.void-agent-git-branch-wrap { position: relative; min-width: 0; flex: 0 1 auto; }
+.void-agent-git-branch {
+	display: inline-flex; align-items: center; gap: 3px; max-width: 100%;
+	height: 24px; padding: 0 6px; border: none; border-radius: 6px;
+	background: transparent; color: var(--vscode-descriptionForeground);
+	font-size: 12px; cursor: pointer;
+	transition: background-color 0.14s var(--agent-git-ease), color 0.14s var(--agent-git-ease);
+}
+.void-agent-git-branch:hover { background: var(--vscode-toolbar-hoverBackground); color: var(--vscode-foreground); }
+.void-agent-git-branch-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.void-agent-git-branch-caret { opacity: 0.55; flex: 0 0 auto; }
+.void-agent-git-topbar-spacer { flex: 1 1 auto; }
+.void-agent-git-overflow-wrap { position: relative; flex: 0 0 auto; }
+
+/* primary split button */
+.void-agent-git-primary { position: relative; display: flex; flex: 0 0 auto; }
+.void-agent-git-primary-btn {
+	display: inline-flex; align-items: center; gap: 6px;
+	height: 28px; padding: 0 12px; border: none; border-radius: var(--agent-git-radius) 0 0 var(--agent-git-radius);
+	background: var(--vscode-button-secondaryBackground, rgba(127,127,127,0.14));
+	color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+	font-size: 12px; font-weight: 600; white-space: nowrap; cursor: pointer;
+	transition: background-color 0.14s var(--agent-git-ease), filter 0.14s var(--agent-git-ease);
+}
+.void-agent-git-primary-btn:hover { background: var(--vscode-button-secondaryHoverBackground, rgba(127,127,127,0.22)); }
+.void-agent-git-primary-btn:active { filter: brightness(0.96); }
+.void-agent-git-primary-btn:disabled { opacity: 0.45; cursor: default; }
+.void-agent-git-primary-caret {
+	display: inline-flex; align-items: center; justify-content: center;
+	width: 24px; height: 28px; border: none; border-radius: 0 var(--agent-git-radius) var(--agent-git-radius) 0;
+	border-left: 1px solid color-mix(in srgb, var(--vscode-foreground) 12%, transparent);
+	background: var(--vscode-button-secondaryBackground, rgba(127,127,127,0.14));
+	color: var(--vscode-button-secondaryForeground, var(--vscode-foreground)); cursor: pointer;
+	transition: background-color 0.14s var(--agent-git-ease);
+}
+.void-agent-git-primary-caret:hover { background: var(--vscode-button-secondaryHoverBackground, rgba(127,127,127,0.22)); }
+.void-agent-git-primary-caret:disabled { opacity: 0.45; cursor: default; }
+.void-agent-git-primary-btn:focus-visible, .void-agent-git-primary-caret:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; }
+
+/* dropdown menus */
+.void-agent-git-menu {
+	position: absolute; top: calc(100% + 6px); left: 0; z-index: 80;
+	min-width: 200px; max-height: min(420px, 70vh); overflow-y: auto; overflow-x: visible; padding: 6px;
+	border: 1px solid var(--vscode-menu-border, color-mix(in srgb, var(--vscode-foreground) 12%, transparent));
+	border-radius: 10px;
+	background: var(--vscode-menu-background, var(--vscode-editorWidget-background));
+	box-shadow: 0 10px 28px rgba(0,0,0,0.38), 0 1px 4px rgba(0,0,0,0.2);
+	animation: void-agent-git-menu-in 0.12s var(--agent-git-ease);
+}
+@keyframes void-agent-git-menu-in { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) {
+	.void-agent-git-menu, .void-agent-git-find { animation: none; }
+	.void-agent-git-spin { animation: none; }
+}
+.void-agent-git-menu.void-right { left: auto; right: 0; }
+.void-agent-git-menu.void-wide { min-width: 252px; }
+.void-agent-git-menu.void-submenu {
+	top: -6px; right: calc(100% + 4px); left: auto; min-width: 140px;
+	/* invisible bridge so the pointer can travel without closing */
+	box-shadow: 0 10px 28px rgba(0,0,0,0.38), 0 1px 4px rgba(0,0,0,0.2), 4px 0 0 transparent;
+}
+.void-agent-git-menu-item {
+	position: relative; display: flex; align-items: center; gap: 9px; width: 100%;
+	min-height: 30px; padding: 0 9px; border: none; border-radius: 6px; background: transparent;
+	color: var(--vscode-menu-foreground, var(--vscode-foreground));
+	font-size: 12.5px; text-align: left; cursor: pointer; white-space: nowrap;
+	transition: background-color 0.1s var(--agent-git-ease), color 0.1s var(--agent-git-ease);
+	outline: none;
+}
+.void-agent-git-menu-item:hover, .void-agent-git-menu-item:focus-visible { background: var(--vscode-menu-selectionBackground, var(--vscode-list-hoverBackground)); color: var(--vscode-menu-selectionForeground, var(--vscode-foreground)); }
+.void-agent-git-menu-item.void-active { color: var(--vscode-charts-green, #4a9c4a); }
+.void-agent-git-menu-item.void-has-sub { padding-right: 9px; }
+.void-agent-git-menu-item[aria-disabled="true"] { opacity: 0.4; pointer-events: none; }
+.void-agent-git-menu-label { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; }
+.void-agent-git-menu-lead { flex: 0 0 auto; opacity: 0.8; }
+.void-agent-git-menu-trail, .void-agent-git-menu-check { flex: 0 0 auto; margin-left: auto; opacity: 0.85; }
+.void-agent-git-menu-value { margin-left: auto; display: inline-flex; align-items: center; gap: 4px; opacity: 0.65; font-size: 12px; }
+.void-agent-git-menu-kbd { margin-left: auto; opacity: 0.5; font-size: 11.5px; letter-spacing: 0.03em; font-variant-numeric: tabular-nums; }
+.void-agent-git-menu-sep { height: 1px; margin: 5px 4px; background: var(--vscode-menu-separatorBackground, color-mix(in srgb, var(--vscode-foreground) 10%, transparent)); }
+
+/* toggle switch */
+.void-agent-git-toggle {
+	margin-left: auto; width: 28px; height: 16px; border-radius: 9px; flex: 0 0 auto;
+	background: color-mix(in srgb, var(--vscode-foreground) 26%, transparent); position: relative;
+	transition: background-color 0.16s var(--agent-git-ease);
+}
+.void-agent-git-toggle::after { content: ''; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,0.35); transition: transform 0.16s var(--agent-git-ease); }
+.void-agent-git-toggle.void-on { background: var(--vscode-button-background); }
+.void-agent-git-toggle.void-on::after { transform: translateX(12px); }
+
+/* row 2: summary */
+.void-agent-git-summary {
+	flex: 0 0 auto; display: flex; align-items: center; gap: 8px;
+	min-height: 36px; padding: 4px 12px;
+	border-bottom: 1px solid var(--vscode-panel-border);
+	font-size: 12px;
+}
+.void-agent-git-summary-count { color: var(--vscode-foreground); font-weight: 500; }
+.void-agent-git-summary-totals { display: inline-flex; gap: 7px; font-family: var(--vscode-editor-font-family, monospace); font-size: 11.5px; font-weight: 600; }
+.void-agent-git-summary-totals .void-add,
+.void-agent-git-file-stats .void-add { color: var(--vscode-gitDecoration-addedResourceForeground, #4a9c4a); }
+.void-agent-git-summary-totals .void-del,
+.void-agent-git-file-stats .void-del { color: var(--vscode-gitDecoration-deletedResourceForeground, #e5534b); }
+
+/* Stage All control */
+.void-agent-git-stageall {
+	display: inline-flex; align-items: center; gap: 7px;
+	height: 26px; padding: 0 9px 0 7px; border: none; border-radius: 6px;
+	background: transparent; color: var(--vscode-foreground);
+	font-size: 12px; font-weight: 500; cursor: pointer; flex: 0 0 auto;
+	transition: background-color 0.14s var(--agent-git-ease), color 0.14s var(--agent-git-ease);
+}
+.void-agent-git-stageall:hover { background: var(--vscode-toolbar-hoverBackground); }
+.void-agent-git-stageall:disabled { opacity: 0.35; cursor: default; background: transparent; }
+.void-agent-git-stageall:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+.void-agent-git-stageall-box {
+	display: inline-flex; align-items: center; justify-content: center;
+	width: 15px; height: 15px; border-radius: 4px;
+	border: 1.5px solid color-mix(in srgb, var(--vscode-foreground) 32%, transparent);
+	background: transparent; color: var(--vscode-button-foreground);
+	transition: background-color 0.12s var(--agent-git-ease), border-color 0.12s var(--agent-git-ease);
+}
+.void-agent-git-stageall.void-on .void-agent-git-stageall-box,
+.void-agent-git-stageall.void-partial .void-agent-git-stageall-box {
+	background: var(--vscode-button-background);
+	border-color: var(--vscode-button-background);
+}
+.void-agent-git-stageall.void-partial .void-agent-git-stageall-box {
+	background: color-mix(in srgb, var(--vscode-button-background) 55%, transparent);
+}
+.void-agent-git-stageall-label { letter-spacing: 0.01em; }
+
+/* find bar */
+.void-agent-git-find {
+	flex: 0 0 auto; display: flex; align-items: center; gap: 7px;
+	padding: 6px 12px; border-bottom: 1px solid var(--vscode-panel-border);
+	color: var(--vscode-descriptionForeground);
+	animation: void-agent-git-menu-in 0.12s var(--agent-git-ease);
+}
+.void-agent-git-find-input {
+	flex: 1 1 auto; height: 26px; padding: 0 9px;
+	border: 1px solid var(--vscode-input-border, color-mix(in srgb, var(--vscode-foreground) 14%, transparent)); border-radius: 6px;
+	background: var(--vscode-input-background); color: var(--vscode-input-foreground);
+	font-size: 12px; outline: none;
+	transition: border-color 0.13s var(--agent-git-ease);
+}
+.void-agent-git-find-input:focus { border-color: var(--vscode-focusBorder); }
+
+.void-agent-git-error {
+	flex: 0 0 auto; padding: 7px 12px; font-size: 11.5px;
+	color: var(--vscode-errorForeground, #e5534b);
+	background: color-mix(in srgb, var(--vscode-errorForeground, #e5534b) 8%, transparent);
+	border-bottom: 1px solid var(--vscode-panel-border); white-space: pre-wrap;
+}
+
+/* body: diff list + optional tree */
+.void-agent-git-body { flex: 1 1 auto; min-height: 0; display: flex; }
+.void-agent-git-difflist {
+	flex: 1 1 auto; min-width: 0; overflow-y: auto;
+	/* block layout — NOT flex column. Flex + overflow:hidden children collapse
+	   to ~0 height (auto min-size becomes 0), which paints a striped “overview”. */
+	background: var(--vscode-editor-background);
+}
+.void-agent-git-clean {
+	display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
+	padding: 48px 12px; color: var(--vscode-descriptionForeground); font-size: 12.5px;
+}
+.void-agent-git-clean svg { color: var(--vscode-charts-green, #4a9c4a); opacity: 0.85; }
+
+/* file diff section — flat list, sticky headers, full deep diffs */
+.void-agent-git-file {
+	flex-shrink: 0;
+	border-bottom: 1px solid var(--vscode-panel-border);
+	background: var(--vscode-editor-background);
+}
+.void-agent-git-file.void-active > .void-agent-git-file-head {
+	background: var(--vscode-list-inactiveSelectionBackground, var(--vscode-list-hoverBackground));
+}
+.void-agent-git-file-head {
+	position: sticky; top: 0; z-index: 5;
+	display: flex; align-items: center; gap: 4px;
+	min-height: 32px; height: 32px; padding: 0 10px 0 4px;
+	background: var(--vscode-editor-background);
+	border-bottom: 1px solid transparent;
+	transition: background-color 0.12s var(--agent-git-ease);
+}
+.void-agent-git-file-head:hover { background: var(--vscode-list-hoverBackground); }
+.void-agent-git-file-expand {
+	display: inline-flex; align-items: center; justify-content: center;
+	width: 22px; height: 28px; border: none; background: transparent;
+	color: var(--vscode-icon-foreground, var(--vscode-foreground)); opacity: 0.55; cursor: pointer; flex: 0 0 auto;
+	transition: opacity 0.1s var(--agent-git-ease);
+}
+.void-agent-git-file-expand:hover { opacity: 1; }
+.void-agent-git-file-name {
+	flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 7px;
+	border: none; background: transparent; color: var(--vscode-foreground);
+	font-size: 12px; text-align: left; cursor: pointer; overflow: hidden;
+}
+.void-agent-git-file-icon { flex: 0 0 auto; display: inline-flex; }
+.void-agent-git-file-basename { flex: 0 0 auto; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 58%; }
+.void-agent-git-file-name:hover .void-agent-git-file-basename { text-decoration: underline; text-underline-offset: 2px; text-decoration-color: color-mix(in srgb, var(--vscode-foreground) 40%, transparent); }
+.void-agent-git-file-dir { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; opacity: 0.48; }
+.void-agent-git-file-stats { flex: 0 0 auto; display: inline-flex; gap: 6px; font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; font-weight: 600; }
+.void-agent-git-file-actions { flex: 0 0 auto; display: flex; align-items: center; gap: 1px; opacity: 0; transition: opacity 0.1s var(--agent-git-ease); }
+.void-agent-git-file-head:hover .void-agent-git-file-actions { opacity: 1; }
+.void-agent-git-file-badge {
+	flex: 0 0 auto; width: 14px; text-align: center; margin-left: 2px;
+	font-size: 11px; font-weight: 700; font-family: var(--vscode-editor-font-family, monospace);
+	opacity: 0.9;
+}
+.void-agent-git-file-badge.void-add, .void-agent-git-file-badge.void-untracked { color: var(--vscode-gitDecoration-addedResourceForeground, #4a9c4a); }
+.void-agent-git-file-badge.void-mod { color: var(--vscode-gitDecoration-modifiedResourceForeground, #d4a72c); }
+.void-agent-git-file-badge.void-del { color: var(--vscode-gitDecoration-deletedResourceForeground, #e5534b); }
+.void-agent-git-file-badge.void-rename { color: var(--vscode-gitDecoration-renamedResourceForeground, #4a9c9c); }
+.void-agent-git-file-badge.void-conflict { color: var(--vscode-gitDecoration-conflictingResourceForeground, #e5854b); }
+.void-agent-git-check {
+	flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
+	width: 16px; height: 16px; margin-left: 4px; border-radius: 4px;
+	border: 1.5px solid color-mix(in srgb, var(--vscode-foreground) 28%, transparent);
+	background: transparent; color: var(--vscode-button-foreground); cursor: pointer;
+	transition: background-color 0.12s var(--agent-git-ease), border-color 0.12s var(--agent-git-ease);
+}
+.void-agent-git-check:hover { border-color: var(--vscode-button-background); }
+.void-agent-git-check.void-on { background: var(--vscode-button-background); border-color: var(--vscode-button-background); }
+.void-agent-git-check.void-partial { background: color-mix(in srgb, var(--vscode-button-background) 55%, transparent); border-color: var(--vscode-button-background); }
+.void-agent-git-check-dash { width: 8px; height: 2px; border-radius: 1px; background: var(--vscode-button-foreground); }
+
+/* inline diff */
+.void-agent-git-file-diff { background: var(--vscode-editor-background); }
+.void-agent-git-diff {
+	font-family: var(--vscode-editor-font-family, var(--monaco-monospace-font, monospace));
+	font-size: 11.5px; line-height: 1.55; overflow-x: auto;
+	padding: 2px 0 4px;
+}
+.void-agent-git-diff.void-wrap { overflow-x: hidden; }
+.void-agent-git-diff.void-wrap .void-agent-git-diff-row,
+.void-agent-git-diff.void-wrap .void-agent-git-split-row { white-space: normal; }
+.void-agent-git-diff.void-wrap .void-agent-git-diff-code,
+.void-agent-git-diff.void-wrap .void-agent-git-split-code { white-space: pre-wrap; word-break: break-word; }
+.void-agent-git-diff-status { padding: 12px; font-size: 11.5px; color: var(--vscode-descriptionForeground); }
+.void-agent-git-diff-status.void-error { color: var(--vscode-errorForeground, #e5534b); white-space: pre-wrap; }
+
+/* Hunk actions — floating chips over the diff (no full-width bar) */
+.void-agent-git-diff-hunk { position: relative; }
+.void-agent-git-diff-hunk-actions {
+	position: absolute;
+	top: 6px;
+	right: 10px;
+	z-index: 6;
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	padding: 3px;
+	border-radius: 8px;
+	background: color-mix(in srgb, var(--vscode-editorWidget-background, var(--vscode-editor-background)) 92%, transparent);
+	border: 1px solid color-mix(in srgb, var(--vscode-foreground) 10%, transparent);
+	box-shadow: 0 4px 14px rgba(0, 0, 0, 0.28);
+	opacity: 0;
+	pointer-events: none;
+	transform: translateY(-3px);
+	transition: opacity 0.14s var(--agent-git-ease), transform 0.14s var(--agent-git-ease);
+}
+.void-agent-git-diff-hunk:hover .void-agent-git-diff-hunk-actions,
+.void-agent-git-diff-hunk:focus-within .void-agent-git-diff-hunk-actions {
+	opacity: 1;
+	pointer-events: auto;
+	transform: none;
+}
+.void-agent-git-diff-hunk.void-busy .void-agent-git-diff-hunk-actions {
+	opacity: 0.45;
+	pointer-events: none;
+}
+.void-agent-git-hunk-btn {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	height: 24px;
+	padding: 0 9px;
+	border: none;
+	border-radius: 6px;
+	background: transparent;
+	color: var(--vscode-foreground);
+	font-size: 11px;
+	font-weight: 600;
+	letter-spacing: 0.01em;
+	cursor: pointer;
+	white-space: nowrap;
+	transition: background-color 0.12s var(--agent-git-ease), color 0.12s var(--agent-git-ease);
+}
+.void-agent-git-hunk-btn:hover {
+	background: var(--vscode-toolbar-hoverBackground, color-mix(in srgb, var(--vscode-foreground) 10%, transparent));
+}
+.void-agent-git-hunk-btn:active {
+	background: var(--vscode-toolbar-activeBackground, color-mix(in srgb, var(--vscode-foreground) 14%, transparent));
+}
+.void-agent-git-hunk-btn:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: 1px;
+}
+.void-agent-git-hunk-btn.void-stage:hover {
+	color: var(--vscode-charts-green, #4a9c4a);
+	background: color-mix(in srgb, var(--vscode-charts-green, #4a9c4a) 16%, transparent);
+}
+.void-agent-git-hunk-btn.void-unstage:hover {
+	color: var(--vscode-descriptionForeground);
+	background: color-mix(in srgb, var(--vscode-foreground) 10%, transparent);
+}
+.void-agent-git-hunk-btn.void-danger:hover {
+	color: var(--vscode-errorForeground, #e5534b);
+	background: color-mix(in srgb, var(--vscode-errorForeground, #e5534b) 14%, transparent);
+}
+@media (prefers-reduced-motion: reduce) {
+	.void-agent-git-diff-hunk-actions {
+		transition: none;
+		transform: none;
+	}
+}
+
+/* unified rows */
+.void-agent-git-diff-row { display: flex; align-items: flex-start; white-space: pre; }
+.void-agent-git-diff-row.void-add { background: var(--vscode-diffEditor-insertedLineBackground, rgba(74,156,74,0.14)); }
+.void-agent-git-diff-row.void-del { background: var(--vscode-diffEditor-removedLineBackground, rgba(229,83,75,0.14)); }
+.void-agent-git-diff-row.void-ctx:hover { background: color-mix(in srgb, var(--vscode-foreground) 4%, transparent); }
+.void-agent-git-diff-ln {
+	flex: 0 0 auto; width: 42px; padding-right: 8px; text-align: right;
+	color: var(--vscode-editorLineNumber-foreground); opacity: 0.5; user-select: none;
+	font-variant-numeric: tabular-nums;
+}
+.void-agent-git-diff-marker { flex: 0 0 auto; width: 14px; text-align: center; user-select: none; font-weight: 700; }
+.void-agent-git-diff-row.void-add .void-agent-git-diff-marker { color: var(--vscode-charts-green, #4a9c4a); }
+.void-agent-git-diff-row.void-del .void-agent-git-diff-marker { color: var(--vscode-errorForeground, #e5534b); }
+.void-agent-git-diff-code { flex: 1 1 auto; padding-right: 12px; color: var(--vscode-editor-foreground); }
+
+/* split rows */
+.void-agent-git-split-row { display: flex; white-space: pre; }
+.void-agent-git-split-cell { flex: 1 1 50%; min-width: 0; display: flex; align-items: flex-start; border-right: 1px solid var(--vscode-panel-border); }
+.void-agent-git-split-cell.void-del { background: var(--vscode-diffEditor-removedLineBackground, rgba(229,83,75,0.14)); }
+.void-agent-git-split-cell.void-add { background: var(--vscode-diffEditor-insertedLineBackground, rgba(74,156,74,0.14)); }
+.void-agent-git-split-cell.void-empty { background: color-mix(in srgb, var(--vscode-foreground) 3%, transparent); }
+.void-agent-git-split-code { flex: 1 1 auto; padding: 0 8px; color: var(--vscode-editor-foreground); }
+
+/* collapse band */
+.void-agent-git-diff-band {
+	display: flex; align-items: center; gap: 8px; padding: 3px 10px;
+	background: color-mix(in srgb, var(--vscode-foreground) 3.5%, transparent);
+	color: var(--vscode-descriptionForeground); font-size: 10.5px;
+	border-top: 1px solid color-mix(in srgb, var(--vscode-foreground) 6%, transparent);
+	border-bottom: 1px solid color-mix(in srgb, var(--vscode-foreground) 6%, transparent);
+	transition: background-color 0.12s var(--agent-git-ease);
+}
+.void-agent-git-diff-band:hover { background: color-mix(in srgb, var(--vscode-foreground) 6.5%, transparent); }
+.void-agent-git-diff-band-chevrons { display: inline-flex; gap: 1px; }
+.void-agent-git-diff-band-chevrons button {
+	display: inline-flex; align-items: center; justify-content: center;
+	width: 18px; height: 16px; border: none; border-radius: 4px; background: transparent;
+	color: var(--vscode-icon-foreground, var(--vscode-foreground)); opacity: 0.7; cursor: pointer;
+	transition: background-color 0.1s var(--agent-git-ease), opacity 0.1s var(--agent-git-ease);
+}
+.void-agent-git-diff-band-chevrons button:hover { opacity: 1; background: var(--vscode-toolbar-hoverBackground); }
+.void-agent-git-diff-band-label { border: none; background: transparent; color: inherit; font-size: 10.5px; }
+.void-agent-git-diff-band-label:hover { color: var(--vscode-foreground); text-decoration: underline; text-underline-offset: 2px; }
+
+/* right file tree */
+.void-agent-git-tree-pane {
+	flex: 0 0 auto; width: 240px; min-width: 170px; max-width: 45%;
+	overflow-y: auto; border-left: 1px solid var(--vscode-panel-border);
+	background: var(--vscode-sideBar-background, var(--vscode-editor-background));
+}
+.void-agent-git-tree { padding: 6px 0; }
+.void-agent-git-tree-row {
+	display: flex; align-items: center; gap: 6px; width: 100%; height: 26px;
+	padding-right: 8px; border: none; background: transparent;
+	color: var(--vscode-foreground); font-size: 12px; text-align: left; cursor: pointer; overflow: hidden;
+	transition: background-color 0.1s var(--agent-git-ease);
+}
+.void-agent-git-tree-row:hover { background: var(--vscode-list-hoverBackground); }
+.void-agent-git-tree-row.void-file.void-active { background: var(--vscode-list-inactiveSelectionBackground, var(--vscode-list-hoverBackground)); }
+.void-agent-git-tree-row.void-folder { color: var(--vscode-foreground); }
+.void-agent-git-tree-icon { flex: 0 0 auto; display: inline-flex; }
+.void-agent-git-tree-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.void-agent-git-tree-foldername { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; opacity: 0.82; font-weight: 500; }
+.void-agent-git-tree-badge { flex: 0 0 auto; width: 14px; text-align: center; font-size: 11px; font-weight: 700; font-family: var(--vscode-editor-font-family, monospace); }
+.void-agent-git-tree-badge.void-add, .void-agent-git-tree-badge.void-untracked { color: var(--vscode-gitDecoration-addedResourceForeground, #4a9c4a); }
+.void-agent-git-tree-badge.void-mod { color: var(--vscode-gitDecoration-modifiedResourceForeground, #d4a72c); }
+.void-agent-git-tree-badge.void-del { color: var(--vscode-gitDecoration-deletedResourceForeground, #e5534b); }
+.void-agent-git-tree-badge.void-rename { color: var(--vscode-gitDecoration-renamedResourceForeground, #4a9c9c); }
+.void-agent-git-tree-badge.void-conflict { color: var(--vscode-gitDecoration-conflictingResourceForeground, #e5854b); }
+
+/* --- Terminal panel --- */
+.void-agent-workspace-terminal {
+	display: flex;
+	flex-direction: column;
+	flex: 1 1 auto;
+	min-height: 0;
+	background: var(--vscode-terminal-background, var(--vscode-panel-background, var(--vscode-editor-background)));
+}
+.void-agent-workspace-terminal-surface {
+	flex: 1 1 auto;
+	min-height: 0;
+	width: 100%;
+	overflow: hidden;
+	padding: 6px 8px;
+}
+/* The xterm helper containers should fill the surface. */
+.void-agent-workspace-terminal-surface .terminal-wrapper,
+.void-agent-workspace-terminal-surface .xterm {
+	width: 100%;
+	height: 100%;
+}
+
+/* --- Browser panel --- */
+.void-agent-workspace-browser {
+	display: flex;
+	flex-direction: column;
+	flex: 1 1 auto;
+	min-height: 0;
+}
+.void-agent-workspace-browser-toolbar {
+	flex: 0 0 auto;
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	height: 40px;
+	padding: 0 8px;
+	border-bottom: 1px solid var(--vscode-panel-border);
+	background: var(--vscode-editorGroupHeader-tabsBackground, var(--vscode-editor-background));
+	position: relative;
+}
+.void-agent-workspace-browser-navbtn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 28px;
+	height: 28px;
+	flex: 0 0 auto;
+	border: none;
+	border-radius: 6px;
+	background: transparent;
+	color: var(--vscode-icon-foreground, var(--vscode-foreground));
+	cursor: pointer;
+	opacity: 0.85;
+	transition: background 0.12s ease, opacity 0.12s ease, color 0.12s ease;
+}
+.void-agent-workspace-browser-navbtn:hover:not(:disabled) {
+	background: var(--vscode-toolbar-hoverBackground);
+	opacity: 1;
+}
+.void-agent-workspace-browser-navbtn:active:not(:disabled) {
+	background: var(--vscode-toolbar-activeBackground, var(--vscode-toolbar-hoverBackground));
+}
+.void-agent-workspace-browser-navbtn:disabled {
+	opacity: 0.3;
+	cursor: default;
+}
+.void-agent-workspace-browser-navbtn:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: 1px;
+}
+/* "Pick element" button — active state while the in-page picker overlay is on.
+   Mirrors the editor pane's .browser-editor-btn.is-active styling. */
+.void-agent-workspace-browser-pickbtn.is-active {
+	background: var(--vscode-inputOption-activeBackground, var(--vscode-toolbar-hoverBackground));
+	color: var(--vscode-inputOption-activeForeground, var(--vscode-foreground));
+	border: 1px solid var(--vscode-inputOption-activeBorder, var(--vscode-focusBorder));
+	padding: 0;
+	width: 28px;
+	height: 28px;
+	opacity: 1;
+}
+.void-agent-workspace-browser-pickbtn.is-active:hover {
+	filter: brightness(1.08);
+}
+/* Address bar — pill-shaped container holding SSL icon, favicon, and URL input. */
+.void-agent-workspace-browser-address {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	flex: 1 1 auto;
+	min-width: 0;
+	height: 30px;
+	margin: 0 4px;
+	padding: 0 10px;
+	border-radius: 15px;
+	background: var(--vscode-input-background);
+	border: 1px solid var(--vscode-input-border, transparent);
+	transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+.void-agent-workspace-browser-address:focus-within {
+	border-color: var(--vscode-focusBorder);
+	box-shadow: 0 0 0 1px var(--vscode-focusBorder);
+}
+.void-agent-workspace-browser-address[data-loading] {
+	border-color: var(--vscode-progressBar-background, #0078d4);
+}
+/* SSL / connection-security indicator. Hidden by default; shown for http(s). */
+.void-agent-workspace-browser-ssl {
+	display: none;
+	flex: 0 0 auto;
+	font-size: 12px;
+	color: var(--vscode-descriptionForeground);
+}
+.void-agent-workspace-browser-ssl.is-secure {
+	display: inline-flex;
+	color: var(--vscode-descriptionForeground);
+}
+.void-agent-workspace-browser-ssl.is-insecure {
+	display: inline-flex;
+	color: var(--vscode-list-warningIconForeground, #cca700);
+}
+.void-agent-workspace-browser-favicon {
+	display: none;
+	flex: 0 0 auto;
+	width: 16px;
+	height: 16px;
+	object-fit: contain;
+}
+.void-agent-workspace-browser-favicon.is-present {
+	display: inline-block;
+}
+.void-agent-workspace-browser-url {
+	flex: 1 1 auto;
+	min-width: 0;
+	height: 100%;
+	border: none;
+	background: transparent;
+	color: var(--vscode-input-foreground);
+	outline: none;
+	font-size: 13px;
+	font-family: var(--vscode-font-family);
+}
+.void-agent-workspace-browser-url::placeholder {
+	color: var(--vscode-input-placeholderForeground);
+}
+/* Zoom pill — compact indicator, click resets to 100%. */
+.void-agent-workspace-browser-zoom-pill {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	height: 26px;
+	min-width: 46px;
+	padding: 0 10px;
+	flex: 0 0 auto;
+	border: none;
+	border-radius: 13px;
+	background: transparent;
+	color: var(--vscode-descriptionForeground);
+	font-size: 11px;
+	font-weight: 500;
+	letter-spacing: 0.02em;
+	user-select: none;
+	cursor: pointer;
+	transition: background 0.12s ease, color 0.12s ease;
+}
+.void-agent-workspace-browser-zoom-pill:hover {
+	background: var(--vscode-toolbar-hoverBackground);
+	color: var(--vscode-foreground);
+}
+.void-agent-workspace-browser-zoom-pill.is-changed {
+	color: var(--vscode-textLink-foreground, var(--vscode-foreground));
+}
+.void-agent-workspace-browser-zoom-label {
+	pointer-events: none;
+}
+/* "Take Control" badge — shown while an agent holds the automation lock. */
+.void-agent-workspace-browser-lock-badge {
+	display: none;
+	align-items: center;
+	gap: 6px;
+	flex: 0 0 auto;
+	height: 26px;
+	padding: 0 10px;
+	margin-left: 4px;
+	border: 1px solid var(--vscode-inputOption-activeBorder, var(--vscode-focusBorder));
+	border-radius: 13px;
+	background: var(--vscode-inputOption-activeBackground, transparent);
+	color: var(--vscode-inputOption-activeForeground, var(--vscode-foreground));
+	font: 11px/1 var(--vscode-font-family);
+	cursor: pointer;
+	white-space: nowrap;
+}
+.void-agent-workspace-browser-lock-badge.is-visible {
+	display: inline-flex;
+}
+.void-agent-workspace-browser-lock-badge:hover {
+	filter: brightness(1.08);
+}
+/* Animated loading strip at the bottom edge of the toolbar. */
+.void-agent-workspace-browser-loading {
+	position: absolute;
+	left: 0;
+	right: 0;
+	bottom: 0;
+	height: 2px;
+	overflow: hidden;
+	pointer-events: none;
+	opacity: 0;
+	transition: opacity 0.18s ease;
+}
+.void-agent-workspace-browser-loading.is-loading {
+	opacity: 1;
+}
+.void-agent-workspace-browser-loading::before {
+	content: '';
+	position: absolute;
+	top: 0;
+	bottom: 0;
+	left: 0;
+	width: 35%;
+	border-radius: 2px;
+	background: var(--vscode-progressBar-background, #0078d4);
+	animation: void-agent-workspace-browser-progress 1.15s ease-in-out infinite;
+}
+@keyframes void-agent-workspace-browser-progress {
+	0% { transform: translateX(-120%); }
+	60% { transform: translateX(230%); }
+	100% { transform: translateX(320%); }
+}
+@media (prefers-reduced-motion: reduce) {
+	.void-agent-workspace-browser-loading::before {
+		animation: none;
+		transform: translateX(0);
+		width: 100%;
+	}
+	.void-agent-workspace-browser-navbtn,
+	.void-agent-workspace-browser-zoom-pill,
+	.void-agent-workspace-browser-address,
+	.void-agent-workspace-browser-loading {
+		transition: none;
+	}
+}
+/* Find-in-page bar — sits between the toolbar and the content area. */
+.void-agent-workspace-browser-find {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	flex: 0 0 auto;
+	padding: 4px 10px;
+	background: var(--vscode-editorWidget-background);
+	border-bottom: 1px solid var(--vscode-panel-border);
+}
+.void-agent-workspace-browser-find-icon {
+	flex: 0 0 auto;
+	color: var(--vscode-descriptionForeground);
+}
+.void-agent-workspace-browser-find-input {
+	flex: 1 1 auto;
+	min-width: 120px;
+	height: 24px;
+	padding: 0 8px;
+	border: 1px solid var(--vscode-input-border, transparent);
+	border-radius: 4px;
+	background: var(--vscode-input-background);
+	color: var(--vscode-input-foreground);
+	font: 12px var(--vscode-font-family);
+	outline: none;
+}
+.void-agent-workspace-browser-find-input:focus {
+	border-color: var(--vscode-focusBorder);
+	box-shadow: 0 0 0 1px var(--vscode-focusBorder);
+}
+.void-agent-workspace-browser-find-btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 22px;
+	height: 22px;
+	flex: 0 0 auto;
+	border: none;
+	border-radius: 4px;
+	background: transparent;
+	color: var(--vscode-icon-foreground, var(--vscode-foreground));
+	cursor: pointer;
+}
+.void-agent-workspace-browser-find-btn:hover {
+	background: var(--vscode-toolbar-hoverBackground);
+}
+.void-agent-workspace-browser-content {
+	flex: 1 1 auto;
+	min-height: 0;
+	width: 100%;
+	background: var(--vscode-editor-background);
+}

@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
+// Re-export the pop-out window/document resolvers (defined in a JSX-free module so `.ts` files can
+// import them too) for convenient co-location with the other React helpers.
+export { getConnectedDocument, getConnectedWindow, focusInConnectedWindow, findThreadComposerInWindow } from './connectedWindow.js'
+
 
 
 type ReturnType<T> = [

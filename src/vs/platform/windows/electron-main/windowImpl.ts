@@ -1055,16 +1055,20 @@ export class CodeWindow extends BaseWindow implements ICodeWindow {
 		const wasLoaded = this.wasLoaded;
 		this.wasLoaded = true;
 
-		// Make window visible if it did not open in N seconds because this indicates an error
-		// Only do this when running out of sources and not when running tests
-		if (!this.environmentMainService.isBuilt && !this.environmentMainService.extensionTestsLocationURI) {
+		// Make window visible if it did not signal ready in time — this indicates a
+		// renderer-level error (e.g. dynamic import failure, unhandled promise
+		// rejection in bootstrap) that prevents setReady(). Without this safety net
+		// the window stays invisible indefinitely (blank-screen bug).
+		if (!this.environmentMainService.extensionTestsLocationURI) {
 			this._register(new RunOnceScheduler(() => {
 				if (this._win && !this._win.isVisible() && !this._win.isMinimized()) {
 					this._win.show();
 					this.focus({ force: true });
-					this._win.webContents.openDevTools();
+					if (!this.environmentMainService.isBuilt) {
+						this._win.webContents.openDevTools();
+					}
 				}
-			}, 10000)).schedule();
+			}, this.environmentMainService.isBuilt ? 20000 : 10000)).schedule();
 		}
 
 		// Event

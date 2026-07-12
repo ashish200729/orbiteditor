@@ -18,6 +18,7 @@ const entryPoints = [
 	'./src2/plan-editor-tsx/index.tsx',
 	'./src2/history-dropdown-tsx/index.tsx',
 	'./src2/vibe-sidebar-tsx/index.tsx',
+	'./src2/agent-window-tsx/index.tsx',
 ]
 const entryDirs = new Set(entryPoints.map((entry) => path.basename(path.dirname(entry))))
 const src2Root = path.resolve(__dirname, 'src2')

@@ -24,6 +24,9 @@ export const BROWSER_AUTOMATION_IPC_CHANNELS = {
 	openTab: 'vscode:orbit:browserAutomation:openTab',
 	selectTab: 'vscode:orbit:browserAutomation:selectTab',
 	closeTab: 'vscode:orbit:browserAutomation:closeTab',
+	/** Agents pop-out workspace browser panel (not BrowserEditorInput tabs). */
+	agentOpenTab: 'vscode:orbit:browserAutomation:agentOpenTab',
+	agentSelectTab: 'vscode:orbit:browserAutomation:agentSelectTab',
 } as const;
 
 export type BrowserAutomationIpcChannel = typeof BROWSER_AUTOMATION_IPC_CHANNELS[keyof typeof BROWSER_AUTOMATION_IPC_CHANNELS];

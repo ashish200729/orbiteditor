@@ -28,6 +28,7 @@ import { detectLanguage } from '../../../../common/helpers/languageHelpers.js';
 import { toFilenameSearchGlobPattern } from '../../../../common/globToolHelpers.js';
 import { UnifiedDiffView } from '../sidebar-tsx/components/editTool/UnifiedDiffView.js';
 import { isSubsequence, scoreSubsequence } from './fuzzy.js';
+import { getConnectedDocument, getConnectedWindow, focusInConnectedWindow } from './helpers.js';
 import { useSlashMenu } from './slashMenu/useSlashMenu.js';
 import { SlashMenuPopup } from './slashMenu/SlashMenuPopup.js';
 import { HighlightOverlay } from './slashMenu/HighlightOverlay.js';
@@ -299,8 +300,10 @@ type InputBox2Props = {
 	onDragLeave?: (e: React.DragEvent<HTMLTextAreaElement>) => void;
 	onDrop?: (e: React.DragEvent<HTMLTextAreaElement>) => void;
 	onChangeHeight?: (newHeight: number) => void;
+	/** Identifies the primary thread composer across independently mounted chat surfaces. */
+	isThreadComposer?: boolean;
 }
-export const VoidInputBox2 = forwardRef<HTMLTextAreaElement, InputBox2Props>(function X({ initValue, placeholder, multiline, enableAtToMention, enableSlashCommands, fnsRef, className, onKeyDown, onFocus, onBlur, onChangeText, onPaste, onDragEnter, onDragOver, onDragLeave, onDrop }, ref) {
+export const VoidInputBox2 = forwardRef<HTMLTextAreaElement, InputBox2Props>(function X({ initValue, placeholder, multiline, enableAtToMention, enableSlashCommands, fnsRef, className, onKeyDown, onFocus, onBlur, onChangeText, onPaste, onDragEnter, onDragOver, onDragLeave, onDrop, isThreadComposer }, ref) {
 
 
 	// mirrors whatever is in ref
@@ -336,8 +339,8 @@ export const VoidInputBox2 = forwardRef<HTMLTextAreaElement, InputBox2Props>(fun
 		const textarea = textAreaRef.current;
 		if (!textarea) return;
 
-		// Focus the textarea first
-		textarea.focus();
+		// Focus the textarea first (keep the pop-out frontmost when hosted there)
+		focusInConnectedWindow(textarea);
 
 		// delete the @ and set the cursor position
 		// Get cursor position
@@ -590,11 +593,11 @@ export const VoidInputBox2 = forwardRef<HTMLTextAreaElement, InputBox2Props>(fun
 		middleware: [
 			offset({ mainAxis: gapPx, crossAxis: offsetPx }),
 			flip({
-				boundary: document.body,
+				boundary: getConnectedDocument(measureRef.current).body,
 				padding: 8
 			}),
 			shift({
-				boundary: document.body,
+				boundary: getConnectedDocument(measureRef.current).body,
 				padding: 8,
 			}),
 			size({
@@ -609,7 +612,7 @@ export const VoidInputBox2 = forwardRef<HTMLTextAreaElement, InputBox2Props>(fun
 				},
 				padding: 8,
 				// Use viewport as boundary instead of any parent element
-				boundary: document.body,
+				boundary: getConnectedDocument(measureRef.current).body,
 			}),
 		],
 		whileElementsMounted: autoUpdate,
@@ -635,8 +638,9 @@ export const VoidInputBox2 = forwardRef<HTMLTextAreaElement, InputBox2Props>(fun
 			}
 		};
 
-		document.addEventListener('mousedown', handleClickOutside);
-		return () => document.removeEventListener('mousedown', handleClickOutside);
+		const menuDoc = getConnectedDocument(textAreaRef.current);
+		menuDoc.addEventListener('mousedown', handleClickOutside);
+		return () => menuDoc.removeEventListener('mousedown', handleClickOutside);
 	}, [isMenuOpen, refs.floating, refs.reference]);
 	// logic for @ to mention ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -733,6 +737,7 @@ export const VoidInputBox2 = forwardRef<HTMLTextAreaElement, InputBox2Props>(fun
 		)}
 		<textarea
 			autoFocus={false}
+			data-orbit-thread-composer={isThreadComposer ? 'true' : undefined}
 			ref={useCallback((r: HTMLTextAreaElement | null) => {
 				if (fnsRef)
 					fnsRef.current = fns
@@ -1274,22 +1279,24 @@ export const VoidSlider = ({
 							if (disabled) return;
 
 							const track = e.currentTarget.previousElementSibling;
+								// Bind drag listeners to the document the slider is painted in (pop-out-safe).
+								const dragDoc = getConnectedDocument(e.currentTarget);
 
 							const handleMouseMove = (moveEvent: MouseEvent) => {
 								handleThumbDrag(moveEvent, track as Element);
 							};
 
 							const handleMouseUp = () => {
-								document.removeEventListener('mousemove', handleMouseMove);
-								document.removeEventListener('mouseup', handleMouseUp);
-								document.body.style.cursor = '';
-								document.body.style.userSelect = '';
+								dragDoc.removeEventListener('mousemove', handleMouseMove);
+								dragDoc.removeEventListener('mouseup', handleMouseUp);
+								dragDoc.body.style.cursor = '';
+								dragDoc.body.style.userSelect = '';
 							};
 
-							document.body.style.userSelect = 'none';
-							document.body.style.cursor = 'grabbing';
-							document.addEventListener('mousemove', handleMouseMove);
-							document.addEventListener('mouseup', handleMouseUp);
+							dragDoc.body.style.userSelect = 'none';
+							dragDoc.body.style.cursor = 'grabbing';
+							dragDoc.addEventListener('mousemove', handleMouseMove);
+							dragDoc.addEventListener('mouseup', handleMouseUp);
 
 							e.preventDefault();
 						}}
@@ -1439,11 +1446,11 @@ export const VoidCustomDropdownBox = <T extends NonNullable<any>>({
 		middleware: [
 			offset({ mainAxis: gapPx, crossAxis: offsetPx }),
 			flip({
-				boundary: document.body,
+				boundary: getConnectedDocument(measureRef.current).body,
 				padding: 8
 			}),
 			shift({
-				boundary: document.body,
+				boundary: getConnectedDocument(measureRef.current).body,
 				padding: 8,
 			}),
 			size({
@@ -1462,7 +1469,7 @@ export const VoidCustomDropdownBox = <T extends NonNullable<any>>({
 				},
 				padding: 8,
 				// Use viewport as boundary instead of any parent element
-				boundary: document.body,
+				boundary: getConnectedDocument(measureRef.current).body,
 			}),
 		],
 		whileElementsMounted: autoUpdate,
@@ -1476,11 +1483,11 @@ export const VoidCustomDropdownBox = <T extends NonNullable<any>>({
 		middleware: [
 			offset({ mainAxis: 8 }),
 			flip({
-				boundary: document.body,
+				boundary: getConnectedDocument(measureRef.current).body,
 				padding: 8
 			}),
 			shift({
-				boundary: document.body,
+				boundary: getConnectedDocument(measureRef.current).body,
 				padding: 8,
 			}),
 		],
@@ -1519,8 +1526,9 @@ export const VoidCustomDropdownBox = <T extends NonNullable<any>>({
 			}
 		};
 
-		document.addEventListener('mousedown', handleClickOutside);
-		return () => document.removeEventListener('mousedown', handleClickOutside);
+		const menuDoc = getConnectedDocument(measureRef.current);
+		menuDoc.addEventListener('mousedown', handleClickOutside);
+		return () => menuDoc.removeEventListener('mousedown', handleClickOutside);
 	}, [isOpen, refs.floating, refs.reference]);
 
 	if (selectedOption === undefined)
@@ -2190,4 +2198,3 @@ export const VoidDiffEditor = ({ uri, searchReplaceBlocks, language }: { uri?: a
 		</div>
 	);
 };
-

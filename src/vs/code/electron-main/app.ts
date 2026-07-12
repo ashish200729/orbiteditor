@@ -1268,7 +1268,7 @@ export class CodeApplication extends Disposable {
 		mainProcessElectronServer.registerChannel('keyboardLayout', keyboardLayoutChannel);
 
 		// Browser View (interactive native browser editor backed by Electron WebContentsView)
-		const browserViewService = disposables.add(new BrowserViewMainService(accessor.get(IWindowsMainService), this.logService));
+		const browserViewService = disposables.add(new BrowserViewMainService(accessor.get(IWindowsMainService), this.logService, accessor.get(IAuxiliaryWindowsMainService)));
 		this.browserViewMainService = browserViewService;
 		// Browser automation (CDP, a11y snapshots, ref-based input, lock) — wraps
 		// browserViewService and is consumed by the built-in `orbit-ide-browser`
@@ -1369,6 +1369,7 @@ export class CodeApplication extends Disposable {
 			browserAutomationService,
 			browserViewService,
 			accessor.get(IWindowsMainService),
+			accessor.get(IAuxiliaryWindowsMainService),
 			() => mcpChannelForProvider.getBrowserAutomationEnabled(),
 			this.logService,
 		));
