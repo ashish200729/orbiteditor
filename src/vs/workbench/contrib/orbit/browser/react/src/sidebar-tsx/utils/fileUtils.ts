@@ -13,22 +13,39 @@ export const pathStringToUri = (pathStr: string): URI => {
 	return URI.file(pathStr)
 }
 
+const pathStringOf = (uri: URI | { fsPath?: string; path?: string } | string | null | undefined): string => {
+	if (!uri) {
+		return '';
+	}
+	if (typeof uri === 'string') {
+		return uri;
+	}
+	return uri.fsPath ?? uri.path ?? '';
+}
+
 export const getRelative = (uri: any, accessor: any) => {
+	const fsPath = pathStringOf(uri);
+	if (!fsPath) {
+		return undefined;
+	}
 	const workspaceContextService = accessor.get('IWorkspaceContextService')
 	let path: string
 	const isInside = workspaceContextService.isInsideWorkspace(uri)
 	if (isInside) {
-		const f = workspaceContextService.getWorkspace().folders.find((f: any) => uri.fsPath?.startsWith(f.uri.fsPath))
-		if (f) { path = uri.fsPath.replace(f.uri.fsPath, '') }
-		else { path = uri.fsPath }
+		const f = workspaceContextService.getWorkspace().folders.find((f: any) => fsPath.startsWith(f.uri.fsPath))
+		if (f?.uri?.fsPath) { path = fsPath.replace(f.uri.fsPath, '') }
+		else { path = fsPath }
 	}
 	else {
-		path = uri.fsPath
+		path = fsPath
 	}
 	return path || undefined
 }
 
-export const getFolderName = (pathStr: string) => {
+export const getFolderName = (pathStr: string | null | undefined) => {
+	if (!pathStr) {
+		return '/';
+	}
 	// 'unixify' path
 	pathStr = pathStr.replace(/[/\\\\]+/g, '/') // replace any / or \\ or \\\\ with /
 	const parts = pathStr.split('/') // split on /
@@ -41,7 +58,10 @@ export const getFolderName = (pathStr: string) => {
 	return lastTwo.join('/') + '/'
 }
 
-export const getBasename = (pathStr: string, parts: number = 1) => {
+export const getBasename = (pathStr: string | null | undefined, parts: number = 1) => {
+	if (!pathStr) {
+		return '';
+	}
 	// 'unixify' path
 	pathStr = pathStr.replace(/[/\\\\]+/g, '/') // replace any / or \\ or \\\\ with /
 	const allParts = pathStr.split('/') // split on /

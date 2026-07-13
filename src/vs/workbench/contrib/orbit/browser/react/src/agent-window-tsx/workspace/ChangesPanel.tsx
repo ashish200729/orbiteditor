@@ -391,7 +391,7 @@ export const ChangesPanel = ({ openInWorkspace }: WorkspacePanelProps) => {
 					{overflowOpen && (
 						<div className="agent-git-menu right wide" role="menu">
 							<div
-								className="agent-git-menu-item has-sub"
+								className={`agent-git-menu-item has-sub${layoutSubOpen ? ' open' : ''}`}
 								role="menuitem"
 								tabIndex={0}
 								aria-haspopup="menu"
@@ -399,18 +399,18 @@ export const ChangesPanel = ({ openInWorkspace }: WorkspacePanelProps) => {
 								onClick={(e) => { e.stopPropagation(); setLayoutSubOpen(v => !v); }}
 							>
 								<span className="agent-git-menu-label">Layout</span>
-								<span className="agent-git-menu-value">{layout === 'unified' ? 'Unified' : 'Split'} <ChevronRight size={12} strokeWidth={2} /></span>
-								{layoutSubOpen && (
-									<div className="agent-git-menu submenu" role="menu">
-										<div className="agent-git-menu-item" role="menuitem" tabIndex={0} onClick={(e) => { e.stopPropagation(); setLayout('unified'); setOverflowOpen(false); setLayoutSubOpen(false); }}>
-											<span className="agent-git-menu-label">Unified</span>{layout === 'unified' && <Check size={13} strokeWidth={2.5} className="agent-git-menu-check" />}
-										</div>
-										<div className="agent-git-menu-item" role="menuitem" tabIndex={0} onClick={(e) => { e.stopPropagation(); setLayout('split'); setOverflowOpen(false); setLayoutSubOpen(false); }}>
-											<span className="agent-git-menu-label">Split</span>{layout === 'split' && <Check size={13} strokeWidth={2.5} className="agent-git-menu-check" />}
-										</div>
-									</div>
-								)}
+								<span className="agent-git-menu-value">{layout === 'unified' ? 'Unified' : 'Split'} <ChevronRight size={12} strokeWidth={2} className={layoutSubOpen ? 'sub-chevron-open' : ''} /></span>
 							</div>
+							{layoutSubOpen && (
+								<>
+									<div className="agent-git-menu-item submenu-entry" role="menuitem" tabIndex={0} onClick={(e) => { e.stopPropagation(); setLayout('unified'); setOverflowOpen(false); setLayoutSubOpen(false); }}>
+										<span className="agent-git-menu-label">Unified</span>{layout === 'unified' && <Check size={13} strokeWidth={2.5} className="agent-git-menu-check" />}
+									</div>
+									<div className="agent-git-menu-item submenu-entry" role="menuitem" tabIndex={0} onClick={(e) => { e.stopPropagation(); setLayout('split'); setOverflowOpen(false); setLayoutSubOpen(false); }}>
+										<span className="agent-git-menu-label">Split</span>{layout === 'split' && <Check size={13} strokeWidth={2.5} className="agent-git-menu-check" />}
+									</div>
+								</>
+							)}
 							<div className="agent-git-menu-item" role="menuitemcheckbox" aria-checked={ignoreWhitespace} tabIndex={0} onClick={() => setIgnoreWhitespace(v => !v)}>
 								<span className="agent-git-menu-label">Ignore Whitespace</span><span className={`agent-git-toggle${ignoreWhitespace ? ' on' : ''}`} aria-hidden="true" />
 							</div>

@@ -70,6 +70,14 @@ const MAX_BROWSER_ELEMENT_SCREENSHOT_CHARS = 1_000_000
 // never blocks the renderer. Applied ONLY when writing to storage (see `storageStringifyReplacer`);
 // the live in-memory state is never trimmed, so the UI always shows full content during a session.
 const PERSIST_STRING_CAP = 24_000 // max chars kept per string field in the persisted copy
+// Per-string capping alone doesn't bound the blob: chat history has no eviction, so a
+// long-lived install accumulates thousands of threads and the aggregate can still reach
+// tens of MB. Reading (JSON.parse) that blob happens SYNCHRONOUSLY in this service's
+// constructor, which runs on the workbench startup path — a multi-second parse there
+// can outrun the "renderer signaled ready" safety-net timeout (windowImpl.ts) and the
+// window is force-shown permanently blank. Cap the PERSISTED thread count by recency;
+// the live in-memory state is never trimmed, so nothing disappears from the UI mid-session.
+const MAX_PERSISTED_THREADS = 200
 const storageStringifyReplacer = (key: string, value: unknown): unknown => {
 	// Drop base64 media — screenshots/images are up to ~1MB each and are not needed to restore a chat.
 	if (key === 'screenshot') return null
@@ -532,6 +540,14 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 			this._turnSequenceOfThread[threadId] = 0
 		}
 
+		// Self-heal an on-disk blob that predates MAX_PERSISTED_THREADS (or just grew past
+		// it) — re-persisting now (pruned by _sanitizeThreadsForStorage) makes the NEXT
+		// launch's read fast too, without waiting for the user to naturally trigger a save.
+		// Only the persisted copy shrinks; `allThreads` above already has every thread.
+		if (Object.keys(allThreads).length > MAX_PERSISTED_THREADS) {
+			this._storeAllThreads(allThreads)
+		}
+
 		// always be in a thread
 		this.openNewThread()
 
@@ -787,13 +803,31 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 		if (!threadsStr) {
 			return null
 		}
-		const threads = this._convertThreadDataFromStorage(threadsStr);
-
-		return threads
+		try {
+			return this._convertThreadDataFromStorage(threadsStr);
+		} catch (error) {
+			// This runs in the constructor of an EAGERLY-instantiated singleton — an
+			// uncaught throw here doesn't just lose chat history, it can take down
+			// workbench startup entirely. Treat truly malformed storage (e.g. a
+			// truncated write from a prior crash) the same as "no history" rather than
+			// blocking the app from ever opening again.
+			console.error('[chatThreadService] Failed to parse persisted chat threads; starting fresh:', getErrorMessage(error))
+			return null
+		}
 	}
 
 	private _sanitizeThreadsForStorage(threads: ChatThreads): ChatThreads {
-		return threads
+		const entries = Object.entries(threads).filter((e): e is [string, ThreadType] => !!e[1])
+		if (entries.length <= MAX_PERSISTED_THREADS) {
+			return threads
+		}
+		// Keep only the most recently-modified threads on disk (see MAX_PERSISTED_THREADS).
+		entries.sort((a, b) => (b[1].lastModified || '').localeCompare(a[1].lastModified || ''))
+		const kept: ChatThreads = {}
+		for (const [id, thread] of entries.slice(0, MAX_PERSISTED_THREADS)) {
+			kept[id] = thread
+		}
+		return kept
 	}
 
 	private _flushStoreAllThreads() {

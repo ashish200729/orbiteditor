@@ -23,6 +23,8 @@ import { DisposableStore, IReference } from '../../../../../../../../base/common
 import { isMacintosh } from '../../../../../../../../base/common/platform.js';
 import { Schemas } from '../../../../../../../../base/common/network.js';
 import { relativePath as resourceRelativePath, basename as resourceBasename, joinPath } from '../../../../../../../../base/common/resources.js';
+import { ServiceCollection } from '../../../../../../../../platform/instantiation/common/serviceCollection.js';
+import { IEditorProgressService } from '../../../../../../../../platform/progress/common/progress.js';
 import { IResolvedTextEditorModel } from '../../../../../../../../editor/common/services/resolverService.js';
 import { TextFileOperationError, TextFileOperationResult } from '../../../../../../../services/textfile/common/textfiles.js';
 import { FileOperationError, FileOperationResult } from '../../../../../../../../platform/files/common/files.js';
@@ -31,10 +33,21 @@ import { getConnectedDocument, getConnectedWindow, focusInConnectedWindow } from
 import type { WorkspacePanelProps } from './workspaceTypes.js';
 import { PanelPlaceholder } from './PanelPlaceholder.js';
 
-const basename = (p: string): string => {
+const basename = (p: string | undefined | null): string => {
+	if (!p) {
+		return '';
+	}
 	const cleaned = p.replace(/[\\/]+$/, '');
 	const idx = Math.max(cleaned.lastIndexOf('/'), cleaned.lastIndexOf('\\'));
 	return idx >= 0 ? cleaned.slice(idx + 1) : cleaned;
+};
+
+/** No-op progress service for Monaco widgets hosted outside an editor group (Agents window). */
+const NULL_PROGRESS_RUNNER = { done: () => { }, total: () => { }, worked: () => { } };
+const noopEditorProgressService: IEditorProgressService = {
+	_serviceBrand: undefined,
+	show() { return NULL_PROGRESS_RUNNER; },
+	async showWhile(promise) { await promise; },
 };
 
 const parseResource = (resource: string): URI => {
@@ -511,9 +524,13 @@ export const FileEditorPanel = ({
 
 			const store = new DisposableStore();
 			editorStoreRef.current = store;
+			const scopedInstantiation = instantiationService.createChild(
+				new ServiceCollection([IEditorProgressService, noopEditorProgressService]),
+			);
+			store.add(scopedInstantiation);
 			let editor: CodeEditorWidget;
 			try {
-				editor = instantiationService.createInstance(
+				editor = scopedInstantiation.createInstance(
 					CodeEditorWidget,
 					host,
 					{

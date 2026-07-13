@@ -104,6 +104,12 @@ interface IBrowserViewEntry {
 	devToolsSuppressed: boolean;
 	/** Becomes true after the first `setBounds()` call with non-zero dimensions. */
 	initialLayoutDone: boolean;
+	/**
+	 * Set only by a renderer `setBounds()` call after open. Initial bounds are a
+	 * best-effort bootstrap hint and must never, by themselves, authorize this
+	 * native surface to cover a window.
+	 */
+	hasPostOpenRendererBounds: boolean;
 	lastBounds: IBrowserViewBounds | undefined;
 	/** Last bounds actually applied to the native view (for deduplication). */
 	lastAppliedBounds: IBrowserViewBounds | undefined;
@@ -146,6 +152,9 @@ interface IBrowserViewEntry {
 	 */
 	parentView: View | undefined;
 }
+
+/** Native bounds used while a tab is hidden — keeps a white `about:blank` preload from blanketing the workbench. */
+const PARKED_NATIVE_BOUNDS: IBrowserViewBounds = { x: 0, y: 0, width: 1, height: 1 };
 
 /**
  * Owns one `electron.WebContentsView` per browser tab and attaches it to the VS Code
@@ -210,6 +219,61 @@ export class BrowserViewMainService extends Disposable {
 				}
 			}
 		}));
+		this._register(this.windowsMainService.onDidOpenWindow(window => {
+			this.scheduleWindowViewReaper(window.id);
+		}));
+		// Catch views created during early restore before any window-open event fires.
+		this.scheduleGlobalViewReaper();
+	}
+
+	/**
+	 * Main-process safety net: detach every hidden browser view and suppress any
+	 * view still parked at bootstrap full-window bounds. Renderer-side hide IPC
+	 * can lose races during the multi-second workspace-restore window.
+	 */
+	private scheduleGlobalViewReaper(): void {
+		for (const delayMs of [0, 50, 100, 250, 500, 1000, 2000, 5000, 10_000, 15_000]) {
+			setTimeout(() => this.reapAllBrowserViews(), delayMs);
+		}
+	}
+
+	private scheduleWindowViewReaper(windowId: number): void {
+		const reap = () => this.reapBrowserViewsForWindow(windowId);
+		reap();
+		for (const delayMs of [50, 100, 250, 500, 1000, 2000, 5000, 10_000, 15_000]) {
+			setTimeout(reap, delayMs);
+		}
+	}
+
+	private reapAllBrowserViews(): void {
+		for (const window of this.windowsMainService.getWindows()) {
+			this.reapBrowserViewsForWindow(window.id);
+		}
+		for (const aux of this.auxiliaryWindowsMainService.getWindows()) {
+			this.reapBrowserViewsForWindow(aux.id);
+		}
+	}
+
+	private reapBrowserViewsForWindow(windowId: number): void {
+		for (const entry of this.views.values()) {
+			if (entry.windowId !== windowId) {
+				continue;
+			}
+			if (!this.isActuallyVisible(entry)) {
+				try {
+					entry.view.setVisible(false);
+				} catch { /* view may already be destroyed */ }
+				this.applyParkedBounds(entry);
+				this.detachFromWindow(entry);
+				continue;
+			}
+			if (this.isUnsafeFullscreenBounds(entry)) {
+				this.logService.warn(`[browserView] Reaper hid unsafe fullscreen view ${entry.id}`);
+				entry.visible = false;
+				entry.holdHidden = true;
+				this.applyVisibility(entry);
+			}
+		}
 	}
 
 	/**
@@ -241,7 +305,15 @@ export class BrowserViewMainService extends Disposable {
 			if (existing.windowId !== windowId) {
 				this.detachFromWindow(existing);
 				existing.windowId = windowId;
-				this.attachToWindow(existing);
+				// Only attach to the new window when this tab is actually visible.
+				// Attaching a hidden preloaded view would composite its white
+				// `about:blank` frame above the workbench in the new window.
+				if (this.isActuallyVisible(existing)) {
+					this.ensureAttachedToWindow(existing);
+					this.applyVisibility(existing);
+				} else {
+					existing.hasPostOpenRendererBounds = false;
+				}
 			}
 			if (options.homeUrl) {
 				existing.homeUrl = options.homeUrl;
@@ -300,6 +372,7 @@ export class BrowserViewMainService extends Disposable {
 			holdHidden: options.keepHidden === true,
 			devToolsSuppressed: false,
 			initialLayoutDone: false,
+			hasPostOpenRendererBounds: false,
 			lastBounds: undefined,
 			lastAppliedBounds: undefined,
 		lastAppliedZoom: undefined,
@@ -312,9 +385,15 @@ export class BrowserViewMainService extends Disposable {
 		};
 		this.views.set(id, entry);
 
-		this.attachToWindow(entry);
+		// Do NOT attach the WebContentsView until the tab is actually shown.
+		// A detached view cannot composite above the workbench — the root cause
+		// of the full-window white screen on launch when browser tabs restore.
+		const win = this.getWindow(windowId);
+		if (win) {
+			this.ensureWindowCloseTracking(win, windowId);
+		}
 		this.registerWebContentsListeners(entry, disposables);
-		this.applyInitialBounds(entry, options.bounds, options.keepHidden === true);
+		this.applyInitialBounds(entry, options.bounds);
 
 		// Workaround for Electron #47351: a WebContentsView that hasn't painted content yet
 		// is placed below already-loaded WebContentsViews (e.g. the workbench's main view) in
@@ -372,13 +451,14 @@ export class BrowserViewMainService extends Disposable {
 	}
 
 	/**
-	 * Sizes and shows the view *before* the first navigation starts, when the caller already
-	 * knows the target bounds (the editor pane always does by the time it calls `open()`).
-	 * Without this, a brand-new tab navigates and finishes loading entirely while hidden at
-	 * zero size, and Chromium never composites a frame for it — the pane then shows blank
-	 * until something else (a manual reload) forces a fresh, now-visible paint.
+	 * Sizes the view *before* the first navigation starts, when the caller already knows the
+	 * target bounds (the editor pane always does by the time it calls `open()`). Without this,
+	 * a brand-new tab navigates and finishes loading entirely at zero size, and Chromium never
+	 * composites a frame for it. Always leaves the view HIDDEN — see the comment inside for why
+	 * revealing it here (as this used to) is unsafe; the caller reveals it once its own layout
+	 * has settled.
 	 */
-	private applyInitialBounds(entry: IBrowserViewEntry, bounds: IBrowserViewBounds | undefined, keepHidden = false): void {
+	private applyInitialBounds(entry: IBrowserViewEntry, bounds: IBrowserViewBounds | undefined): void {
 		if (!bounds || bounds.width <= 0 || bounds.height <= 0) {
 			return;
 		}
@@ -387,17 +467,32 @@ export class BrowserViewMainService extends Disposable {
 			return;
 		}
 		entry.lastBounds = bounds;
-		// Preload path: size the surface so Chromium can composite, but stay hidden
-		// until the editor pane reveals this tab. Visible path: show immediately so
-		// the first navigation paints live (avoids blank-until-reload).
-		entry.holdHidden = keepHidden;
-		entry.visible = !keepHidden;
+		// Always open hidden, regardless of the caller's `keepHidden` request.
+		//
+		// This used to show immediately whenever the caller asked for a visible open
+		// (to avoid a brand-new tab loading fully off-screen and never compositing a
+		// frame). The problem: bounds measured at open() time — especially during
+		// startup restore, before the editor grid/sidebar/tab-strip have settled —
+		// cannot be trusted to reflect the FINAL laid-out content area. A view shown
+		// at a wrong/guessed rect paints its (white) background over whatever it
+		// actually covers, up to and including the entire workbench window. Because a
+		// browser tab is persisted and auto-restored, this repeated on every launch.
+		//
+		// `isUnsafeFullscreenBounds` was meant to catch exactly this shape, but its
+		// origin/coverage heuristic doesn't catch every real unsettled-layout rect
+		// (verified live: still blanked with that guard wired in here). Rather than
+		// chase a fragile heuristic, don't reveal from open() at all: both callers
+		// (`browserEditorPane.setInput` and the Agents-window `BrowserPanel`) already
+		// follow up with their OWN gated `setVisible(true)` shortly after, once their
+		// layout has settled and they've confirmed they're still the authoritative
+		// owner of this tab. Nothing is lost by not revealing here — the view still
+		// renders while hidden (`backgroundThrottling: false` on its webPreferences),
+		// so the later reveal paints immediately with no blank flash.
+		entry.holdHidden = true;
+		entry.visible = false;
 		this.applyBoundsToView(entry, bounds);
 		entry.initialLayoutDone = true;
 		this.applyVisibility(entry);
-		if (!keepHidden) {
-			this.bringToFrontInternal(entry, true);
-		}
 	}
 
 	private registerWebContentsListeners(entry: IBrowserViewEntry, disposables: DisposableStore): void {
@@ -603,7 +698,13 @@ export class BrowserViewMainService extends Disposable {
 
 		disposables.add(toDisposable(() => {
 			try { wc.closeDevTools(); } catch { /* noop */ }
-			wc.close();
+			// The owning window's native `closed` event (see ensureWindowCloseTracking)
+			// can trigger this dispose AFTER Electron has already destroyed this
+			// webContents as part of window teardown — `wc.close()` on an already-
+			// destroyed webContents throws "Object has been destroyed", and an uncaught
+			// exception inside a native Electron event-emitter callback in the main
+			// process is not something a renderer-side try/catch can protect against.
+			try { if (!wc.isDestroyed()) { wc.close(); } } catch { /* already gone */ }
 		}));
 
 		disposables.add(toDisposable(() => {
@@ -780,9 +881,31 @@ export class BrowserViewMainService extends Disposable {
 		if (entry.windowId !== windowId) {
 			this.detachFromWindow(entry);
 			entry.windowId = windowId;
-			this.attachToWindow(entry);
+			if (this.isActuallyVisible(entry)) {
+				this.ensureAttachedToWindow(entry);
+			}
+			// Bounds from the old window are not meaningful in the newly attached
+			// window. Wait for its renderer to measure its own panel before showing.
+			entry.hasPostOpenRendererBounds = false;
 		}
 		entry.lastBounds = bounds;
+		// Only accept bounds as "post-open renderer bounds" (the gate for
+		// setVisible(true)) when they are non-zero AND not an unsafe fullscreen
+		// rect. A (0,0,~windowWidth,~windowHeight) rect is the signature of a
+		// renderer that hasn't laid out its panel yet (the host element
+		// momentarily fills the window before the toolbar/layout settles).
+		// Accepting it would let a later setVisible(true) reveal a native view
+		// that covers the entire workbench — the white-screen bug.
+		const isUnsafe = this.isUnsafeFullscreenBoundsValue(entry, bounds);
+		entry.hasPostOpenRendererBounds = bounds.width > 0 && bounds.height > 0 && !isUnsafe;
+		// If the view is currently visible but the new bounds are unsafe, hide it
+		// immediately so it cannot blank the workbench while we wait for correct
+		// bounds to arrive.
+		if (entry.visible && isUnsafe) {
+			this.logService.warn(`[browserView] Hiding ${id}: received unsafe fullscreen bounds while visible`);
+			entry.visible = false;
+			this.applyVisibility(entry);
+		}
 		if (!this.applyBoundsToView(entry, bounds)) {
 			return;
 		}
@@ -791,7 +914,7 @@ export class BrowserViewMainService extends Disposable {
 		// Without this, a brand-new active tab that opened with undefined bounds (zero-size
 		// content area at open() time) loads fully while hidden, then setBounds resizes the
 		// native view but never composites — the tab stays blank until a manual reload.
-		if (!entry.initialLayoutDone && bounds.width > 0 && bounds.height > 0) {
+		if (!entry.initialLayoutDone && bounds.width > 0 && bounds.height > 0 && !isUnsafe) {
 			entry.initialLayoutDone = true;
 			this.refreshCompositor(entry);
 		}
@@ -803,13 +926,32 @@ export class BrowserViewMainService extends Disposable {
 		}
 	}
 
-	async setVisible(_windowId: number, id: BrowserViewId, visible: boolean): Promise<void> {
+	async setVisible(windowId: number, id: BrowserViewId, visible: boolean): Promise<void> {
 		const entry = this.views.get(id);
 		if (!entry) {
 			return;
 		}
+		if (entry.windowId !== windowId) {
+			this.logService.warn(`[browserView] Ignoring visibility request for ${id} from non-owning window ${windowId}`);
+			return;
+		}
 		if (visible) {
-			if (entry.holdHidden && this.isUnsafeFullscreenBounds(entry)) {
+			// A WebContentsView is a native sibling above the workbench renderer.
+			// Showing it from the speculative bounds supplied to open() can therefore
+			// hide an entire window. The panel must first report bounds measured after
+			// it is connected and laid out.
+			if (!entry.hasPostOpenRendererBounds) {
+				this.logService.warn(`[browserView] Suppressed show for ${id}: awaiting post-open renderer bounds`);
+				return;
+			}
+			// Always guard against unsafe fullscreen bounds — not only when holdHidden
+			// is set. Once a view has been shown once, holdHidden is cleared, so a
+			// later setVisible(true) (e.g. from the overlay manager restoring after a
+			// toast dismisses) would bypass this check and reveal a native view parked
+			// at a stale full-window rect, blanking the entire workbench. The bounds
+			// may have become unsafe due to a restore race, a cross-window detach, or
+			// a preload that parked the view at a guessed rect.
+			if (this.isUnsafeFullscreenBounds(entry)) {
 				this.logService.warn(`[browserView] Suppressed unsafe fullscreen show for ${id} (awaiting editor layout)`);
 				return;
 			}
@@ -833,7 +975,42 @@ export class BrowserViewMainService extends Disposable {
 	}
 
 	private applyVisibility(entry: IBrowserViewEntry): void {
-		entry.view.setVisible(entry.visible && !entry.devToolsSuppressed && !entry.holdHidden);
+		const shouldShow = entry.visible && !entry.devToolsSuppressed && !entry.holdHidden;
+		if (!shouldShow) {
+			try {
+				entry.view.setVisible(false);
+			} catch { /* view may already be destroyed */ }
+			this.applyParkedBounds(entry);
+			// Detach from the window compositor entirely. On macOS a hidden
+			// WebContentsView can keep painting its white `about:blank` preload
+			// above the workbench even after setVisible(false) + 1×1 parking.
+			this.detachFromWindow(entry);
+			return;
+		}
+		if (!this.ensureAttachedToWindow(entry)) {
+			return;
+		}
+		entry.view.setVisible(true);
+		if (entry.lastBounds && entry.hasPostOpenRendererBounds && !this.isUnsafeFullscreenBounds(entry)) {
+			this.applyBoundsToView(entry, entry.lastBounds, true);
+		}
+	}
+
+	/** Shrinks the native view to a 1×1 rect without clearing the logical layout bounds. */
+	private applyParkedBounds(entry: IBrowserViewEntry): void {
+		const win = this.getWindow(entry.windowId);
+		if (!win) {
+			return;
+		}
+		try {
+			entry.view.setBounds(PARKED_NATIVE_BOUNDS);
+			entry.lastAppliedBounds = { ...PARKED_NATIVE_BOUNDS };
+			entry.lastAppliedZoom = win.webContents.getZoomFactor?.() ?? 1;
+		} catch { /* best-effort */ }
+	}
+
+	private isActuallyVisible(entry: IBrowserViewEntry): boolean {
+		return entry.visible && !entry.devToolsSuppressed && !entry.holdHidden;
 	}
 
 	/**
@@ -841,7 +1018,14 @@ export class BrowserViewMainService extends Disposable {
 	 * content area — the signature of a restore race / guessed-bounds preload.
 	 */
 	private isUnsafeFullscreenBounds(entry: IBrowserViewEntry): boolean {
-		const bounds = entry.lastBounds;
+		return this.isUnsafeFullscreenBoundsValue(entry, entry.lastBounds);
+	}
+
+	/**
+	 * Same check as {@link isUnsafeFullscreenBounds} but accepts an explicit
+	 * bounds rect so callers can validate a candidate before storing it.
+	 */
+	private isUnsafeFullscreenBoundsValue(entry: IBrowserViewEntry, bounds: IBrowserViewBounds | undefined): boolean {
 		if (!bounds || bounds.width <= 0 || bounds.height <= 0) {
 			return false;
 		}
@@ -850,12 +1034,35 @@ export class BrowserViewMainService extends Disposable {
 			return false;
 		}
 		const content = win.getContentBounds();
-		if (content.width <= 0 || content.height <= 0) {
+		if (content.width <= 480 || content.height <= 320) {
 			return false;
 		}
-		const atOrigin = bounds.x <= 8 && bounds.y <= 8;
-		const coversWindow = bounds.width >= content.width * 0.9 && bounds.height >= content.height * 0.9;
-		return atOrigin && coversWindow && content.width > 480 && content.height > 320;
+		// Renderer bounds are CSS px; compare against window content DIPs using zoom.
+		const zoom = win.webContents.getZoomFactor?.() ?? 1;
+		const nativeW = bounds.width * zoom;
+		const nativeH = bounds.height * zoom;
+		const coversWidth = nativeW >= content.width * 0.92;
+		const coversHeight = nativeH >= content.height * 0.86;
+		if (!coversWidth || !coversHeight) {
+			return false;
+		}
+		// A browser editor's web-content area never starts at the viewport top — there
+		// is always a title bar and tab strip above it. A near-full-window rect with a
+		// small y is a bootstrap measurement from before layout settled (white-screen bug).
+		if (bounds.y < 80) {
+			return true;
+		}
+		// Default layouts always have an activity bar or sidebar; x≈0 at this coverage
+		// means the renderer measured the whole window, not the browser panel.
+		if (bounds.x < 48) {
+			return true;
+		}
+		// Legacy top-left heuristic for rects that slipped past the checks above.
+		const nearTopLeft = bounds.x <= 24 && bounds.y <= 56;
+		if (nearTopLeft) {
+			return true;
+		}
+		return bounds.x <= 8 && bounds.y <= 40;
 	}
 
 	async focus(_windowId: number, id: BrowserViewId): Promise<void> {
@@ -902,6 +1109,15 @@ export class BrowserViewMainService extends Disposable {
 	}
 
 	private bringToFrontInternal(entry: IBrowserViewEntry, force = false): void {
+		// Never restack a hidden/preloaded tab to the top of the window's child-view
+		// list. On macOS that reorder can make its white `about:blank` preload frame
+		// composite above the workbench even while `setVisible(false)`.
+		if (!this.isActuallyVisible(entry)) {
+			return;
+		}
+		if (!entry.parentView && !this.ensureAttachedToWindow(entry)) {
+			return;
+		}
 		const win = this.getWindow(entry.windowId);
 		if (!win) {
 			return;
@@ -950,6 +1166,14 @@ export class BrowserViewMainService extends Disposable {
 		const wc = entry.view.webContents;
 		if (wc.isDestroyed()) {
 			throw new Error(`Browser view webContents destroyed: ${id}`);
+		}
+		// Screenshot requests can arrive immediately after an agent opens a tab.
+		// Do not temporarily reveal a view that has only bootstrap bounds: a native
+		// WebContentsView sits above the renderer and that would bypass the normal
+		// visibility gate, potentially painting a white surface over the window.
+		// The automation caller falls back to CDP until layout is ready.
+		if (!entry.hasPostOpenRendererBounds) {
+			throw new Error(`Browser view is not laid out yet: ${id}`);
 		}
 
 		// Ensure the native view is painted before capture. A hidden or
@@ -1112,7 +1336,8 @@ export class BrowserViewMainService extends Disposable {
 		}
 		// The standalone Agents window is an auxiliary window (its own BrowserWindow) that
 		// hosts browser tabs. Its `vscodeWindowId` is the aux webContents id — the same key
-		// AuxiliaryWindowsMainService uses — so resolve it here so `attachToWindow` can add
+		// AuxiliaryWindowsMainService uses — so resolve it here so
+		// `ensureAttachedToWindow` can add the WebContentsView to the pop-out's
 		// the WebContentsView to the pop-out's contentView instead of failing to find it.
 		for (const aux of this.auxiliaryWindowsMainService.getWindows()) {
 			if (aux.id === windowId) {
@@ -1126,6 +1351,14 @@ export class BrowserViewMainService extends Disposable {
 		if (this.closeTrackedWindows.has(windowId)) {
 			return;
 		}
+		// MAIN windows are already reaped by `onDidDestroyWindow` (constructor, above).
+		// Only auxiliary windows (the Agents pop-out) lack an equivalent destroy event
+		// from IAuxiliaryWindowsMainService, so only track those here — tracking a main
+		// window too would give it TWO cleanup triggers firing at different points in
+		// native teardown, racing each other to dispose the same entry.
+		if (this.windowsMainService.getWindowById(windowId)) {
+			return;
+		}
 		this.closeTrackedWindows.add(windowId);
 		win.once('closed', () => {
 			this.closeTrackedWindows.delete(windowId);
@@ -1137,32 +1370,37 @@ export class BrowserViewMainService extends Disposable {
 		});
 	}
 
-	private attachToWindow(entry: IBrowserViewEntry): void {
+	/** Adds the native view to the window's contentView without changing visibility. */
+	private ensureAttachedToWindow(entry: IBrowserViewEntry): boolean {
 		const win = this.getWindow(entry.windowId);
 		if (!win) {
 			this.logService.warn(`[browserView] Cannot attach ${entry.id}: window ${entry.windowId} not found`);
-			return;
+			return false;
 		}
 		this.ensureWindowCloseTracking(win, entry.windowId);
-		if (entry.parentView) {
-			this.detachFromWindow(entry);
+		if (!entry.parentView) {
+			// Attach as a direct child of the window's contentView (a sibling of the workbench's
+			// main WebContentsView), NOT as a child of that main WebContentsView. Nesting
+			// WebContentsView inside WebContentsView breaks macOS hit-testing (Electron #47536,
+			// #47990): the page renders but no pointer/keyboard events reach it.
+			const parent = win.contentView;
+			try {
+				parent.addChildView(entry.view);
+				entry.parentView = parent;
+			} catch (e) {
+				this.logService.error(`[browserView] Failed to attach view ${entry.id}`, e);
+				return false;
+			}
 		}
-		// Attach as a direct child of the window's contentView (a sibling of the workbench's
-		// main WebContentsView), NOT as a child of that main WebContentsView. Nesting
-		// WebContentsView inside WebContentsView breaks macOS hit-testing (Electron #47536,
-		// #47990): the page renders but no pointer/keyboard events reach it.
-		const parent = win.contentView;
-		try {
-			parent.addChildView(entry.view);
-			entry.parentView = parent;
-			this.bringToFrontInternal(entry, true);
-		} catch (e) {
-			this.logService.error(`[browserView] Failed to attach view ${entry.id}`, e);
-		}
-
 		this.ensureDevToolsTracking(win, entry.windowId);
 		entry.devToolsSuppressed = win.webContents.isDevToolsOpened();
-		this.applyVisibility(entry);
+		if (entry.devToolsSuppressed) {
+			try {
+				entry.view.setVisible(false);
+			} catch { /* ignore */ }
+			return false;
+		}
+		return true;
 	}
 
 	private ensureDevToolsTracking(win: BrowserWindow, windowId: number): void {
@@ -1353,21 +1591,26 @@ export class BrowserViewMainService extends Disposable {
 		if (!win) {
 			return false;
 		}
+		const actuallyVisible = this.isActuallyVisible(entry);
+		const unsafe = this.isUnsafeFullscreenBoundsValue(entry, bounds);
+		// Hidden tabs, and visible requests with bootstrap measurements, are parked at 1×1
+		// so a white preload frame cannot cover the workbench.
+		const boundsToApply = (!actuallyVisible || unsafe) ? PARKED_NATIVE_BOUNDS : bounds;
 		// Renderer bounds are CSS px in the (zoomed) workbench page; native view bounds are
 		// window DIPs. With zoom factor z, one CSS px occupies z DIPs on screen, so convert
 		// by MULTIPLYING (dividing shrinks/mis-places the view whenever the UI is zoomed).
 		const zoom = win.webContents.getZoomFactor?.() ?? 1;
-		if (!force && entry.lastAppliedBounds && entry.lastAppliedZoom === zoom && boundsEqual(entry.lastAppliedBounds, bounds)) {
+		if (!force && entry.lastAppliedBounds && entry.lastAppliedZoom === zoom && boundsEqual(entry.lastAppliedBounds, boundsToApply)) {
 			return false;
 		}
 		const native = {
-			x: Math.round(bounds.x * zoom),
-			y: Math.round(bounds.y * zoom),
-			width: Math.round(bounds.width * zoom),
-			height: Math.round(bounds.height * zoom),
+			x: Math.round(boundsToApply.x * zoom),
+			y: Math.round(boundsToApply.y * zoom),
+			width: Math.round(boundsToApply.width * zoom),
+			height: Math.round(boundsToApply.height * zoom),
 		};
 		entry.view.setBounds(native);
-		entry.lastAppliedBounds = { ...bounds };
+		entry.lastAppliedBounds = { ...boundsToApply };
 		entry.lastAppliedZoom = zoom;
 		return true;
 	}

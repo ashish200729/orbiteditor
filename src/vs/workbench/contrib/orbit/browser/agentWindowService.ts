@@ -25,7 +25,9 @@ import { ServicesAccessor } from '../../../../editor/browser/editorExtensions.js
 import { isMacintosh, isWindows, isLinux } from '../../../../base/common/platform.js';
 import { IChatThreadService } from './chatThreadService.js';
 import { ipcRenderer } from '../../../../base/parts/sandbox/electron-sandbox/globals.js';
-import { BROWSER_AUTOMATION_IPC_CHANNELS } from '../../../../platform/browserView/common/browserView.js';
+import { BROWSER_AUTOMATION_IPC_CHANNELS, IBrowserViewService } from '../../../../platform/browserView/common/browserView.js';
+import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
+import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 
 // ---------------------------------------------------------------------------
 // Service decorator + interface
@@ -263,6 +265,7 @@ export class AgentWindowService extends Disposable implements IAgentWindowServic
 		@IKeybindingService private readonly keybindingService: IKeybindingService,
 		@ILogService private readonly logService: ILogService,
 		@IChatThreadService private readonly chatThreadService: IChatThreadService,
+		@IMainProcessService private readonly mainProcessService: IMainProcessService,
 	) {
 		super();
 
@@ -541,6 +544,15 @@ export class AgentWindowService extends Disposable implements IAgentWindowServic
 		// a separate title band — the per-column headers live inside the body — so
 		// the body fills the whole content area.
 		const sizeShell = (width: number, height: number) => {
+			// A child window can briefly report a zero-sized client area while it is
+			// being created, hidden, or moved between displays. Do not turn that
+			// transient measurement into an inline `0px` size: CSS then faithfully
+			// collapses every pane and leaves a completely white Agents window until
+			// another resize happens. Keep the last valid size instead; the next real
+			// layout event will replace it normally.
+			if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+				return;
+			}
 			shell.style.width = `${width}px`;
 			shell.style.height = `${height}px`;
 			body.style.width = `${width}px`;
@@ -1000,6 +1012,8 @@ export class AgentWindowService extends Disposable implements IAgentWindowServic
 			return;
 		}
 
+		void this.teardownAuxBrowserViews();
+
 		if (this._pendingOpenTab) {
 			clearTimeout(this._pendingOpenTab.timer);
 			this._pendingOpenTab.reject(new Error('Agents window closed.'));
@@ -1023,6 +1037,26 @@ export class AgentWindowService extends Disposable implements IAgentWindowServic
 		this.chatTitleEl = undefined;
 
 		this._onDidChangeState.fire();
+	}
+
+	/** Close native browser views owned by the agents pop-out so they cannot leak. */
+	private async teardownAuxBrowserViews(): Promise<void> {
+		const auxId = this.getAuxiliaryWindowId();
+		if (auxId === undefined || this._browserViews.size === 0) {
+			return;
+		}
+		const bv = ProxyChannel.toService<IBrowserViewService>(
+			this.mainProcessService.getChannel('browserView'),
+			{ context: auxId },
+		);
+		for (const id of [...this._browserViews.keys()]) {
+			try {
+				await bv.setVisible(id, false);
+				await bv.close(id);
+			} catch (err) {
+				this.logService.warn(`[AgentWindow] failed to close browser view ${id}`, err);
+			}
+		}
 	}
 
 	override dispose(): void {

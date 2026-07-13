@@ -139,6 +139,7 @@ export const BrowserPanel = ({ tab, isActive, overlayOpen = false, setTitle, clo
 		const store = new DisposableStore();
 		store.add(agentWindowService.registerBrowserView(id, tab.id));
 		let rafHandle = 0;
+		let layoutReadyForOpen = false;
 
 		const readRect = (): IBrowserViewBounds => {
 			const r = host.getBoundingClientRect();
@@ -147,8 +148,19 @@ export const BrowserPanel = ({ tab, isActive, overlayOpen = false, setTitle, clo
 		const sameRounded = (a: IBrowserViewBounds, b: IBrowserViewBounds) =>
 			Math.round(a.x) === Math.round(b.x) && Math.round(a.y) === Math.round(b.y) &&
 			Math.round(a.width) === Math.round(b.width) && Math.round(a.height) === Math.round(b.height);
+		// Before auxiliary-window styles settle, a portal host may momentarily
+		// measure as the entire window at (0, 0). A native WebContentsView is above
+		// all renderer DOM, so accepting that rectangle would turn the whole Agents
+		// Window white. The real browser content always sits below its toolbar.
+		const isSafeHostRect = (rect: IBrowserViewBounds) => {
+			if (!Number.isFinite(rect.x) || !Number.isFinite(rect.y) || !Number.isFinite(rect.width) || !Number.isFinite(rect.height) || rect.width <= 0 || rect.height <= 0) {
+				return false;
+			}
+			const coversWindow = rect.width >= win.innerWidth * 0.9 && rect.height >= win.innerHeight * 0.9;
+			return !(rect.x <= 8 && rect.y <= 8 && coversWindow);
+		};
 
-		const syncView = () => {
+		const syncView = async () => {
 			const inst = proxyRef.current;
 			if (!inst || disposed) {
 				return;
@@ -160,21 +172,38 @@ export const BrowserPanel = ({ tab, isActive, overlayOpen = false, setTitle, clo
 			//    Electron WebContentsViews always paint above the HTML layer, so
 			//    the only way to show the menu is to hide the native view), or
 			//  - the host has zero size (collapsed workspace).
-			if (!isActiveRef.current || overlayOpenRef.current || rect.width <= 0 || rect.height <= 0) {
+			if (!isActiveRef.current || overlayOpenRef.current || !isSafeHostRect(rect)) {
 				inst.setVisible(id, false).catch(() => { });
 				return;
 			}
 			if (!lastBoundsRef.current || !sameRounded(lastBoundsRef.current, rect)) {
-				lastBoundsRef.current = rect;
-				inst.setBounds(id, rect).catch(() => { });
+				// The main process deliberately requires a post-open measurement before
+				// showing a WebContentsView. Await it so visibility cannot overtake the
+				// bounds update on IPC and expose a stale full-window surface.
+				try {
+					await inst.setBounds(id, rect);
+					if (disposed || proxyRef.current !== inst) {
+						return;
+					}
+					lastBoundsRef.current = rect;
+				} catch {
+					return;
+				}
 			}
-			inst.setVisible(id, true).catch(() => { });
+			// The async bounds round-trip may outlive a tab switch or popover open.
+			// Re-check ownership before revealing so an inactive browser never paints
+			// over the panel that replaced it.
+			if (disposed || proxyRef.current !== inst || !isActiveRef.current || overlayOpenRef.current || !isSafeHostRect(readRect())) {
+				await inst.setVisible(id, false).catch(() => { });
+				return;
+			}
+			await inst.setVisible(id, true).catch(() => { });
 		};
 		const scheduleSync = () => {
 			if (rafHandle) {
 				return;
 			}
-			rafHandle = win.requestAnimationFrame(() => { rafHandle = 0; syncView(); });
+			rafHandle = win.requestAnimationFrame(() => { rafHandle = 0; void syncView(); });
 		};
 
 		// Events (unfiltered across windows — always filter by our id).
@@ -357,11 +386,11 @@ export const BrowserPanel = ({ tab, isActive, overlayOpen = false, setTitle, clo
 
 		let viewOpened = false;
 		const tryOpen = async () => {
-			if (viewOpened || disposed) {
+			if (viewOpened || disposed || !layoutReadyForOpen) {
 				return;
 			}
 			const rect = readRect();
-			if (rect.width <= 0 || rect.height <= 0) {
+			if (!isSafeHostRect(rect)) {
 				return;
 			}
 			viewOpened = true;
@@ -375,7 +404,9 @@ export const BrowserPanel = ({ tab, isActive, overlayOpen = false, setTitle, clo
 					bv.close(id).catch(() => { });
 					return;
 				}
-				lastBoundsRef.current = rect;
+				// Bootstrap bounds only size the hidden native surface. Force the next
+				// sync to send a freshly measured post-open rectangle before reveal.
+				lastBoundsRef.current = null;
 				applyState(state);
 				syncTheme();
 				scheduleSync();
@@ -386,8 +417,6 @@ export const BrowserPanel = ({ tab, isActive, overlayOpen = false, setTitle, clo
 				}
 			}
 		};
-		void tryOpen();
-
 		// ResizeObserver + window resize keep the native view aligned with the
 		// placeholder through workspace divider drags, window resizes, and zoom changes.
 		let ro: ResizeObserver | undefined;
@@ -400,6 +429,20 @@ export const BrowserPanel = ({ tab, isActive, overlayOpen = false, setTitle, clo
 		}
 		const onWinResize = () => scheduleSync();
 		win.addEventListener('resize', onWinResize);
+
+		// The portal host can exist for a frame before the auxiliary window has
+		// copied its scoped CSS. Opening during that transient layout yields a
+		// full-window rectangle; wait for two frames so the first native bounds are
+		// the browser panel's real, settled bounds.
+		win.requestAnimationFrame(() => {
+			win.requestAnimationFrame(() => {
+				if (disposed) {
+					return;
+				}
+				layoutReadyForOpen = true;
+				void tryOpen();
+			});
+		});
 
 		// Per-window zoom (Cmd +/-) and the `window.zoomLevel` setting both change the
 		// CSS px → DIP conversion of the native view bounds, so re-sync on either.
@@ -467,19 +510,32 @@ export const BrowserPanel = ({ tab, isActive, overlayOpen = false, setTitle, clo
 		if (!inst || !host || !id) {
 			return;
 		}
+		const win = getConnectedWindow(host) as ConnectedWindow;
 		// Native view is only composited when the tab is the active one AND no
 		// HTML popover needs to paint above it.
-		const shouldShow = isActive && !overlayOpen;
-		if (shouldShow) {
-			const r = host.getBoundingClientRect();
-			if (r.width > 0 && r.height > 0) {
-				const rect = { x: r.left, y: r.top, width: r.width, height: r.height };
-				lastBoundsRef.current = rect;
-				inst.setBounds(id, rect).catch(() => { });
-				inst.setVisible(id, true).catch(() => { });
-				inst.bringToFront(id).catch(() => { });
+	const shouldShow = isActive && !overlayOpen;
+	if (shouldShow) {
+		const r = host.getBoundingClientRect();
+		if (r.width > 0 && r.height > 0) {
+			const rect = { x: r.left, y: r.top, width: r.width, height: r.height };
+			// Guard against a full-window (0,0) rect — a native WebContentsView
+			// at that rect covers the entire Agents window and blanks it. The
+			// host can momentarily measure as the full window before the
+			// workspace layout settles.
+			const coversWindow = rect.width >= win.innerWidth * 0.9 && rect.height >= win.innerHeight * 0.9;
+			const unsafeOrigin = rect.x <= 8 && rect.y <= 8 && coversWindow;
+			if (unsafeOrigin) {
+				inst.setVisible(id, false).catch(() => { });
+				return;
 			}
-		} else {
+			lastBoundsRef.current = rect;
+			void (async () => {
+				await inst.setBounds(id, rect);
+				await inst.setVisible(id, true);
+				await inst.bringToFront(id);
+			})();
+		}
+	} else {
 			inst.setVisible(id, false).catch(() => { });
 			// Only fully tear down chrome state when the TAB is inactive — not
 			// merely when a transient overlay (the "+" menu) is open. That way

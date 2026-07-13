@@ -12,6 +12,7 @@ import { IContextKeyService } from '../../../../platform/contextkey/common/conte
 import { IQuickInputService } from '../../../../platform/quickinput/common/quickInput.js';
 import { IEditorService } from '../../../services/editor/common/editorService.js';
 import { ILifecycleService, LifecyclePhase } from '../../../services/lifecycle/common/lifecycle.js';
+import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IBrowserViewBounds, IBrowserViewService } from '../../../../platform/browserView/common/browserView.js';
 import { BROWSER_VIEW_REEVALUATE_VISIBILITY_EVENT, BrowserEditorPane } from './browserEditorPane.js';
 import { BrowserEditorInput } from './browserEditorInput.js';
@@ -71,6 +72,7 @@ export class BrowserViewOverlayManager extends Disposable implements IWorkbenchC
 		@IEditorService private readonly editorService: IEditorService,
 		@IBrowserViewService private readonly browserViewService: IBrowserViewService,
 		@ILifecycleService private readonly lifecycleService: ILifecycleService,
+		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
 	) {
 		super();
 
@@ -109,11 +111,17 @@ export class BrowserViewOverlayManager extends Disposable implements IWorkbenchC
 
 		// Safety net: a background browser tab's native view must never stay visible
 		// after restore races (setInput in flight while the active editor changes).
-		this._register(this.editorService.onDidActiveEditorChange(() => this.hideInactiveBrowserViews()));
-		this.hideInactiveBrowserViews();
+		this._register(this.editorService.onDidActiveEditorChange(() => this.sweepBrowserViewVisibility()));
+		this._register(this.editorService.onDidEditorsChange(() => this.sweepBrowserViewVisibility()));
+		this.sweepBrowserViewVisibility();
 		this.scheduleRestoreVisibilitySweeps();
 
 		this._register(addDisposableListener(mainWindow, 'resize', () => this.scheduleResizeSweep()));
+
+		// When the user closes the last workspace folder the editor tabs tear down
+		// asynchronously; until then a restored browser tab's native view can keep
+		// compositing a white `about:blank` frame over the empty window.
+		this._register(this.workspaceContextService.onDidChangeWorkspaceFolders(() => this.onWorkspaceFoldersChanged()));
 
 		this._register(toDisposable(() => {
 			if (this.overlayUpdateTimer) {
@@ -130,7 +138,7 @@ export class BrowserViewOverlayManager extends Disposable implements IWorkbenchC
 	/** Re-hide background browser tabs during the first seconds after restore. */
 	private scheduleRestoreVisibilitySweeps(): void {
 		void this.lifecycleService.when(LifecyclePhase.Restored).then(() => {
-			const sweep = () => this.hideInactiveBrowserViews();
+			const sweep = () => this.sweepBrowserViewVisibility();
 			sweep();
 			mainWindow.requestAnimationFrame(() => {
 				sweep();
@@ -138,6 +146,8 @@ export class BrowserViewOverlayManager extends Disposable implements IWorkbenchC
 				setTimeout(sweep, 500);
 				setTimeout(sweep, 2000);
 				setTimeout(sweep, 5000);
+				setTimeout(sweep, 10_000);
+				setTimeout(sweep, 15_000);
 			});
 		});
 	}
@@ -148,7 +158,7 @@ export class BrowserViewOverlayManager extends Disposable implements IWorkbenchC
 		}
 		this.resizeSweepTimer = setTimeout(() => {
 			this.resizeSweepTimer = undefined;
-			this.hideInactiveBrowserViews();
+			this.sweepBrowserViewVisibility();
 		}, 50);
 	}
 
@@ -167,8 +177,22 @@ export class BrowserViewOverlayManager extends Disposable implements IWorkbenchC
 		});
 	}
 
-	/** Hide native views for browser tabs that are not the active editor (restore-race safety). */
-	private hideInactiveBrowserViews(): void {
+	/** When the workspace empties, hide every native browser surface immediately. */
+	private onWorkspaceFoldersChanged(): void {
+		if (this.workspaceContextService.getWorkspace().folders.length > 0) {
+			this.sweepBrowserViewVisibility();
+			return;
+		}
+		for (const editor of this.editorService.editors) {
+			if (!(editor instanceof BrowserEditorInput)) {
+				continue;
+			}
+			this.browserViewService.setVisible(editor.id, false).catch(() => { /* ignore */ });
+		}
+	}
+
+	/** Hide inactive tabs; re-reveal the active browser tab through the pane's guarded path. */
+	private sweepBrowserViewVisibility(): void {
 		const active = this.editorService.activeEditor;
 		const activeId = active instanceof BrowserEditorInput ? active.id : undefined;
 		for (const editor of this.editorService.editors) {
@@ -179,6 +203,15 @@ export class BrowserViewOverlayManager extends Disposable implements IWorkbenchC
 				continue;
 			}
 			this.browserViewService.setVisible(editor.id, false).catch(() => { /* ignore */ });
+		}
+		if (!(active instanceof BrowserEditorInput)) {
+			return;
+		}
+		for (const pane of visibleBrowserPanes(this.editorService)) {
+			if (pane.input === active) {
+				pane.revealNativeView();
+				return;
+			}
 		}
 	}
 
@@ -196,12 +229,15 @@ export class BrowserViewOverlayManager extends Disposable implements IWorkbenchC
 				store.dispose();
 			}));
 			this._register(store);
-			// Eagerly create the native WebContentsView for inactive / restored tabs.
-			// VS Code only calls BrowserEditorPane.setInput for the *active* editor in a
-			// group, so without this preload agents cannot drive background tabs until
-			// the user switches to each one.
-			void this.preloadBrowserView(editor);
+			void this.schedulePreloadBrowserView(editor);
 		}
+	}
+
+	/** Defer background-tab preload until the workbench layout has settled. */
+	private schedulePreloadBrowserView(editor: BrowserEditorInput): void {
+		void this.lifecycleService.when(LifecyclePhase.Restored).then(() => {
+			mainWindow.requestAnimationFrame(() => void this.preloadBrowserView(editor));
+		});
 	}
 
 	/**
@@ -235,6 +271,8 @@ export class BrowserViewOverlayManager extends Disposable implements IWorkbenchC
 			if (isActiveNow()) {
 				return;
 			}
+			// Belt-and-suspenders: preload must never leave a white native surface visible.
+			await this.browserViewService.setVisible(editor.id, false).catch(() => { /* ignore */ });
 		} catch {
 			// Best-effort — pane setInput will create the view when the user selects the tab.
 		}
@@ -290,6 +328,7 @@ export class BrowserViewOverlayManager extends Disposable implements IWorkbenchC
 		const regions = Array.from(this.activeOverlays.values());
 		const hideAll = regions.includes('all');
 		const rectGetters = regions.filter((r): r is () => DOMRect | undefined => r !== 'all');
+		const activeEditor = this.editorService.activeEditor;
 
 		for (const pane of visibleBrowserPanes(this.editorService)) {
 			const input = pane.input;
@@ -313,9 +352,12 @@ export class BrowserViewOverlayManager extends Disposable implements IWorkbenchC
 			if (shouldHide) {
 				this.browserViewService.blur(id).catch(() => { /* ignore */ });
 				this.browserViewService.setVisible(id, false).catch(() => { /* ignore */ });
+			} else if (input === activeEditor) {
+				// Only the globally active browser tab may be revealed — background
+				// panes that happen to be visible in a split must stay detached.
+				pane.revealNativeView();
 			} else {
-				this.browserViewService.setVisible(id, true).catch(() => { /* ignore */ });
-				pane.relayout();
+				this.browserViewService.setVisible(id, false).catch(() => { /* ignore */ });
 			}
 		}
 		this.forceNextUpdate = false;

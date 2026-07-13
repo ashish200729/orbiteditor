@@ -1472,11 +1472,11 @@
 }
 .void-agent-git-menu.void-right { left: auto; right: 0; }
 .void-agent-git-menu.void-wide { min-width: 252px; }
-.void-agent-git-menu.void-submenu {
-	top: -6px; right: calc(100% + 4px); left: auto; min-width: 140px;
-	/* invisible bridge so the pointer can travel without closing */
-	box-shadow: 0 10px 28px rgba(0,0,0,0.38), 0 1px 4px rgba(0,0,0,0.2), 4px 0 0 transparent;
-}
+/* Inline submenu rows — nested flyouts were clipped by overflow-y on the parent menu. */
+.void-agent-git-menu-item.void-has-sub.void-open { background: var(--vscode-menu-selectionBackground, var(--vscode-list-hoverBackground)); color: var(--vscode-menu-selectionForeground, var(--vscode-foreground)); }
+.void-agent-git-menu-item.void-submenu-entry { padding-left: 22px; min-height: 28px; font-size: 12px; }
+.void-agent-git-menu-value .void-sub-chevron-open { transform: rotate(90deg); transition: transform 0.12s var(--agent-git-ease); }
+.void-agent-git-menu-item.void-has-sub .void-agent-git-menu-value svg { transition: transform 0.12s var(--agent-git-ease); }
 .void-agent-git-menu-item {
 	position: relative; display: flex; align-items: center; gap: 9px; width: 100%;
 	min-height: 30px; padding: 0 9px; border: none; border-radius: 6px; background: transparent;
@@ -1651,11 +1651,17 @@
 	font-size: 11.5px; line-height: 1.55; overflow-x: auto;
 	padding: 2px 0 4px;
 }
+/* Split panes share the viewport width — each side scrolls independently. */
+.void-agent-git-diff.void-split {
+	overflow-x: hidden;
+	width: 100%;
+	box-sizing: border-box;
+}
 .void-agent-git-diff.void-wrap { overflow-x: hidden; }
 .void-agent-git-diff.void-wrap .void-agent-git-diff-row,
 .void-agent-git-diff.void-wrap .void-agent-git-split-row { white-space: normal; }
 .void-agent-git-diff.void-wrap .void-agent-git-diff-code,
-.void-agent-git-diff.void-wrap .void-agent-git-split-code { white-space: pre-wrap; word-break: break-word; }
+.void-agent-git-diff.void-wrap .void-agent-git-split-code { white-space: pre-wrap; word-break: break-word; overflow-x: hidden; }
 .void-agent-git-diff-status { padding: 12px; font-size: 11.5px; color: var(--vscode-descriptionForeground); }
 .void-agent-git-diff-status.void-error { color: var(--vscode-errorForeground, #e5534b); white-space: pre-wrap; }
 
@@ -1688,6 +1694,16 @@
 .void-agent-git-diff-hunk.void-busy .void-agent-git-diff-hunk-actions {
 	opacity: 0.45;
 	pointer-events: none;
+}
+/* Center hunk chips over the gutter in split view so they don't cover code. */
+.void-agent-git-diff.void-split .void-agent-git-diff-hunk-actions {
+	right: auto;
+	left: 50%;
+	transform: translateX(-50%) translateY(-3px);
+}
+.void-agent-git-diff.void-split .void-agent-git-diff-hunk:hover .void-agent-git-diff-hunk-actions,
+.void-agent-git-diff.void-split .void-agent-git-diff-hunk:focus-within .void-agent-git-diff-hunk-actions {
+	transform: translateX(-50%);
 }
 .void-agent-git-hunk-btn {
 	display: inline-flex;
@@ -1751,12 +1767,48 @@
 .void-agent-git-diff-code { flex: 1 1 auto; padding-right: 12px; color: var(--vscode-editor-foreground); }
 
 /* split rows */
-.void-agent-git-split-row { display: flex; white-space: pre; }
-.void-agent-git-split-cell { flex: 1 1 50%; min-width: 0; display: flex; align-items: flex-start; border-right: 1px solid var(--vscode-panel-border); }
+.void-agent-git-split-row {
+	display: flex;
+	width: 100%;
+	min-width: 0;
+	box-sizing: border-box;
+}
+.void-agent-git-split-cell {
+	flex: 1 1 0;
+	width: 50%;
+	min-width: 0;
+	max-width: 50%;
+	display: flex;
+	align-items: flex-start;
+	overflow: hidden;
+	box-sizing: border-box;
+	border-right: 1px solid var(--vscode-panel-border);
+}
+.void-agent-git-split-cell:last-child { border-right: none; }
 .void-agent-git-split-cell.void-del { background: var(--vscode-diffEditor-removedLineBackground, rgba(229,83,75,0.14)); }
 .void-agent-git-split-cell.void-add { background: var(--vscode-diffEditor-insertedLineBackground, rgba(74,156,74,0.14)); }
+.void-agent-git-split-cell.void-ctx:hover { background: color-mix(in srgb, var(--vscode-foreground) 4%, transparent); }
 .void-agent-git-split-cell.void-empty { background: color-mix(in srgb, var(--vscode-foreground) 3%, transparent); }
-.void-agent-git-split-code { flex: 1 1 auto; padding: 0 8px; color: var(--vscode-editor-foreground); }
+.void-agent-git-split-cell .void-agent-git-diff-ln {
+	flex: 0 0 auto;
+	width: 36px;
+	padding-right: 6px;
+}
+.void-agent-git-split-code {
+	flex: 1 1 auto;
+	min-width: 0;
+	padding: 0 8px 0 0;
+	color: var(--vscode-editor-foreground);
+	white-space: pre;
+	overflow-x: auto;
+	overflow-y: hidden;
+	scrollbar-width: thin;
+}
+.void-agent-git-split-code::-webkit-scrollbar { height: 6px; }
+.void-agent-git-split-code::-webkit-scrollbar-thumb {
+	background: var(--vscode-scrollbarSlider-background, rgba(127,127,127,0.3));
+	border-radius: 3px;
+}
 
 /* collapse band */
 .void-agent-git-diff-band {

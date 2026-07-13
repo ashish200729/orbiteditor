@@ -25,6 +25,7 @@ import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { EditorInput } from '../../../common/editor/editorInput.js';
 import { EditorPane } from '../../../browser/parts/editor/editorPane.js';
 import { IEditorGroup, IEditorGroupsService } from '../../../services/editor/common/editorGroupsService.js';
+import { IEditorService } from '../../../services/editor/common/editorService.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { IContextKeyService, IContextKey, RawContextKey } from '../../../../platform/contextkey/common/contextkey.js';
 import { BrowserEditorInput } from './browserEditorInput.js';
@@ -155,6 +156,7 @@ export class BrowserEditorPane extends EditorPane {
 		@INotificationService private readonly notificationService: INotificationService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 	@IEditorGroupsService private readonly editorGroupsService: IEditorGroupsService,
+	@IEditorService private readonly editorService: IEditorService,
 	@IContextKeyService contextKeyService: IContextKeyService,
 ) {
 	super(BrowserEditorPane.ID, group, telemetryService, themeService, storageService);
@@ -503,12 +505,23 @@ export class BrowserEditorPane extends EditorPane {
 		const openBounds = realBounds ?? this.estimatedOpenBounds();
 		// When the content area is not laid out yet, open hidden so the native view does
 		// not flash at a guessed (0,0) full-window rect on top of the workbench.
-		const state = await this.browserViewService.open(id, {
-			url: input.url,
-			homeUrl: input.homeUrl,
-			bounds: openBounds,
-			keepHidden: !realBounds,
-		});
+		let state: INavigationState;
+		try {
+			state = await this.browserViewService.open(id, {
+				url: input.url,
+				homeUrl: input.homeUrl,
+				bounds: openBounds,
+				keepHidden: !realBounds,
+			});
+		} catch (e) {
+			// An unguarded rejection here (e.g. the main-process channel racing service
+			// init during startup restore) used to escape setInput entirely. Fail this one
+			// tab, not the editor restore around it.
+			if (!token.isCancellationRequested && this.currentInput()?.id === id) {
+				this.notificationService.error(`Failed to open browser tab: ${e instanceof Error ? e.message : String(e)}`);
+			}
+			return;
+		}
 		if (token.isCancellationRequested || this.currentInput()?.id !== id) {
 			// The user already switched to another editor while open() was in flight; open()
 			// may have sized the view, so hide it or it floats on top of whatever replaced
@@ -529,13 +542,30 @@ export class BrowserEditorPane extends EditorPane {
 		}
 		if (!this.isAuthoritativeForNativeView()) {
 			this.browserViewService.setVisible(id, false).catch(() => { /* ignore */ });
+			// During workspace restore the editor grid may not be laid out yet — retry
+			// once layout settles instead of leaving a restored browser tab permanently hidden.
+			const retryReveal = () => {
+				if (token.isCancellationRequested || this.currentInput()?.id !== id) {
+					return;
+				}
+				void this.pushBoundsAndReveal().then(ok => {
+					if (ok) {
+						this.syncBrowserTheme();
+						mainWindow.requestAnimationFrame(() => this.reevaluateOverlayVisibility());
+					}
+				});
+			};
+			mainWindow.requestAnimationFrame(() => mainWindow.requestAnimationFrame(retryReveal));
 			return;
 		}
-		this.browserViewService.setVisible(id, true);
-		this.browserViewService.bringToFront(id);
-		this.syncBrowserTheme();
-		// Defer overlay pass so setVisible(true) is not immediately undone by a stale overlay flag.
-		mainWindow.requestAnimationFrame(() => this.reevaluateOverlayVisibility());
+		void this.pushBoundsAndReveal().then(ok => {
+			if (!ok) {
+				return;
+			}
+			this.syncBrowserTheme();
+			// Defer overlay pass so setVisible(true) is not immediately undone by a stale overlay flag.
+			mainWindow.requestAnimationFrame(() => this.reevaluateOverlayVisibility());
+		});
 	}
 
 	/**
@@ -579,16 +609,20 @@ export class BrowserEditorPane extends EditorPane {
 		const input = this.input;
 		if (input instanceof BrowserEditorInput) {
 		if (visible) {
-			if (!this.isAuthoritativeForNativeView()) {
-				this.browserViewService.setVisible(input.id, false).catch(() => { /* ignore */ });
-				return;
+		if (!this.isAuthoritativeForNativeView()) {
+			this.browserViewService.setVisible(input.id, false).catch(() => { /* ignore */ });
+			return;
+		}
+		this.browserActiveKey.set(true);
+		this.lastSentBounds = undefined;
+		void this.pushBoundsAndReveal().then(ok => {
+			if (ok) {
+				mainWindow.requestAnimationFrame(() => {
+					this.scheduleLayoutBrowserView();
+					this.reevaluateOverlayVisibility();
+				});
 			}
-			this.browserActiveKey.set(true);
-			this.lastSentBounds = undefined;
-			this.scheduleLayoutBrowserView();
-			this.browserViewService.setVisible(input.id, true).catch(() => { /* ignore */ });
-			this.browserViewService.bringToFront(input.id).catch(() => { /* ignore */ });
-			mainWindow.requestAnimationFrame(() => this.reevaluateOverlayVisibility());
+		});
 		} else {
 			this.setMenuShortcutsEnabled(false);
 			this.browserActiveKey.set(false);
@@ -642,14 +676,38 @@ export class BrowserEditorPane extends EditorPane {
 		return this.contentBounds();
 	}
 
-	/** True when this pane owns the active browser tab and the content area is laid out. */
+	/** True when this pane owns the globally active browser tab and the content area is laid out. */
 	private isAuthoritativeForNativeView(): boolean {
 		const input = this.currentInput();
-		if (!input || this.group.activeEditor !== input) {
+		if (!input || this.editorService.activeEditor !== input) {
 			return false;
 		}
 		const bounds = this.contentBounds();
 		return !!bounds && bounds.width > 0 && bounds.height > 0;
+	}
+
+	/**
+	 * Push measured content bounds to the main process, then reveal the native view.
+	 * Bounds MUST land before setVisible(true) or a stale full-window rect blanks the workbench.
+	 */
+	private async pushBoundsAndReveal(): Promise<boolean> {
+		const input = this.input;
+		if (!(input instanceof BrowserEditorInput) || !this.content) {
+			return false;
+		}
+		if (!this.isAuthoritativeForNativeView()) {
+			await this.browserViewService.setVisible(input.id, false).catch(() => { /* ignore */ });
+			return false;
+		}
+		const bounds = this.contentBounds();
+		if (!bounds) {
+			return false;
+		}
+		this.lastSentBounds = bounds;
+		await this.browserViewService.setBounds(input.id, bounds);
+		await this.browserViewService.setVisible(input.id, true);
+		await this.browserViewService.bringToFront(input.id);
+		return true;
 	}
 
 	/** Current viewport-relative bounds of the content area, or `undefined` if not laid out yet. */
@@ -659,6 +717,18 @@ export class BrowserEditorPane extends EditorPane {
 		}
 		const rect = this.content.getBoundingClientRect();
 		if (rect.width <= 0 || rect.height <= 0) {
+			return undefined;
+		}
+		// During startup restore the content host can momentarily measure as the entire
+		// viewport at (0,0). Sending that rect to the main process would position a
+		// native WebContentsView over the whole workbench — the white-screen bug.
+		const vw = mainWindow.innerWidth;
+		const vh = mainWindow.innerHeight;
+		if (rect.x <= 8 && rect.y <= 8 && rect.width >= vw * 0.92 && rect.height >= vh * 0.86) {
+			return undefined;
+		}
+		// Sidebar-offset bootstrap rects can slip past the (0,0) check above.
+		if (rect.y < 80 && rect.width >= vw * 0.90 && rect.height >= vh * 0.86) {
 			return undefined;
 		}
 		return { x: rect.left, y: rect.top, width: rect.width, height: rect.height };
@@ -676,6 +746,11 @@ export class BrowserEditorPane extends EditorPane {
 		if (node) {
 			const hostRect = node.getBoundingClientRect();
 			if (hostRect.width > 0 && hostRect.height > 0) {
+				const vw = mainWindow.innerWidth;
+				const vh = mainWindow.innerHeight;
+				if (hostRect.x <= 8 && hostRect.y <= 8 && hostRect.width >= vw * 0.92 && hostRect.height >= vh * 0.86) {
+					return { x: 0, y: 0, width: 1, height: 1 };
+				}
 				return { x: hostRect.left, y: hostRect.top, width: hostRect.width, height: hostRect.height };
 			}
 		}
@@ -1047,6 +1122,32 @@ export class BrowserEditorPane extends EditorPane {
 	relayout(): void {
 		this.lastSentBounds = undefined;
 		this.scheduleLayoutBrowserView();
+	}
+
+	/**
+	 * Safely reveal this pane's native browser view. Used by the overlay manager
+	 * when an overlay (toast/menu/quick input) dismisses and the page must be
+	 * re-shown. Delegates through the pane so the same authority + bounds guards
+	 * that protect `setInput`/`setEditorVisible` run here too — the overlay
+	 * manager must NEVER call `setVisible(true)` directly, because a view parked
+	 * at stale full-window bounds would blank the entire workbench. Returns true
+	 * when the view was actually shown, false when it was suppressed.
+	 */
+	revealNativeView(): boolean {
+		const input = this.input;
+		if (!(input instanceof BrowserEditorInput)) {
+			return false;
+		}
+		if (!this.isAuthoritativeForNativeView()) {
+			// Not the active editor, or the content area isn't laid out yet.
+			// Showing the native view now would either float over the wrong tab
+			// or paint at a guessed rect — keep it hidden.
+			this.browserViewService.setVisible(input.id, false).catch(() => { /* ignore */ });
+			return false;
+		}
+		this.lastSentBounds = undefined;
+		void this.pushBoundsAndReveal();
+		return true;
 	}
 
 	override dispose(): void {

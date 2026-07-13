@@ -179,7 +179,7 @@ export const GitDiffView = ({
 	}, [parsed, gitService, root, onChanged, notificationService]);
 
 	return (
-		<div className={`agent-git-diff${wordWrap ? ' wrap' : ''}`} ref={hostRef}>
+		<div className={`agent-git-diff${layout === 'split' ? ' split' : ''}${wordWrap ? ' wrap' : ''}`} ref={hostRef}>
 			{!visible || loading ? (
 				<div className="agent-git-diff-status">Loading diff…</div>
 			) : error ? (
@@ -277,14 +277,14 @@ const toSplitRows = (rows: DiffRow[]): SplitRow[] => {
 
 const SplitLineRow = ({ row }: { row: SplitRow }) => (
 	<div className="agent-git-split-row">
-		<span className={`agent-git-split-cell ${!row.left ? 'empty' : row.left.type === 'del' ? 'del' : 'ctx'}`}>
+		<div className={`agent-git-split-cell ${!row.left ? 'empty' : row.left.type === 'del' ? 'del' : 'ctx'}`}>
 			<span className="agent-git-diff-ln">{row.left?.ln ?? ''}</span>
 			<span className="agent-git-split-code">{row.left ? (row.left.content === '' ? ' ' : row.left.content) : ''}</span>
-		</span>
-		<span className={`agent-git-split-cell ${!row.right ? 'empty' : row.right.type === 'add' ? 'add' : 'ctx'}`}>
+		</div>
+		<div className={`agent-git-split-cell ${!row.right ? 'empty' : row.right.type === 'add' ? 'add' : 'ctx'}`}>
 			<span className="agent-git-diff-ln">{row.right?.ln ?? ''}</span>
 			<span className="agent-git-split-code">{row.right ? (row.right.content === '' ? ' ' : row.right.content) : ''}</span>
-		</span>
+		</div>
 	</div>
 );
 
