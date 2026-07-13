@@ -18,12 +18,13 @@ const fs = require('fs');
 const path = require('path');
 
 const REPO = 'ashish200729/orbiteditor';
-const VALID_KEYS = new Set(['darwin-arm64', 'darwin-x64', 'win32-x64', 'linux-x64']);
+const VALID_KEYS = new Set(['darwin-arm64', 'darwin-x64', 'win32-x64', 'win32-arm64', 'linux-x64']);
 
 const ARTIFACT_NAMES = {
 	'darwin-arm64': (version) => `Orbit-${version}-darwin-arm64.dmg`,
 	'darwin-x64': (version) => `Orbit-${version}-darwin-x64.dmg`,
 	'win32-x64': (version) => `Orbit-${version}-win32-x64-setup.exe`,
+	'win32-arm64': (version) => `Orbit-${version}-win32-arm64-setup.exe`,
 	'linux-x64': (version) => `Orbit-${version}-linux-x64.AppImage`,
 };
 
