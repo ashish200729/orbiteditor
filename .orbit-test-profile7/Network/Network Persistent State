@@ -1,1 +1,0 @@
-{"net":{"http_server_properties":{"servers":[{"anonymization":[],"server":"https://raw.githubusercontent.com","supports_spdy":true},{"anonymization":[],"server":"https://api.github.com","supports_spdy":true}],"version":5},"network_qualities":{"CAESABiAgICA+P////8B":"3G"}}}

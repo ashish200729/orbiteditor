@@ -45,6 +45,11 @@ orbit-remotion/
 
 debug.log
 
+# Local Orbit dev / test user-data and launch logs (never commit)
+.orbit-test-profile*/
+orbit-launch-*.log
+compile-client.log
+
 # Release build artifacts
 /Orbit-*.dmg
 /Orbit-*.AppImage

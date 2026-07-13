@@ -36,7 +36,13 @@ jobs:
           NODE_OPTIONS="--max-old-space-size=8192" npm run gulp -- compile-non-native-extensions-build
           NODE_OPTIONS="--max-old-space-size=8192" npm run gulp -- compile-extension-media-build
 
-      - name: Build React components
+      - name: Build React bundles (dev, for compile-client)
+        run: npm run buildreact
+
+      - name: Compile client (refresh out/vs for React mangle map)
+        run: NODE_OPTIONS="--max-old-space-size=8192" npm run compile-client
+
+      - name: Build React components (production)
         run: npm run buildreact:prod
 
       - name: Minify VS Code

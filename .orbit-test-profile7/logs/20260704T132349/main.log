@@ -1,5 +1,0 @@
-2026-07-04 13:23:50.274 [info] update#setState disabled
-2026-07-04 13:23:50.274 [info] update#ctor - updates are disabled as there is no update URL
-2026-07-04 13:23:57.546 [warning] [Orbit Update] Manifest fetch failed, trying GitHub Releases API Manifest request failed with 404
-2026-07-04 13:23:57.928 [error] [Orbit Update] Check failed GitHub Releases API returned 404
-2026-07-04 13:26:40.450 [info] Extension host with pid 20196 exited with code: 0, signal: unknown.

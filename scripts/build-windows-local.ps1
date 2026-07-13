@@ -42,8 +42,19 @@ if (-not $SkipCompile) {
 		'compile-non-native-extensions-build',
 		'compile-extension-media-build'
 	)
+	Write-Host "`n>>> npm run buildreact (dev bundles for compile-client)"
+	npm run buildreact
+	if ($LASTEXITCODE -ne 0) { throw 'buildreact failed' }
+	Write-Host "`n>>> npm run compile-client"
+	npm run compile-client
+	if ($LASTEXITCODE -ne 0) { throw 'compile-client failed' }
+	Write-Host "`n>>> npm run buildreact:prod"
 	npm run buildreact:prod
 	if ($LASTEXITCODE -ne 0) { throw 'buildreact:prod failed' }
+	$agentBundle = Join-Path $Root 'src\vs\workbench\contrib\orbit\browser\react\out\agent-window-tsx\index.js'
+	if (-not (Test-Path $agentBundle)) {
+		throw "Missing Agents React bundle: $agentBundle (buildreact:prod did not produce agent-window-tsx)"
+	}
 	Invoke-Gulp @('minify-vscode')
 }
 

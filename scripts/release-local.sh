@@ -89,6 +89,9 @@ release_win32() {
 	NODE_OPTIONS="--max-old-space-size=8192" npm run gulp -- compile-build-with-mangling
 	NODE_OPTIONS="--max-old-space-size=8192" npm run gulp -- compile-non-native-extensions-build
 	NODE_OPTIONS="--max-old-space-size=8192" npm run gulp -- compile-extension-media-build
+	# Dev buildreact + compile-client before prod so minify resolves Agents window modules on Windows
+	npm run buildreact
+	NODE_OPTIONS="--max-old-space-size=8192" npm run compile-client
 	npm run buildreact:prod
 	NODE_OPTIONS="--max-old-space-size=8192" npm run gulp -- minify-vscode
 	NODE_OPTIONS="--max-old-space-size=8192" npm run gulp -- "vscode-win32-${arch}-min-ci"
