@@ -295,6 +295,44 @@ function syncReactOutToOutBuild(outDir = path.join(__dirname, 'out')) {
 	console.log(`[buildreact] Synced React bundles to ${outBuildReactOut}`);
 }
 
+function syncReactOutToOutVs(outDir = path.join(__dirname, 'out')) {
+	let outVsReactOut;
+	let currentPath = __dirname;
+	while (true) {
+		const candidate = path.join(currentPath, 'out', 'vs', 'workbench', 'contrib', 'orbit', 'browser', 'react', 'out');
+		if (pathExists(candidate)) {
+			outVsReactOut = candidate;
+			break;
+		}
+		const parentDir = path.dirname(currentPath);
+		if (parentDir === currentPath) {
+			break;
+		}
+		currentPath = parentDir;
+	}
+
+	if (!outVsReactOut) {
+		console.log('[buildreact] Skipping out/vs React sync (out/vs not found yet — run compile-client or watch first)');
+		return;
+	}
+
+	const copyDir = (src, dest) => {
+		fs.mkdirSync(dest, { recursive: true });
+		for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+			const srcPath = path.join(src, entry.name);
+			const destPath = path.join(dest, entry.name);
+			if (entry.isDirectory()) {
+				copyDir(srcPath, destPath);
+			} else {
+				fs.copyFileSync(srcPath, destPath);
+			}
+		}
+	};
+
+	copyDir(outDir, outVsReactOut);
+	console.log(`[buildreact] Synced React bundles to ${outVsReactOut}`);
+}
+
 function doesPathExist(filePath) {
 	try {
 		const stats = fs.statSync(filePath);
@@ -465,6 +503,7 @@ if (isWatch) {
 		syncReactOutToOutBuild();
 	} else {
 		console.log('[buildreact] Dev build: keeping unmangled imports (pass --mangle for production/package builds)');
+		syncReactOutToOutVs();
 	}
 
 	console.log('✅ Build complete!');

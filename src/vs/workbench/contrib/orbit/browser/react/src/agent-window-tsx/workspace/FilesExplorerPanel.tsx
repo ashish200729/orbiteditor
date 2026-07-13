@@ -16,7 +16,7 @@ import {
 	Search,
 } from 'lucide-react';
 import { URI } from '../../../../../../../../base/common/uri.js';
-import * as glob from '../../../../../../../../base/common/glob.js';
+import { parse as parseGlobExpression, type IExpression, type ParsedExpression } from '../../../../../../../../base/common/glob.js';
 import { deepClone } from '../../../../../../../../base/common/objects.js';
 import { VSBuffer } from '../../../../../../../../base/common/buffer.js';
 import { Schemas } from '../../../../../../../../base/common/network.js';
@@ -76,7 +76,7 @@ const compareNodes = (a: ExplorerNode, b: ExplorerNode, sortOrder: SortOrder): n
 	return a.name.localeCompare(b.name, undefined, { sensitivity: 'base', numeric: true });
 };
 
-const DEFAULT_EXCLUDES: glob.IExpression = {
+const DEFAULT_EXCLUDES: IExpression = {
 	'**/.git': true,
 	'**/.DS_Store': true,
 	'**/Thumbs.db': true,
@@ -193,7 +193,7 @@ export const FilesExplorerPanel = ({
 	const dragUrisRef = React.useRef<URI[]>([]);
 	const selectedKeyRef = React.useRef<string | null>(null);
 	selectedKeyRef.current = selectedKey;
-	const excludeCacheRef = React.useRef<Map<string, { raw: string; parsed: glob.ParsedExpression }>>(new Map());
+	const excludeCacheRef = React.useRef<Map<string, { raw: string; parsed: ParsedExpression }>>(new Map());
 
 	React.useEffect(() => {
 		if (activeResource) {
@@ -248,15 +248,15 @@ export const FilesExplorerPanel = ({
 		selectOnly(key);
 	}, [selectOnly]);
 
-	const excludesForFolder = React.useCallback((folder: IWorkspaceFolder): glob.ParsedExpression => {
-		const config = configurationService.getValue<{ files?: { exclude?: glob.IExpression } }>({ resource: folder.uri });
-		const expression = deepClone(config?.files?.exclude ?? DEFAULT_EXCLUDES) as glob.IExpression;
+	const excludesForFolder = React.useCallback((folder: IWorkspaceFolder): ParsedExpression => {
+		const config = configurationService.getValue<{ files?: { exclude?: IExpression } }>({ resource: folder.uri });
+		const expression = deepClone(config?.files?.exclude ?? DEFAULT_EXCLUDES) as IExpression;
 		const raw = JSON.stringify(expression);
 		const cached = excludeCacheRef.current.get(folder.uri.toString());
 		if (cached && cached.raw === raw) {
 			return cached.parsed;
 		}
-		const parsed = glob.parse(expression);
+		const parsed = parseGlobExpression(expression);
 		excludeCacheRef.current.set(folder.uri.toString(), { raw, parsed });
 		return parsed;
 	}, [configurationService]);
