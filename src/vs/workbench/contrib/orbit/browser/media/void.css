@@ -411,3 +411,35 @@
 .void-scrollable-element *::-webkit-scrollbar-corner {
 	background-color: var(--void-bg-3) !important;
 }
+
+/* Tooltip container — react-tooltip portals into this.
+   This is a ZERO-SIZE positioning anchor at the window origin, NOT a
+   full-window layer. react-tooltip positions each tooltip with absolute
+   coordinates (transform/translate) relative to this origin, so a 0×0 anchor
+   places tooltips identically to a full-window one — but WITHOUT the covering
+   layer.
+
+   Without explicit sizing, the bare <div> defaults to position:static and
+   auto dimensions. When react-tooltip renders into it, Chromium can promote
+   the subtree to its own compositor layer and rasterize an opaque WHITE backing
+   store, producing the "white sheet over everything, but it still works"
+   symptom (pointer-events pass through, hovering reveals buttons). Sizing it
+   0×0 removes the covering layer entirely: even if promoted, a 0×0 layer
+   paints nothing. Children keep overflow:visible so tooltips are never clipped.
+
+   This mirrors the .agent-window-scoped rule in agentWindow.css but applies to
+   the MAIN window's tooltip container (created by TooltipContribution). */
+.monaco-workbench .void-tooltip-container {
+	position: absolute;
+	top: 0;
+	left: 0;
+	width: 0;
+	height: 0;
+	overflow: visible;
+	pointer-events: none;
+	z-index: 10000;
+}
+
+.monaco-workbench .void-tooltip-container > * {
+	pointer-events: auto;
+}

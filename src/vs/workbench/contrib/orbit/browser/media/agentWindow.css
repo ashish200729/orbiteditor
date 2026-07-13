@@ -416,13 +416,32 @@
 	display: none !important;
 }
 
-/* Tooltip container — react-tooltip portals into this; keep it above body content */
+/* Tooltip container — react-tooltip portals into this.
+   IMPORTANT: this is a ZERO-SIZE positioning anchor at the window origin, NOT a
+   full-window layer. react-tooltip positions each tooltip with absolute
+   coordinates (transform/translate) relative to this origin, so a 0×0 anchor
+   places tooltips identically to a full-window one — but WITHOUT the covering
+   layer.
+
+   A full-window (width/height:100%) container at z-index 10000 is promoted by
+   Chromium to its own compositor layer. In the Agents auxiliary window every node
+   is a MAIN-document element adopted into the aux window (see
+   `delegateNodeFactories`), and Chromium rasterizes a freshly-promoted layer for
+   such adopted subtrees as an opaque WHITE backing store instead of transparent.
+   react-tooltip promotes this layer the first time a tooltip shows (on the user's
+   first hover, a few seconds after the window opens), so the white backing
+   suddenly covered the entire window. Because the container is `pointer-events:
+   none`, the UI beneath kept working — the classic "white sheet over everything,
+   but it still works" symptom. Sizing it 0×0 removes the covering layer entirely:
+   even if promoted, a 0×0 layer paints nothing. Children keep `overflow: visible`
+   so tooltips are never clipped. */
 .agent-window .void-tooltip-container {
 	position: absolute;
 	top: 0;
 	left: 0;
-	width: 100%;
-	height: 100%;
+	width: 0;
+	height: 0;
+	overflow: visible;
 	pointer-events: none;
 	z-index: 10000;
 }

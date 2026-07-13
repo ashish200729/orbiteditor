@@ -93,6 +93,15 @@ export interface ICommonNativeHostService {
 	positionWindow(position: IRectangle, options?: INativeHostOptions): Promise<void>;
 
 	/**
+	 * Schedule a full native repaint (compositor re-raster) of the target window
+	 * WITHOUT changing its bounds, fullscreen state, or focus. Used to clear the
+	 * stale white first-paint Chromium leaves for cross-document adopted node
+	 * subtrees (see the Agents auxiliary window) — the same recovery a manual
+	 * window resize triggers, but with no visible flicker.
+	 */
+	invalidateWindow(options?: INativeHostOptions): Promise<void>;
+
+	/**
 	 * Only supported on Windows and macOS. Updates the window controls to match the title bar size.
 	 *
 	 * @param options `backgroundColor` and `foregroundColor` are only supported on Windows

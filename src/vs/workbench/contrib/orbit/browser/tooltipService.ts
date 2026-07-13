@@ -31,6 +31,22 @@ export class TooltipContribution extends Disposable implements IWorkbenchContrib
 		if (workbench) {
 			// Create a container element for the tooltip using h function
 			const tooltipContainer = h('div.void-tooltip-container').root;
+			// Size the container 0×0 at the window origin. Without this, the bare
+			// <div> defaults to position:static + auto dimensions; when react-tooltip
+			// renders into it, Chromium can promote the subtree to a compositor layer
+			// with an opaque WHITE backing store, blanking the whole main window while
+			// still passing pointer-events through (the "white sheet" bug). Inline
+			// styles here guarantee the fix even if CSS hasn't loaded yet.
+			Object.assign(tooltipContainer.style, {
+				position: 'absolute',
+				top: '0',
+				left: '0',
+				width: '0',
+				height: '0',
+				overflow: 'visible',
+				pointerEvents: 'none',
+				zIndex: '10000',
+			} as Partial<CSSStyleDeclaration>);
 			workbench.appendChild(tooltipContainer);
 
 			// Mount the React component

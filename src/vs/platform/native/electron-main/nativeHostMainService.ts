@@ -317,6 +317,44 @@ export class NativeHostMainService extends Disposable implements INativeHostMain
 		}
 	}
 
+	async invalidateWindow(windowId: number | undefined, options?: INativeHostOptions): Promise<void> {
+		const window = this.windowById(options?.targetWindowId, windowId);
+		const win = window?.win;
+		if (!win) {
+			return;
+		}
+		try {
+			// Chromium leaves a stale WHITE first-paint for cross-document adopted
+			// node subtrees (the Agents auxiliary window): layout is correct and the
+			// window is interactive, but the compositor never re-rasters until some
+			// native invalidation dirties it — which is why a manual window resize (or
+			// opening devtools) fixes it. `webContents.invalidate()` is a no-op for
+			// on-screen windows (offscreen-rendering only in Electron), so we replicate
+			// the resize the user would do by hand: grow the window by 1px for one tick,
+			// then restore it. That forces a full native re-raster with no lasting size
+			// change and a sub-pixel, single-frame visual delta.
+			//
+			// Skip when fullscreen (setBounds would exit fullscreen) or minimized
+			// (nothing is composited to re-raster, and it can un-minimize).
+			if (win.isDestroyed() || win.isMinimized() || win.isFullScreen()) {
+				return;
+			}
+			const bounds = win.getBounds();
+			win.setBounds({ ...bounds, height: bounds.height + 1 });
+			setTimeout(() => {
+				try {
+					if (!win.isDestroyed() && !win.isFullScreen() && !win.isMinimized()) {
+						win.setBounds(bounds);
+					}
+				} catch {
+					// ignore — restore is best-effort
+				}
+			}, 0);
+		} catch {
+			// Best-effort: never let a repaint hint throw.
+		}
+	}
+
 	async updateWindowControls(windowId: number | undefined, options: INativeHostOptions & { height?: number; backgroundColor?: string; foregroundColor?: string }): Promise<void> {
 		const window = this.windowById(options?.targetWindowId, windowId);
 		window?.updateWindowControls(options);

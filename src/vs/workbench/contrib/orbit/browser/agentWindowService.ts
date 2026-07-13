@@ -605,6 +605,12 @@ export class AgentWindowService extends Disposable implements IAgentWindowServic
 		// the column shells — the headers are shell-owned DOM the portals must not
 		// overwrite.
 		this.mountReact(aux, sidebarContent, mainContent, tooltipContainer, workspacePane);
+
+		// Paint the window chrome (headers, dividers, pane backgrounds) now, before
+		// the async React import resolves — these are cross-document adopted nodes
+		// too and would otherwise show a stale white frame until the post-mount
+		// repaint. See forceShellRepaint.
+		this.forceShellRepaint(aux);
 	}
 
 	/**
@@ -816,12 +822,105 @@ export class AgentWindowService extends Disposable implements IAgentWindowServic
 				// Re-layout after styles are guaranteed present so React components
 				// can recalculate their dimensions.
 				aux.layout();
+				// Now that shell + React content are both in the tree, force a fresh
+				// compositor raster (see forceShellRepaint) to clear any stale white
+				// first-paint left by cross-document node adoption.
+				this.forceShellRepaint(aux);
 			}, 0);
 		} catch (err) {
 			this.logService.error('[AgentWindow] failed to mount React bundles', err);
 			this.closeWindow();
 			this.handleClosed();
 		}
+	}
+
+	/**
+	 * Force the auxiliary window to re-rasterize the whole agents shell once,
+	 * after both the (synchronous) shell DOM and the (async) React portals are
+	 * mounted.
+	 *
+	 * WHY THIS IS NEEDED: `delegateNodeFactories` makes every node in this window
+	 * — the shell headers AND all four React portal subtrees — an element created
+	 * by the MAIN window's `document` that is then adopted into the auxiliary
+	 * window's render tree. Chromium routinely misses the *initial compositor
+	 * raster* for such cross-document adopted nodes: layout is correct and the
+	 * nodes are hit-testable (so hovering "reveals" them), but the window shows a
+	 * stale white frame until some later invalidation (a hover, a resize) dirties
+	 * each tile. The existing `aux.layout()` / `sizeShell` calls only dirty
+	 * *layout*, not the compositor raster, so they do not clear it.
+	 *
+	 * Detaching and immediately re-attaching the shell subtree (display none →
+	 * back, with a forced reflow in between so the toggle is actually observed)
+	 * pulls the subtree out of the aux render tree and re-inserts it, which forces
+	 * a fresh full paint. Run on the aux window's own animation frame so it lands
+	 * after the current commit.
+	 */
+	private forceShellRepaint(aux: IAuxiliaryWindow): void {
+		if (this.auxWindow !== aux) {
+			return;
+		}
+		const win = aux.window;
+
+		// Renderer-side toggle: detach + re-attach the shell subtree so Chromium
+		// re-rasters the adopted nodes. This clears the stale white in most cases,
+		// but is NOT sufficient alone — the aux window's ROOT compositor layer keeps
+		// its already-presented white backing store, and toggling a child subtree
+		// does not always dirty it. Double rAF: the first frame lets the just-mounted
+		// React commit flush; the toggle runs at the start of the next frame.
+		win.requestAnimationFrame(() => {
+			win.requestAnimationFrame(() => {
+				const shell = this.shellEl;
+				if (this.auxWindow !== aux || !shell || !shell.isConnected) {
+					return;
+				}
+				try {
+					const prev = shell.style.display;
+					shell.style.display = 'none';
+					// Read a layout property to force the "display: none" state to
+					// flush before we revert it — otherwise the browser coalesces
+					// both writes and never detaches the subtree.
+					void shell.offsetHeight;
+					shell.style.display = prev;
+					void shell.offsetHeight;
+				} catch (err) {
+					this.logService.error('[AgentWindow] forceShellRepaint failed', err);
+				}
+				// After the renderer toggle, force a native full repaint of the whole
+				// window so the ROOT compositor layer re-rasters too.
+				this.invalidateNativeWindow(aux);
+			});
+		});
+
+		// Throttle-proof fallback: `requestAnimationFrame` can be starved while the
+		// child window is still being shown/composited for the first time — exactly
+		// when the white first-paint happens — so the rAF chain above may not run
+		// until the user interacts. Fire the native repaint on plain timers too, so
+		// the window self-heals with no resize/devtools needed. Multiple staggered
+		// hits cover slow cold-start React/style loads.
+		this.invalidateNativeWindow(aux);
+		for (const delay of [120, 400]) {
+			const timer = setTimeout(() => this.invalidateNativeWindow(aux), delay);
+			this.windowDisposables?.add(toDisposable(() => clearTimeout(timer)));
+		}
+	}
+
+	/**
+	 * Ask the main process to schedule a full native repaint of the aux window
+	 * (`webContents.invalidate()`), clearing the stale white first-paint that
+	 * Chromium leaves for cross-document adopted node subtrees. No bounds change,
+	 * no fullscreen exit, no flicker — the clean equivalent of a manual resize.
+	 */
+	private invalidateNativeWindow(aux: IAuxiliaryWindow): void {
+		if (this.auxWindow !== aux) {
+			return;
+		}
+		const targetWindowId = aux.window.vscodeWindowId;
+		if (typeof targetWindowId !== 'number') {
+			return;
+		}
+		this.nativeHostService.invalidateWindow({ targetWindowId }).catch(err => {
+			this.logService.error('[AgentWindow] invalidateNativeWindow failed', err);
+		});
 	}
 
 	/**
