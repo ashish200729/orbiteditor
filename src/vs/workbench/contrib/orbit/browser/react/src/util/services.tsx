@@ -54,6 +54,7 @@ import { IAgentWindowService } from '../../../agentWindowService.js'
 import { IAgentGitService } from '../../../agentGitService.js'
 import { ISubAgentService } from '../../../subAgentService.js'
 import { ISkillImportService } from '../../../skillImportService.js'
+import { ISubAgentImportService } from '../../../subAgentImportService.js'
 import { ILanguageService } from '../../../../../../../editor/common/languages/language.js'
 import { IVoidModelService } from '../../../../common/orbitModelService.js'
 import { IWorkspaceContextService } from '../../../../../../../platform/workspace/common/workspace.js'
@@ -67,6 +68,7 @@ import { ITerminalConfigurationService, ITerminalGroup, ITerminalGroupService, I
 import { ISearchService } from '../../../../../../services/search/common/search.js'
 import { IExtensionManagementService } from '../../../../../../../platform/extensionManagement/common/extensionManagement.js'
 import { IMCPService } from '../../../../common/mcpService.js';
+import { IMarketplaceCatalogService } from '../../../../common/marketplaceCatalogTypes.js';
 import { IStorageService, StorageScope } from '../../../../../../../platform/storage/common/storage.js'
 import { ITextFileService } from '../../../../../../services/textfile/common/textfiles.js'
 import { ITextModelService } from '../../../../../../../editor/common/services/resolverService.js'
@@ -361,6 +363,7 @@ const getReactAccessor = (accessor: ServicesAccessor) => {
 		ITerminalToolService: accessor.get(ITerminalToolService),
 		ISubAgentService: accessor.get(ISubAgentService),
 		ISkillImportService: accessor.get(ISkillImportService),
+		ISubAgentImportService: accessor.get(ISubAgentImportService),
 		ILanguageService: accessor.get(ILanguageService),
 		IVoidModelService: accessor.get(IVoidModelService),
 		ITextFileService: accessor.get(ITextFileService),
@@ -385,6 +388,7 @@ const getReactAccessor = (accessor: ServicesAccessor) => {
 		IExtensionManagementService: accessor.get(IExtensionManagementService),
 		IExtensionTransferService: accessor.get(IExtensionTransferService),
 		IMCPService: accessor.get(IMCPService),
+		IMarketplaceCatalogService: accessor.get(IMarketplaceCatalogService),
 
 		IStorageService: accessor.get(IStorageService),
 

@@ -2,6 +2,36 @@
 
 All notable changes to Orbit Editor are documented here.
 
+## 0.2.1
+
+### Customize hub and Marketplace
+
+A new **Customize** view brings MCP servers, Skills, Subagents, and Rules into one place, with a **User** (global) and **Workspace** (this project) scope for each. Open it from the chat-history sidebar, the Command Palette (`Orbit: Open Customize`), or the settings-gear menu.
+
+- **Marketplace**: browse or search a curated catalog of MCP servers (Context7, Linear, Notion, GitHub, Sentry, Atlassian, Stripe, Playwright, Neon, Canva, Hugging Face, DeepWiki, Globalping, Figma, Brave Search, Slack, Puppeteer, and more) and ready-made Skills (Conventional Commits, PR Description Writer, Test Writer, Debugging Methodology, API Design Review). Install with one click; servers that need a token prompt for it before connecting.
+- **Project-scoped MCP servers**: a workspace can now define its own `.orbit/mcp.json`, separate from the global `~/.orbit-editor/mcp.json`. Project servers override a user server of the same name, each shows a scope badge, and enabling/disabling a project server only affects that workspace.
+- **Project-scoped Skills and Subagents**: skills and subagents can now live in `<workspace>/.orbit/skills` and `<workspace>/.orbit/agents` in addition to the existing user-level directories, gated on workspace trust.
+- **OAuth sign-in for MCP servers**: remote MCP servers that require a login (Linear, Notion, Sentry, Atlassian, Neon, Canva) now support an in-app **Authenticate** flow — Orbit opens your browser, completes the login over a local loopback redirect with PKCE, and stores the resulting tokens encrypted at rest.
+- **Rules**: edit global AI Instructions or a workspace's `.orbitrules` file directly from Customize.
+
+### Reliability and hardening
+
+- MCP server state is now merged correctly across user and project scopes, including enable/disable persistence and live config-file watching for both `mcp.json` locations.
+- Config file watchers are rebuilt cleanly when workspace folders change, so switching projects can no longer leave a stale watch handle behind.
+- Reviewed the full MCP OAuth and Marketplace implementation for security issues prior to release: the OAuth loopback server is bound to localhost only, each login flow is bound to its own PKCE verifier, stored tokens are encrypted via the OS keychain where available, and all skill/subagent file deletes are guarded to only ever touch paths inside a `.orbit/skills` or `.orbit/agents` directory.
+
+### macOS install
+
+- **Recommended (no Gatekeeper warning):**
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/ashish200729/orbiteditor/main/install.sh | bash
+  ```
+- **Or download the `.dmg`** from the release, drag Orbit to Applications, then run once:
+  ```bash
+  xattr -cr /Applications/Orbit.app
+  ```
+  (Orbit isn't notarized by Apple yet, so a browser-downloaded `.dmg` shows a one-time "unverified developer" prompt; the command above clears it.)
+
 ## 0.2.0
 
 ### 🧵 Send while the agent is working

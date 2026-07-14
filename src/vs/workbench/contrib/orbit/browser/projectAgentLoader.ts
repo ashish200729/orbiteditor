@@ -19,7 +19,7 @@
  * System prompt body goes here...
  */
 
-import { Disposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { registerWorkbenchContribution2, WorkbenchPhase } from '../../../common/contributions.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IWorkspaceTrustManagementService } from '../../../../platform/workspace/common/workspaceTrust.js';
@@ -158,6 +158,7 @@ export async function loadAgentsFromDir(
 					disallowedTools,
 					maxTurns: (maxTurnsRaw !== undefined && Number.isInteger(maxTurnsRaw) && maxTurnsRaw > 0) ? maxTurnsRaw : undefined,
 					source,
+					filePath: child.resource.fsPath,
 					getSystemPrompt: () => systemPrompt,
 				});
 			} catch {
@@ -195,25 +196,67 @@ class ProjectAgentLoader extends Disposable {
 		await this._scanAgents();
 		// Re-scan when workspace trust changes so project agents appear/disappear accordingly.
 		this._register(this._workspaceTrust.onDidChangeTrust(() => { void this._scanAgents(); }));
+		// Re-scan when the workspace folders change (opening/closing a project), and rebuild
+		// the file watchers so newly-opened project agent dirs are observed live. The previous
+		// watcher set is disposed first so closed folders don't keep an stale handle.
+		this._register(this._workspaceContextService.onDidChangeWorkspaceFolders(() => {
+			this._refreshWatchers();
+			void this._scanAgents();
+		}));
+		// Initial watcher set for the dirs present at startup.
+		this._refreshWatchers();
+	}
+
+	// Holds the current set of per-dir watchers + the files-change listener. Replaced
+	// wholesale on workspace-folder changes so we never accumulate duplicate watchers.
+	private readonly _watcherStore = this._register(new DisposableStore());
+	private _watchedDirs: URI[] = [];
+
+	private _refreshWatchers(): void {
+		this._watcherStore.clear();
+		const dirs: URI[] = [URI.joinPath(this._environmentService.userHome, '.orbit', 'agents')];
+		for (const folder of this._workspaceContextService.getWorkspace().folders) {
+			dirs.push(URI.joinPath(folder.uri, '.orbit', 'agents'));
+		}
+		this._watchedDirs = dirs;
+		for (const dir of dirs) {
+			this._watcherStore.add(this._fileService.watch(dir, { recursive: true, excludes: [] }));
+		}
+		this._watcherStore.add(this._fileService.onDidFilesChange(e => {
+			if (this._watchedDirs.some(dir => e.affects(dir))) { void this._scanAgents(); }
+		}));
 	}
 
 	private async _scanAgents(): Promise<void> {
-		// Load user-level agents from ~/.orbit/agents/
-		const userAgentsDir = URI.joinPath(this._environmentService.userHome, '.orbit', 'agents');
-		const userAgents = await loadAgentsFromDir(userAgentsDir, 'user', this._fileService);
-		setUserAgents(userAgents); // unconditional so removing all user agents clears stale entries
-
-		// Load project-level agents — gated on workspace trust (untrusted repos must not register
-		// agent types whose system prompts get injected into the model context).
-		const projectAgents: SubAgentDefinition[] = [];
-		if (this._workspaceTrust.isWorkspaceTrusted()) {
-			for (const folder of this._workspaceContextService.getWorkspace().folders) {
-				const projectAgentsDir = URI.joinPath(folder.uri, '.orbit', 'agents');
-				projectAgents.push(...await loadAgentsFromDir(projectAgentsDir, 'project', this._fileService));
-			}
-		}
-		setProjectAgents(projectAgents);
+		await reloadOrbitAgents(this._fileService, this._environmentService, this._workspaceContextService, this._workspaceTrust.isWorkspaceTrusted());
 	}
+}
+
+/**
+ * Scan user + (trusted) project agent dirs and update the sub-agent registry.
+ * Exported so the Customize manage service can force a reload after create/delete.
+ */
+export async function reloadOrbitAgents(
+	fileService: IFileService,
+	environmentService: INativeEnvironmentService,
+	workspaceContextService: IWorkspaceContextService,
+	isWorkspaceTrusted: boolean,
+): Promise<void> {
+	// Load user-level agents from ~/.orbit/agents/
+	const userAgentsDir = URI.joinPath(environmentService.userHome, '.orbit', 'agents');
+	const userAgents = await loadAgentsFromDir(userAgentsDir, 'user', fileService);
+	setUserAgents(userAgents); // unconditional so removing all user agents clears stale entries
+
+	// Load project-level agents — gated on workspace trust (untrusted repos must not register
+	// agent types whose system prompts get injected into the model context).
+	const projectAgents: SubAgentDefinition[] = [];
+	if (isWorkspaceTrusted) {
+		for (const folder of workspaceContextService.getWorkspace().folders) {
+			const projectAgentsDir = URI.joinPath(folder.uri, '.orbit', 'agents');
+			projectAgents.push(...await loadAgentsFromDir(projectAgentsDir, 'project', fileService));
+		}
+	}
+	setProjectAgents(projectAgents);
 }
 
 registerWorkbenchContribution2(ProjectAgentLoader.ID, ProjectAgentLoader, WorkbenchPhase.AfterRestored);

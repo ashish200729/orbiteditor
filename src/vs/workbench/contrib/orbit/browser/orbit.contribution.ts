@@ -30,6 +30,10 @@ import './autocomplete/index.js'
 
 // settings pane
 import './orbitSettingsPane.js'
+import './orbitCustomizePane.js'
+
+// marketplace catalog (Customize > Marketplace)
+import './marketplaceCatalogService.js'
 
 // register css
 import './media/void.css'
@@ -46,6 +50,7 @@ import './toolsService.js'
 import './terminalToolService.js'
 import './subAgentService.js'
 import './projectAgentLoader.js'
+import './subAgentImportService.js'
 
 // skills (registry loader + import service)
 import './skillLoader.js'

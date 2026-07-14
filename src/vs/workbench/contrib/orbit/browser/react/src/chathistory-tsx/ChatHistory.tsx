@@ -3,12 +3,13 @@
  *  Licensed under the Apache License, Version 2.0. See LICENSE.txt for more information.
  *--------------------------------------------------------------------------------------*/
 
-import { useState, useMemo, memo } from 'react';
+import { useState, useMemo, memo, useEffect, useRef } from 'react';
 import { useIsDark, useAccessor, useChatThreadsState, useRunningThreadIds, useIsChatHistoryVisible } from '../util/services.js';
 import '../styles.css';
 import ErrorBoundary from '../sidebar-tsx/ErrorBoundary.js';
 import { IconShell1 } from '../markdown/ApplyBlockHoverButtons.js';
-import { Check, CheckCircle2, CircleDashed, Copy, LoaderCircle, MessageCircleQuestion, MessageSquarePlus, Trash2, X, MoreHorizontal } from 'lucide-react';
+import { getConnectedWindow } from '../util/connectedWindow.js';
+import { Check, CheckCircle2, CircleDashed, Copy, LoaderCircle, MessageCircleQuestion, MessageSquarePlus, Trash2, X, MoreHorizontal, LayoutGrid } from 'lucide-react';
 import { IsRunningType, ThreadType } from '../../../chatThreadService.js';
 
 export const ChatHistory = ({ className }: { className?: string }) => {
@@ -285,8 +286,25 @@ const ChatHistoryHeader = ({
 	setIsSearchFocused: (focused: boolean) => void;
 	threadCount: number;
 }) => {
+	const accessor = useAccessor();
+	const commandService = accessor.get('ICommandService');
+	const agentWindowService = accessor.get('IAgentWindowService');
+	const rootRef = useRef<HTMLDivElement>(null);
+	// Hide the Customize affordance in the pop-out Agent window (main IDE only),
+	// mirroring SidebarChat's browser-button detection.
+	const [inAgentWindow, setInAgentWindow] = useState(false);
+	useEffect(() => {
+		const node = rootRef.current;
+		setInAgentWindow(!!node && getConnectedWindow(node) !== window && agentWindowService.isOpen());
+	}, [agentWindowService]);
+
+	const handleCustomize = () => {
+		try { commandService.executeCommand('workbench.action.openVoidCustomize'); }
+		catch (error) { console.error('Error opening Customize:', error); }
+	};
+
 	return (
-		<div className="flex flex-col gap-2 mb-1 flex-shrink-0 p-3 pb-1">
+		<div ref={rootRef} className="flex flex-col gap-2 mb-1 flex-shrink-0 p-3 pb-1">
 			{/* Search Bar */}
 			<div
 				className={`
@@ -321,6 +339,24 @@ const ChatHistoryHeader = ({
 			>
 				New Agent
 			</button>
+
+			{/* Customize Button (main window only) */}
+			{!inAgentWindow && (
+				<button
+					onClick={handleCustomize}
+					className={`
+						chat-history-customize
+						w-full py-1.5 rounded
+						border border-zinc-700/10 dark:border-zinc-300/10
+						hover:bg-zinc-700/5 dark:hover:bg-zinc-300/5
+						text-xs text-void-fg-0 transition-colors
+						flex items-center justify-center gap-2 opacity-80 hover:opacity-100
+					`}
+				>
+					<LayoutGrid size={13} />
+					Customize
+				</button>
+			)}
 		</div>
 	);
 };

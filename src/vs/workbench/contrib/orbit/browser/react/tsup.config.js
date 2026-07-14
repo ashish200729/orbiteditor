@@ -11,6 +11,7 @@ const entryPoints = [
 	'./src2/sidebar-tsx/index.tsx',
 	'./src2/chathistory-tsx/index.tsx',
 	'./src2/orbit-settings-tsx/index.tsx',
+	'./src2/customize-tsx/index.tsx',
 	'./src2/orbit-tooltip/index.tsx',
 	'./src2/orbit-onboarding/index.tsx',
 	'./src2/quick-edit-tsx/index.tsx',

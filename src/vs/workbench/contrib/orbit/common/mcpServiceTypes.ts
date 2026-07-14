@@ -131,13 +131,40 @@ export interface MCPConfigFileJSON {
 	mcpServers: Record<string, MCPConfigFileEntryJSON>;
 }
 
+/**
+ * Merge a user-scoped and project-scoped MCP config. Project entries override user
+ * entries on name collision. Returns the merged server map plus the scope each name
+ * resolved to. Pure — no filesystem access — so it is unit-testable.
+ */
+export function mergeMcpConfigs(
+	userConfig: MCPConfigFileJSON | null | undefined,
+	projectConfig: MCPConfigFileJSON | null | undefined,
+): { mcpServers: Record<string, MCPConfigFileEntryJSON>, scopeOfName: { [name: string]: 'user' | 'project' } } {
+	const mcpServers: Record<string, MCPConfigFileEntryJSON> = {};
+	const scopeOfName: { [name: string]: 'user' | 'project' } = {};
+	if (userConfig?.mcpServers) {
+		for (const [name, entry] of Object.entries(userConfig.mcpServers)) {
+			mcpServers[name] = entry;
+			scopeOfName[name] = 'user';
+		}
+	}
+	if (projectConfig?.mcpServers) {
+		for (const [name, entry] of Object.entries(projectConfig.mcpServers)) {
+			mcpServers[name] = entry; // project wins
+			scopeOfName[name] = 'project';
+		}
+	}
+	return { mcpServers, scopeOfName };
+}
+
 
 // SERVER EVENT TYPES ------------------------------------------
 
 export type MCPServer = {
 	// Command-based server properties
 	tools: MCPTool[],
-	status: 'loading' | 'success' | 'offline',
+	// 'needs-auth': a remote server that requires an OAuth login before it will connect.
+	status: 'loading' | 'success' | 'offline' | 'needs-auth',
 	command?: string,
 	error?: string,
 } | {

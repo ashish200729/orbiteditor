@@ -2170,3 +2170,10 @@
 	width: 100%;
 	background: var(--vscode-editor-background);
 }
+
+/* CSS backup: never show the Customize affordance inside the pop-out Agent window.
+   The React header already hides it via getConnectedWindow detection; this covers
+   any timing edge where the button briefly renders before the effect runs. */
+.agent-window .chat-history-customize {
+	display: none !important;
+}

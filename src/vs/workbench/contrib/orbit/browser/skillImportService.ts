@@ -33,6 +33,9 @@ export type SkillImportResult = {
 	errors: string[];
 };
 
+/** Where a skill lives: user (~/.orbit/skills) or project (<workspace>/.orbit/skills). */
+export type SkillScope = 'user' | 'project';
+
 export interface ISkillImportService {
 	readonly _serviceBrand: undefined;
 	/** Import the user's own Cursor skills (personal + project) into ~/.orbit/skills. */
@@ -43,8 +46,18 @@ export interface ISkillImportService {
 	 * differs from its `name:` field. Returns true if something was removed.
 	 */
 	deleteSkill(skillFilePath: string): Promise<boolean>;
-	/** Create a new empty skill from a template and open it in the editor. Returns its name. */
-	createNewSkill(): Promise<string | null>;
+	/**
+	 * Create a new empty skill from a template and open it in the editor. Returns its name.
+	 * Scope defaults to 'user'. Project scope requires an open, trusted workspace folder.
+	 */
+	createNewSkill(scope?: SkillScope): Promise<string | null>;
+	/**
+	 * Install a skill from a marketplace pack: writes SKILL.md into the given scope's
+	 * skills dir under `folderName`. Returns the installed folder name, or null on failure.
+	 * If a skill with that folder name already exists and `overwrite` is false, returns
+	 * 'exists' so the caller can prompt the user before clobbering their edits.
+	 */
+	installSkillFromPack(folderName: string, skillMd: string, scope: SkillScope, overwrite?: boolean): Promise<string | 'exists' | null>;
 }
 
 export const ISkillImportService = createDecorator<ISkillImportService>('SkillImportService');
@@ -230,8 +243,58 @@ class SkillImportService implements ISkillImportService {
 		}
 	}
 
-	async createNewSkill(): Promise<string | null> {
-		const root = userSkillsDir(this._environmentService);
+	/** Returns the skills root for a scope, or null if project scope has no workspace folder. */
+	private _skillsDirForScope(scope: SkillScope): URI | null {
+		if (scope === 'project') {
+			const folders = this._workspaceContextService.getWorkspace().folders;
+			if (folders.length === 0) return null;
+			return URI.joinPath(folders[0].uri, '.orbit', 'skills');
+		}
+		return userSkillsDir(this._environmentService);
+	}
+
+	async installSkillFromPack(folderName: string, skillMd: string, scope: SkillScope, overwrite = false): Promise<string | 'exists' | null> {
+		const normalized = normalizeSkillName(folderName.trim());
+		if (!normalized) {
+			this._logService.error(`[SkillImportService] Invalid skill folder name: ${folderName}`);
+			return null;
+		}
+		if (scope === 'project' && !this._workspaceTrust.isWorkspaceTrusted()) {
+			this._logService.error('[SkillImportService] Refusing to install project skill in an untrusted workspace.');
+			return null;
+		}
+		const root = this._skillsDirForScope(scope);
+		if (!root) {
+			this._logService.error('[SkillImportService] No workspace folder for project skill install.');
+			return null;
+		}
+		try {
+			await this._fileService.createFolder(root);
+			const skillFile = URI.joinPath(root, normalized, 'SKILL.md');
+			// Guard against clobbering a skill the user has already edited. The caller can
+			// re-invoke with overwrite=true after confirming with the user.
+			if (!overwrite && await this._fileService.exists(skillFile)) {
+				return 'exists';
+			}
+			await this._fileService.writeFile(skillFile, VSBuffer.fromString(skillMd), { atomic: { postfix: '.orbittmp' } });
+			await this._reload();
+			return normalized;
+		} catch (err) {
+			this._logService.error(`[SkillImportService] Failed to install skill ${normalized}: ${err}`);
+			return null;
+		}
+	}
+
+	async createNewSkill(scope: SkillScope = 'user'): Promise<string | null> {
+		if (scope === 'project' && !this._workspaceTrust.isWorkspaceTrusted()) {
+			this._logService.error('[SkillImportService] Refusing to create project skill in an untrusted workspace.');
+			return null;
+		}
+		const root = this._skillsDirForScope(scope);
+		if (!root) {
+			this._logService.error('[SkillImportService] No workspace folder for project skill.');
+			return null;
+		}
 		try {
 			await this._fileService.createFolder(root);
 		} catch (err) {

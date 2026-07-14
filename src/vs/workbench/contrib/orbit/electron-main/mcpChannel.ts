@@ -17,9 +17,11 @@ import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 import { MCPConfigFileJSON, MCPConfigFileEntryJSON, MCPServer, RawMCPToolCall, MCPToolErrorResponse, MCPServerEventResponse, MCPToolCallParams, removeMCPToolNamePrefix, ResponseImageTypes } from '../common/mcpServiceTypes.js';
 import { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import { CallToolResult, CallToolResultSchema } from '@modelcontextprotocol/sdk/types.js';
+import { UnauthorizedError } from '@modelcontextprotocol/sdk/client/auth.js';
 import { z } from 'zod';
 import { MCPUserStateOfName } from '../common/orbitSettingsTypes.js';
 import { OrbitBuiltinMcpRegistry } from './builtinMcp/orbitBuiltinMcpRegistry.js';
+import { makeOAuthProvider, runMcpOAuthFlow, clearStoredMcpTokens } from './mcpOAuth.js';
 
 const getClientConfig = (serverName: string) => {
 	return {
@@ -38,14 +40,34 @@ type ClientInfo = {
 	_client: Client, // _client is the client that connects with an mcp client. We're calling mcp clients "server" everywhere except here for naming consistency.
 	mcpServerEntryJSON: MCPConfigFileEntryJSON,
 	mcpServer: MCPServerNonError,
+	/** True when the live connection was established over SSE (vs streamable HTTP). */
+	isSSE?: boolean,
 } | {
+	// error, or a remote server awaiting OAuth login (status 'needs-auth'): no live client yet.
 	_client?: undefined,
 	mcpServerEntryJSON: MCPConfigFileEntryJSON,
-	mcpServer: MCPServerError,
+	mcpServer: MCPServerError | MCPServerNonError,
+	/** True when the needs-auth state was reached via an SSE transport probe. */
+	isSSE?: boolean,
 }
 
 type InfoOfClientId = {
 	[clientId: string]: ClientInfo
+}
+
+/**
+ * Wraps an UnauthorizedError with the transport kind that was in use, so the
+ * interactive OAuth flow can reuse the same transport (HTTP vs SSE) instead of
+ * always assuming streamable HTTP.
+ */
+class UnauthorizedTransportError extends Error {
+	override readonly cause: unknown;
+	readonly isSSE: boolean;
+	constructor(isSSE: boolean, cause: unknown) {
+		super(`Unauthorized (via ${isSSE ? 'SSE' : 'HTTP'})`);
+		this.isSSE = isSSE;
+		this.cause = cause;
+	}
 }
 
 // Environment variables an MCP subprocess legitimately needs to launch and behave correctly,
@@ -193,6 +215,9 @@ export class MCPChannel implements IServerChannel {
 		else if (command === 'emitBuiltinServers') {
 			this.emitBuiltinServers()
 		}
+		else if (command === 'authenticateMCPServer') {
+			return await this._authenticateMCPServer(params.serverName)
+		}
 		else if (command === 'setBrowserAutomationEnabled') {
 			// Mutates the enabled flag read by the orbit-ide-browser MCP server.
 			// The renderer calls this whenever the Browser Automation setting
@@ -254,6 +279,9 @@ export class MCPChannel implements IServerChannel {
 				if (type === 'removed' || type === 'updated') {
 					await this._closeClient(serverName)
 					delete this.infoOfClientId[serverName]
+					// Fully removed: also drop any stored OAuth tokens so a later re-add
+					// starts a clean login instead of silently reusing an old grant.
+					if (type === 'removed') clearStoredMcpTokens(serverName)
 					this.mcpEmitters.serverEvent.onDelete.fire({ response: { prevServer, name: serverName, } })
 				}
 
@@ -281,9 +309,14 @@ export class MCPChannel implements IServerChannel {
 
 		try {
 			if (server.url) {
+			// Attach a passive OAuth provider: reuses saved tokens + lets the SDK
+			// auto-refresh, but never opens a browser here (interactive=false). If the
+			// server needs auth and we have no token, connect throws UnauthorizedError,
+			// which _createClient maps to a 'needs-auth' status.
+			const serverUrl = server.url instanceof URL ? server.url : new URL(server.url as unknown as string);
 			// first try HTTP, fall back to SSE
 			try {
-				transport = new StreamableHTTPClientTransport(server.url);
+				transport = new StreamableHTTPClientTransport(serverUrl, { authProvider: makeOAuthProvider(serverName, false) });
 				await client.connect(transport);
 				console.log(`Connected via HTTP to ${serverName}`);
 				const { tools } = await client.listTools()
@@ -291,23 +324,32 @@ export class MCPChannel implements IServerChannel {
 				info = {
 					status: isOn ? 'success' : 'offline',
 					tools: toolsWithUniqueName,
-					command: server.url.toString(),
+					command: serverUrl.toString(),
 				}
 			} catch (httpErr) {
+				// A 401 means this server requires an OAuth login — bubble it up with the
+				// transport kind so the interactive flow reuses the right transport, instead
+				// of masking it as an SSE attempt (which would fail the same way).
+				if (httpErr instanceof UnauthorizedError) throw new UnauthorizedTransportError(false, httpErr);
 				console.warn(`HTTP failed for ${serverName}, trying SSE…`, httpErr);
 				await client.close().catch(() => { });
-				transport = new SSEClientTransport(server.url);
-				await client.connect(transport);
-				const { tools } = await client.listTools()
-				const toolsWithUniqueName = tools.map(({ name, ...rest }) => ({ name: this._addUniquePrefix(name), ...rest }))
-				console.log(`Connected via SSE to ${serverName}`);
-				info = {
-					status: isOn ? 'success' : 'offline',
-					tools: toolsWithUniqueName,
-					command: server.url.toString(),
+				try {
+					transport = new SSEClientTransport(serverUrl, { authProvider: makeOAuthProvider(serverName, false) });
+					await client.connect(transport);
+					const { tools } = await client.listTools()
+					const toolsWithUniqueName = tools.map(({ name, ...rest }) => ({ name: this._addUniquePrefix(name), ...rest }))
+					console.log(`Connected via SSE to ${serverName}`);
+					info = {
+						status: isOn ? 'success' : 'offline',
+						tools: toolsWithUniqueName,
+						command: serverUrl.toString(),
+					}
+				} catch (sseErr) {
+					if (sseErr instanceof UnauthorizedError) throw new UnauthorizedTransportError(true, sseErr);
+					throw sseErr;
 				}
 			}
-		} else if (server.command) {
+			} else if (server.command) {
 			// Pass a MINIMAL environment plus the server's own env, rather than the full host
 			// environment. Forwarding all of process.env leaks proxy credentials, cloud tokens and
 			// API keys to arbitrary third-party MCP subprocesses.
@@ -369,11 +411,58 @@ export class MCPChannel implements IServerChannel {
 			const c: ClientInfo = await this._createClientUnsafe(serverConfig, serverName, isOn)
 			return c
 		} catch (err) {
+			// Remote server needs an OAuth login: surface a 'needs-auth' state (not an
+			// error) so the UI can show an "Authenticate" button. But only when NO static
+			// credentials are configured — if the entry already carries an API key via
+			// headers/env, a 401 means the key is wrong, which is a real error.
+			// UnauthorizedTransportError carries the transport kind (HTTP vs SSE) used when
+			// the 401 was observed, so the interactive flow can reuse the right transport.
+			const unauthorized = err instanceof UnauthorizedTransportError ? err
+				: err instanceof UnauthorizedError ? new UnauthorizedTransportError(false, err) : undefined;
+			if (unauthorized && serverConfig.url) {
+				const hasStaticCreds =
+					(!!serverConfig.headers && Object.values(serverConfig.headers).some(v => !!v)) ||
+					(!!serverConfig.env && Object.values(serverConfig.env).some(v => !!v))
+				if (!hasStaticCreds) {
+					return { mcpServerEntryJSON: serverConfig, mcpServer: { status: 'needs-auth', tools: [], command: serverConfig.url.toString() }, isSSE: unauthorized.isSSE }
+				}
+			}
 			console.error(`❌ Failed to connect to server "${serverName}":`, err)
 			const fullCommand = !serverConfig.command ? '' : `${serverConfig.command} ${serverConfig.args?.join(' ') || ''}`
 			const c: MCPServerError = { status: 'error', error: err + '', command: fullCommand, }
 			return { mcpServerEntryJSON: serverConfig, mcpServer: c, }
 		}
+	}
+
+	// Run the interactive OAuth login for a remote server, then reconnect it.
+	private async _authenticateMCPServer(serverName: string): Promise<{ ok: boolean; error?: string }> {
+		const info = this.infoOfClientId[serverName];
+		const entry = info?.mcpServerEntryJSON;
+		if (!entry?.url) {
+			return { ok: false, error: 'This server does not use OAuth (no URL configured).' };
+		}
+		const serverUrl = entry.url instanceof URL ? entry.url : new URL(entry.url as unknown as string);
+		const prevServer = info?.mcpServer;
+		// Reuse the transport kind observed during the passive probe so SSE-only OAuth
+		// servers actually complete the flow instead of forcing streamable HTTP.
+		const isSSE = info?.isSSE ?? false;
+
+		// show loading while the browser flow runs
+		this.mcpEmitters.serverEvent.onUpdate.fire({ response: { name: serverName, newServer: { status: 'loading', tools: [] }, prevServer } });
+
+		try {
+			await runMcpOAuthFlow(serverName, serverUrl, isSSE);
+		} catch (err) {
+			// Back to needs-auth so the user can retry.
+			this.mcpEmitters.serverEvent.onUpdate.fire({ response: { name: serverName, newServer: { status: 'needs-auth', tools: [], command: serverUrl.toString() }, prevServer } });
+			return { ok: false, error: `${err}` };
+		}
+
+		// Reconnect now that tokens are stored — _createClient's passive provider picks them up.
+		const clientInfo = await this._createClient(entry, serverName, true);
+		this.infoOfClientId[serverName] = clientInfo;
+		this.mcpEmitters.serverEvent.onUpdate.fire({ response: { name: serverName, newServer: clientInfo.mcpServer, prevServer } });
+		return { ok: clientInfo.mcpServer.status !== 'error' && clientInfo.mcpServer.status !== 'needs-auth' };
 	}
 
 	private async _closeAllMCPServers() {

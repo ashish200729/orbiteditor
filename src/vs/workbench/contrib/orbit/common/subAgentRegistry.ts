@@ -46,6 +46,8 @@ export type SubAgentDefinition = {
 	maxTurns?: number;
 	/** Source: built-in or user-defined */
 	source: 'built-in' | 'project' | 'user';
+	/** Absolute path to the defining `.md` file (custom agents only; empty for built-ins). */
+	filePath?: string;
 	getSystemPrompt: () => string;
 };
 
@@ -138,12 +140,28 @@ let _projectAgents: SubAgentDefinition[] = [];
 let _userAgents: SubAgentDefinition[] = [];
 let _disabledAgentTypes: Set<string> = new Set();
 
+const _onChangeListeners = new Set<() => void>();
+
+const _fireChange = (): void => {
+	for (const listener of _onChangeListeners) {
+		try { listener(); } catch { /* never let one listener break others */ }
+	}
+};
+
+/** Subscribe to registry changes (agents added/removed, or disabled-state toggled). */
+export function onSubAgentsChanged(listener: () => void): () => void {
+	_onChangeListeners.add(listener);
+	return () => { _onChangeListeners.delete(listener); };
+}
+
 export function setProjectAgents(agents: SubAgentDefinition[]): void {
 	_projectAgents = agents;
+	_fireChange();
 }
 
 export function setUserAgents(agents: SubAgentDefinition[]): void {
 	_userAgents = agents;
+	_fireChange();
 }
 
 /** Update which custom (user/project) agent types are disabled. Built-in agents can never be disabled. */
@@ -151,6 +169,7 @@ export function setDisabledAgentTypes(agentTypes: string[]): void {
 	const next = new Set(agentTypes);
 	if (next.size === _disabledAgentTypes.size && [...next].every(t => _disabledAgentTypes.has(t))) return;
 	_disabledAgentTypes = next;
+	_fireChange();
 }
 
 export const BUILTIN_SUBAGENTS: SubAgentDefinition[] = [EXPLORE_AGENT, PLAN_AGENT, GENERAL_AGENT];

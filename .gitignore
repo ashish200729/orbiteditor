@@ -37,6 +37,7 @@ src/vs/workbench/contrib/orbit/browser/react/src2/**
 .config/
 .idx/
 .commandcode/
+.orbit/
 *.local.json
 
 # Standalone sub-project, not part of the editor build
