@@ -27,6 +27,7 @@ import { CancellationToken, CancellationTokenSource } from '../../../../base/com
 import { ILanguageFeaturesService } from '../../../../editor/common/services/languageFeatures.js';
 import { AskQuestionUserAnswer, ChatMessage, CheckpointEntry, CodespanLocationLink, PlanBuildState, PlanDraft, StagingSelectionItem, TextQuoteAttachment, TodoItem, TodoStatus, ToolMessage } from '../common/chatThreadServiceTypes.js';
 import { formatAnswersForLLM, normalizeAnswer } from '../common/askQuestionToolHelpers.js';
+import { validateChatPromptLength, validateChatIpcPayloadSize, estimateJsonByteSize, CHAT_IPC_PAYLOAD_WARN_BYTES } from '../common/chatInputLimits.js';
 import { Position } from '../../../../editor/common/core/position.js';
 import { IMetricsService } from '../common/metricsService.js';
 import { shorten } from '../../../../base/common/labels.js';
@@ -1077,13 +1078,10 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 			this._flushStoreAllThreads()
 			return
 		}
-		const anyThreadRunning = Object.values(this.streamState).some(s => s?.isRunning !== undefined)
-		if (anyThreadRunning) {
-			this._scheduleStoreAllThreads()
-		} else {
-			this._storeDebounceScheduler?.cancel()
-			this._flushStoreAllThreads()
-		}
+		// Always debounce unless immediate. The pre-stream gap between appending a user message
+		// and setting isRunning used to synchronously JSON.stringify the full history here,
+		// blocking the renderer for hundreds of ms on large threads.
+		this._scheduleStoreAllThreads()
 	}
 
 	// ---- Q4: persist the message queue across reload / restart ----
@@ -2507,6 +2505,18 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 
 				const mcpTools = this._mcpService.getMCPTools(agentWorkspaceId)
 				const mcpToolNames = new Set<string>((mcpTools ?? []).map(tool => tool.name))
+
+				const ipcPayload = { messages, separateSystemMessage: finalSystemMessage, mcpTools }
+				const payloadSize = estimateJsonByteSize(ipcPayload)
+				if (payloadSize > CHAT_IPC_PAYLOAD_WARN_BYTES) {
+					console.warn('[chatThreadService] Large IPC payload:', payloadSize)
+				}
+				const payloadCheck = validateChatIpcPayloadSize(ipcPayload)
+				if (!payloadCheck.ok) {
+					this._setStreamState(threadId, { isRunning: undefined, error: { message: payloadCheck.message, fullError: null } })
+					break
+				}
+
 				const llmCancelToken = this._llmMessageService.sendLLMMessage({
 					messagesType: 'chatMessages',
 					chatMode,
@@ -3192,6 +3202,11 @@ We only need to do it for files that were edited since `from`, ie files between 
 		const thread = this.state.allThreads[threadId]
 		if (!thread) return // should never happen
 
+		const promptCheck = validateChatPromptLength(userMessage)
+		if (!promptCheck.ok) {
+			throw new Error(promptCheck.message)
+		}
+
 		// interrupt existing stream
 		if (this.streamState[threadId]?.isRunning) {
 			await this.abortRunning(threadId)
@@ -3354,6 +3369,11 @@ We only need to do it for files that were edited since `from`, ie files between 
 	async addUserMessageAndStreamResponse({ userMessage, llmInstructions, _chatSelections, _images, _textQuotes, threadId }: { userMessage: string, llmInstructions?: string, _chatSelections?: StagingSelectionItem[], _images?: string[], _textQuotes?: TextQuoteAttachment[], threadId: string }) {
 		const thread = this.state.allThreads[threadId];
 		if (!thread) return
+
+		const promptCheck = validateChatPromptLength(userMessage)
+		if (!promptCheck.ok) {
+			throw new Error(promptCheck.message)
+		}
 
 		// Cursor-style queueing: while the agent is actively working (LLM/tool/idle), a new user
 		// message queues instead of aborting the run. 'awaiting_user' (blocked on tool approval /

@@ -1,0 +1,93 @@
+name: Build macOS
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to build (e.g., 0.1.0)'
+        required: true
+        default: '0.1.0'
+  push:
+    tags:
+      - 'macos-v*'
+
+jobs:
+  build-macos:
+    name: Build macOS ${{ matrix.arch }}
+    # macos-latest (macOS 15) breaks native deps like @vscode/spdlog; pin to 14
+    runs-on: macos-14
+    timeout-minutes: 180
+    strategy:
+      max-parallel: 1
+      matrix:
+        arch: [arm64, x64]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.18.2'
+
+      - name: Select Xcode 15.4
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '15.4'
+
+      - name: Install dependencies
+        run: NODE_OPTIONS="--max-old-space-size=6144" npm install
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build React components
+        run: NODE_OPTIONS="--max-old-space-size=6144" npm run buildreact:prod
+
+      - name: Build macOS ${{ matrix.arch }}
+        run: NODE_OPTIONS="--max-old-space-size=8192" npm run gulp -- vscode-darwin-${{ matrix.arch }}-min
+
+      - name: Codesign app
+        run: |
+          if [[ -z "${MACOS_CODESIGN_IDENTITY:-}" ]]; then
+            echo "::warning::MACOS_CODESIGN_IDENTITY is not set — this build will be ad-hoc signed only (Gatekeeper will show 'Apple could not verify this app is free of malware')."
+          fi
+          ./scripts/codesign-macos.sh "../Orbit-darwin-${{ matrix.arch }}/Orbit.app"
+        env:
+          MACOS_CODESIGN_IDENTITY: ${{ secrets.MACOS_CODESIGN_IDENTITY }}
+
+      - name: Install create-dmg
+        run: brew install create-dmg
+
+      - name: Create DMG
+        run: |
+          VERSION=$(node -p "require('./product.json').orbitVersion")
+          APP_DIR="../Orbit-darwin-${{ matrix.arch }}"
+          if [ ! -d "$APP_DIR" ]; then
+            echo "Expected app bundle at $APP_DIR"
+            ls -la ..
+            exit 1
+          fi
+          ./scripts/make-dmg.sh "$APP_DIR" "Orbit-${VERSION}-darwin-${{ matrix.arch }}.dmg"
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: orbit-darwin-${{ matrix.arch }}
+          path: Orbit-*.dmg
+          retention-days: 7
+
+      - name: Resolve version
+        id: version
+        run: |
+          VERSION=$(node -p "require('./product.json').orbitVersion")
+          echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload to Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          files: Orbit-*.dmg
+          draft: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

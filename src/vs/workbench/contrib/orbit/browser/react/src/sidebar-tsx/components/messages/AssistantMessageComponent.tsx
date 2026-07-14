@@ -10,6 +10,7 @@ import { ProseWrapper } from '../wrappers/ProseWrapper.js';
 import { SmallProseWrapper } from '../wrappers/SmallProseWrapper.js';
 import { ReasoningWrapper } from './ReasoningWrapper.js';
 import { useIsReadOnlyChat } from '../../contexts/ReadOnlyChatContext.js';
+import ErrorBoundary from '../../ErrorBoundary.js';
 
 const EMPTY_MESSAGE_PLACEHOLDER = '(empty message)';
 
@@ -43,12 +44,14 @@ export const AssistantMessageComponent = React.memo(({ chatMessage, isCheckpoint
 					    inline code inherit the body color instead of standing out bright/white. */}
 					<div className="[&_strong]:!text-void-fg-4 [&_b]:!text-void-fg-4 [&_h1]:!text-void-fg-4 [&_h2]:!text-void-fg-4 [&_h3]:!text-void-fg-4 [&_h4]:!text-void-fg-4 [&_code]:!text-void-fg-4 [&_.orbit-inline-code]:!text-void-fg-4 [&_li]:!text-void-fg-4 [&_p]:!text-void-fg-4">
 					<SmallProseWrapper>
-						<ChatMarkdownRender
-							string={reasoningStr}
-							chatMessageLocation={chatMessageLocation}
-							isApplyEnabled={false}
-							isLinkDetectionEnabled={isLinkDetectionEnabled}
-						/>
+						<ErrorBoundary>
+							<ChatMarkdownRender
+								string={reasoningStr}
+								chatMessageLocation={chatMessageLocation}
+								isApplyEnabled={false}
+								isLinkDetectionEnabled={isLinkDetectionEnabled}
+							/>
+						</ErrorBoundary>
 					</SmallProseWrapper>
 					</div>
 				</ReasoningWrapper>
@@ -59,12 +62,14 @@ export const AssistantMessageComponent = React.memo(({ chatMessage, isCheckpoint
 		{hasDisplayContent &&
 			<div className={isCheckpointGhost ? 'opacity-50' : ''} data-orbit-chat-selectable data-orbit-quote-source='assistant' data-orbit-thread-id={threadId} data-orbit-message-idx={messageIdx}>
 				<ProseWrapper>
-					<ChatMarkdownRender
-						string={chatMessage.displayContent || ''}
-						chatMessageLocation={chatMessageLocation}
-						isApplyEnabled={!isReadOnlyChat}
-						isLinkDetectionEnabled={isLinkDetectionEnabled}
-					/>
+					<ErrorBoundary>
+						<ChatMarkdownRender
+							string={chatMessage.displayContent || ''}
+							chatMessageLocation={chatMessageLocation}
+							isApplyEnabled={!isReadOnlyChat}
+							isLinkDetectionEnabled={isLinkDetectionEnabled}
+						/>
+					</ErrorBoundary>
 				</ProseWrapper>
 			</div>
 		}

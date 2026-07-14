@@ -12,7 +12,7 @@ export NODE_OPTIONS="--max-old-space-size=${HEAP}"
 
 echo "Orbit macOS low-memory build: darwin-${ARCH} (heap=${HEAP}MB)"
 
-npm run buildreact
+npm run buildreact:prod
 
 npm run gulp -- compile-build-without-mangling
 rm -rf .build/extensions

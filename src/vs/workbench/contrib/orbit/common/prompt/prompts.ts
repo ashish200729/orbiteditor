@@ -16,6 +16,7 @@ import { listSubAgents } from '../subAgentRegistry.js';
 import { listSkills, getSkill } from '../skillRegistry.js';
 import { getBuiltinCommand } from '../slashCommands/builtinCommands.js';
 import { ORBIT_IDE_BROWSER_MCP_INSTRUCTIONS } from '../builtinMcp/orbitIdeBrowserMcpTypes.js';
+import { truncateSelectionsToBudget } from '../chatInputLimits.js';
 
 // Triple backtick wrapper used throughout the prompts for code blocks
 export const tripleTick = ['```', '```']
@@ -25,6 +26,10 @@ export const MAX_DIRSTR_CHARS_TOTAL_BEGINNING = 20_000
 export const MAX_DIRSTR_CHARS_TOTAL_TOOL = 20_000
 export const MAX_DIRSTR_RESULTS_TOTAL_BEGINNING = 100
 export const MAX_DIRSTR_RESULTS_TOTAL_TOOL = 100
+
+export const CHAT_SELECTION_MAX_FILES = 100
+export const CHAT_SELECTION_MAX_CHARS_PER_FILE = 100_000
+export const CHAT_SELECTION_TOTAL_CHAR_BUDGET = 200_000
 
 // tool info
 export const MAX_FILE_CHARS_PAGE = 500_000
@@ -2097,7 +2102,7 @@ export const chat_userMessageContent = async (
 		(currSelns ?? []).map(async (s) =>
 			messageOfSelection(s, {
 				...opts,
-				folderOpts: { maxChildren: 100, maxCharsPerFile: 100_000, }
+				folderOpts: { maxChildren: CHAT_SELECTION_MAX_FILES, maxCharsPerFile: CHAT_SELECTION_MAX_CHARS_PER_FILE, }
 			})
 		)
 	)
@@ -2106,7 +2111,8 @@ export const chat_userMessageContent = async (
 	let str = ''
 	str += `${instructions}`
 
-	const selnsStr = selnsStrs.join('\n\n') ?? ''
+	const { included: budgetedSelns } = truncateSelectionsToBudget(selnsStrs, CHAT_SELECTION_TOTAL_CHAR_BUDGET)
+	const selnsStr = budgetedSelns.join('\n\n') ?? ''
 	if (selnsStr) str += `\n---\nSELECTIONS\n${selnsStr}`
 
 	// Explicitly-inserted `/slash` tokens expand into the LLM-facing user message (not the

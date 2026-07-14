@@ -13,6 +13,288 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+function normalizeEsModuleImportPaths(text) {
+	return text
+		.replace(/(from\s*['"])([^'"]+)(['"])/g, (_, pre, p, post) => pre + p.replace(/\\/g, '/').replace(/\/{2,}/g, '/') + post)
+		.replace(/(import\s*['"])([^'"]+)(['"])/g, (_, pre, p, post) => pre + p.replace(/\\/g, '/').replace(/\/{2,}/g, '/') + post)
+		.replace(/(import\s*\(\s*['"])([^'"]+)(['"]\s*\))/g, (_, pre, p, post) => pre + p.replace(/\\/g, '/').replace(/\/{2,}/g, '/') + post);
+}
+
+function normalizeImportPathsInOutDir(outDir = path.join(__dirname, 'out')) {
+	const walk = (dir) => {
+		for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+			const fullPath = path.join(dir, entry.name);
+			if (entry.isDirectory()) {
+				walk(fullPath);
+			} else if (entry.name.endsWith('.js')) {
+				const original = fs.readFileSync(fullPath, 'utf8');
+				const normalized = normalizeEsModuleImportPaths(original);
+				if (normalized !== original) {
+					fs.writeFileSync(fullPath, normalized, 'utf8');
+				}
+			}
+		}
+	};
+
+	if (fs.existsSync(outDir)) {
+		walk(outDir);
+	}
+}
+
+function getOrderedExportNames(fileContents, pattern) {
+	return [...fileContents.matchAll(pattern)].map(match => match[1]);
+}
+
+function getNamedExportNames(fileContents) {
+	const names = [];
+	for (const match of fileContents.matchAll(/export\s*\{([^}]+)\}/g)) {
+		for (const part of match[1].split(',')) {
+			const trimmed = part.trim();
+			if (!trimmed) {
+				continue;
+			}
+			const aliasMatch = trimmed.match(/^([A-Za-z_$][\w$]*)(?:\s+as\s+([A-Za-z_$][\w$]*))?$/);
+			if (aliasMatch) {
+				names.push(aliasMatch[2] ?? aliasMatch[1]);
+			}
+		}
+	}
+	return names;
+}
+
+function resolveBarrelImport(importPath, specifiers, outBuildVs, outVs) {
+	if (!importPath.endsWith('platform/theme/common/colorRegistry.js')) {
+		return undefined;
+	}
+
+	const colorFiles = [
+		'platform/theme/common/colors/inputColors.js',
+		'platform/theme/common/colors/baseColors.js',
+		'platform/theme/common/colors/editorColors.js',
+	];
+	const parts = specifiers.split(',').map(part => part.trim()).filter(Boolean);
+	const resolvedFiles = new Set();
+
+	for (const part of parts) {
+		const importedName = part.split(/\s+as\s+/)[0].trim();
+		let found = false;
+		for (const colorFile of colorFiles) {
+			const unmangledPath = path.join(outVs, colorFile);
+			const mangledPath = path.join(outBuildVs, colorFile);
+			if (!pathExists(unmangledPath) || !pathExists(mangledPath)) {
+				continue;
+			}
+			const nameMap = buildExportRenameMap(
+				fs.readFileSync(unmangledPath, 'utf8'),
+				fs.readFileSync(mangledPath, 'utf8'),
+			);
+			if (nameMap.has(importedName)) {
+				resolvedFiles.add(colorFile);
+				found = true;
+				break;
+			}
+		}
+		if (!found) {
+			return undefined;
+		}
+	}
+
+	if (resolvedFiles.size !== 1) {
+		return undefined;
+	}
+
+	return [...resolvedFiles][0];
+}
+
+function buildExportRenameMap(unmangledContents, mangledContents) {
+	const map = new Map();
+
+	const constPattern = /export const ([A-Za-z_$][\w$]*)\s*=/g;
+	const functionPattern = /export function ([A-Za-z_$][\w$]*)/g;
+	const varPattern = /export var ([A-Za-z_$][\w$]*)/g;
+	const classPattern = /export class ([A-Za-z_$][\w$]*)/g;
+	const namedExportPattern = /export\s*\{([^}]+)\}/g;
+
+	const exportGroups = [
+		[getOrderedExportNames(unmangledContents, constPattern), getOrderedExportNames(mangledContents, constPattern)],
+		[getOrderedExportNames(unmangledContents, functionPattern), getOrderedExportNames(mangledContents, functionPattern)],
+		[getOrderedExportNames(unmangledContents, varPattern), getOrderedExportNames(mangledContents, varPattern)],
+		[getOrderedExportNames(unmangledContents, classPattern), getOrderedExportNames(mangledContents, classPattern)],
+		[getNamedExportNames(unmangledContents), getNamedExportNames(mangledContents)],
+	];
+
+	for (const [unmangledNames, mangledNames] of exportGroups) {
+		if (unmangledNames.length === 0 || unmangledNames.length !== mangledNames.length) {
+			continue;
+		}
+		unmangledNames.forEach((name, index) => map.set(name, mangledNames[index]));
+	}
+
+	return map;
+}
+
+function pathExists(filePath) {
+	try {
+		fs.statSync(filePath);
+		return true;
+	} catch (err) {
+		if (err.code === 'ENOENT') {
+			return false;
+		}
+		throw err;
+	}
+}
+
+function adaptReactOutForMangledBuild(outDir = path.join(__dirname, 'out')) {
+	let outBuildVs;
+	let outVs;
+	let currentPath = __dirname;
+	while (true) {
+		const candidateOutBuild = path.join(currentPath, 'out-build', 'vs');
+		const candidateOut = path.join(currentPath, 'out', 'vs');
+		if (pathExists(candidateOutBuild) && pathExists(candidateOut)) {
+			outBuildVs = candidateOutBuild;
+			outVs = candidateOut;
+			break;
+		}
+		const parentDir = path.dirname(currentPath);
+		if (parentDir === currentPath) {
+			break;
+		}
+		currentPath = parentDir;
+	}
+
+	if (!outBuildVs || !outVs) {
+		console.log('[buildreact] Skipping mangled import rewrite (out-build/vs or out/vs not found)');
+		return;
+	}
+
+	const importPattern = /import\s*\{([^}]+)\}\s*from\s*(['"])([^'"]+)\2\s*;?/g;
+
+	const rewriteFile = (filePath) => {
+		let contents = fs.readFileSync(filePath, 'utf8');
+		let changed = false;
+		const relativeInReactOut = path.relative(outDir, filePath).replace(/\\/g, '/');
+		const virtualFilePath = path.join(outBuildVs, 'workbench', 'contrib', 'orbit', 'browser', 'react', 'out', relativeInReactOut);
+
+		contents = contents.replace(importPattern, (full, specifiers, quote, importPath) => {
+			if (!importPath.startsWith('.')) {
+				return full;
+			}
+
+			const resolved = path.normalize(path.join(path.dirname(virtualFilePath), importPath));
+			const relativeToVs = path.relative(outBuildVs, resolved).replace(/\\/g, '/');
+			if (relativeToVs.startsWith('..')) {
+				return full;
+			}
+
+			const mangledPath = path.join(outBuildVs, relativeToVs);
+			const unmangledPath = path.join(outVs, relativeToVs);
+			if (!pathExists(mangledPath) || !pathExists(unmangledPath)) {
+				return full;
+			}
+
+			let effectiveImportPath = importPath;
+			const barrelRedirect = resolveBarrelImport(importPath, specifiers, outBuildVs, outVs);
+			if (barrelRedirect) {
+				const targetPath = path.join(outBuildVs, barrelRedirect);
+				effectiveImportPath = path.relative(path.dirname(virtualFilePath), targetPath).replace(/\\/g, '/');
+				if (!effectiveImportPath.startsWith('.')) {
+					effectiveImportPath = `./${effectiveImportPath}`;
+				}
+			}
+
+			const effectiveResolved = path.normalize(path.join(path.dirname(virtualFilePath), effectiveImportPath));
+			const effectiveRelativeToVs = path.relative(outBuildVs, effectiveResolved).replace(/\\/g, '/');
+			const effectiveMangledPath = path.join(outBuildVs, effectiveRelativeToVs);
+			const effectiveUnmangledPath = path.join(outVs, effectiveRelativeToVs);
+
+			const nameMap = buildExportRenameMap(
+				fs.readFileSync(effectiveUnmangledPath, 'utf8'),
+				fs.readFileSync(effectiveMangledPath, 'utf8'),
+			);
+			if (nameMap.size === 0) {
+				return full;
+			}
+
+			const parts = specifiers.split(',').map(part => part.trim()).filter(Boolean);
+			const rewritten = parts.map(part => {
+				const aliasMatch = part.match(/^([A-Za-z_$][\w$]*)\s+as\s+([A-Za-z_$][\w$]*)$/);
+				const importedName = aliasMatch ? aliasMatch[1] : part;
+				const localName = aliasMatch ? aliasMatch[2] : part;
+				const mangledName = nameMap.get(importedName);
+				if (!mangledName || mangledName === importedName) {
+					return part;
+				}
+				return `${mangledName} as ${localName}`;
+			});
+
+			if (rewritten.join(',') === parts.join(',')) {
+				return full;
+			}
+
+			changed = true;
+			return `import { ${rewritten.join(', ')} } from ${quote}${effectiveImportPath}${quote};`;
+		});
+
+		if (changed) {
+			fs.writeFileSync(filePath, contents, 'utf8');
+		}
+	};
+
+	const walk = (dir) => {
+		for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+			const fullPath = path.join(dir, entry.name);
+			if (entry.isDirectory()) {
+				walk(fullPath);
+			} else if (entry.name.endsWith('.js')) {
+				rewriteFile(fullPath);
+			}
+		}
+	};
+
+	walk(outDir);
+	console.log('[buildreact] Adapted React bundle imports for mangled production build');
+}
+
+function syncReactOutToOutBuild(outDir = path.join(__dirname, 'out')) {
+	let outBuildReactOut;
+	let currentPath = __dirname;
+	while (true) {
+		const candidate = path.join(currentPath, 'out-build', 'vs', 'workbench', 'contrib', 'orbit', 'browser', 'react', 'out');
+		if (pathExists(candidate)) {
+			outBuildReactOut = candidate;
+			break;
+		}
+		const parentDir = path.dirname(currentPath);
+		if (parentDir === currentPath) {
+			break;
+		}
+		currentPath = parentDir;
+	}
+
+	if (!outBuildReactOut) {
+		console.log('[buildreact] Skipping out-build React sync (out-build not found yet — run after compile, or sync manually)');
+		return;
+	}
+
+	const copyDir = (src, dest) => {
+		fs.mkdirSync(dest, { recursive: true });
+		for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+			const srcPath = path.join(src, entry.name);
+			const destPath = path.join(dest, entry.name);
+			if (entry.isDirectory()) {
+				copyDir(srcPath, destPath);
+			} else {
+				fs.copyFileSync(srcPath, destPath);
+			}
+		}
+	};
+
+	copyDir(outDir, outBuildReactOut);
+	console.log(`[buildreact] Synced React bundles to ${outBuildReactOut}`);
+}
+
 function doesPathExist(filePath) {
 	try {
 		const stats = fs.statSync(filePath);
@@ -97,6 +379,7 @@ function saveStylesFile() {
 
 const args = process.argv.slice(2);
 const isWatch = args.includes('--watch') || args.includes('-w');
+const shouldMangleReactImports = args.includes('--mangle') || process.env.ORBIT_REACT_MANGLE === '1';
 
 if (isWatch) {
 	// this just builds it if it doesn't exist instead of waiting for the watcher to trigger
@@ -175,6 +458,14 @@ if (isWatch) {
 
 	// Run tsup once for remaining entry points
 	execSync('npx tsup', { stdio: 'inherit' });
+
+	normalizeImportPathsInOutDir();
+	if (shouldMangleReactImports) {
+		adaptReactOutForMangledBuild();
+		syncReactOutToOutBuild();
+	} else {
+		console.log('[buildreact] Dev build: keeping unmangled imports (pass --mangle for production/package builds)');
+	}
 
 	console.log('✅ Build complete!');
 }

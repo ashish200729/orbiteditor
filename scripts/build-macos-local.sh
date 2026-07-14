@@ -23,7 +23,7 @@ echo "Orbit macOS local build: darwin-${ARCH}"
 if [[ "$LOW_MEM" == true ]]; then
 	./scripts/build-macos-lowmem.sh "$ARCH"
 else
-	npm run buildreact
+	npm run buildreact:prod
 	NODE_OPTIONS="--max-old-space-size=8192" npm run gulp -- "vscode-darwin-${ARCH}-min"
 fi
 

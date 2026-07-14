@@ -50,6 +50,21 @@ const DEFAULT_FILE_HEADER = [
 	' *--------------------------------------------------------*/'
 ].join('\n');
 
+function normalizeImportPath(path: string): string {
+	return path.replace(/\\/g, '/').replace(/\/{2,}/g, '/');
+}
+
+function normalizeEsModuleImportPaths(text: string): string {
+	return text
+		.replace(/(from\s*['"])([^'"]+)(['"])/g, (_, pre, p, post) => pre + normalizeImportPath(p) + post)
+		.replace(/(import\s*['"])([^'"]+)(['"])/g, (_, pre, p, post) => pre + normalizeImportPath(p) + post)
+		.replace(/(import\s*\(\s*['"])([^'"]+)(['"]\s*\))/g, (_, pre, p, post) => pre + normalizeImportPath(p) + post);
+}
+
+function postProcessBundledJs(text: string, _filePath: string): string {
+	return normalizeEsModuleImportPaths(text);
+}
+
 function bundleESMTask(opts: IBundleESMTaskOpts): NodeJS.ReadWriteStream {
 	const resourcesStream = es.through(); // this stream will contain the resources
 	const bundlesStream = es.through(); // this stream will contain the bundled files
@@ -96,6 +111,12 @@ function bundleESMTask(opts: IBundleESMTaskOpts): NodeJS.ReadWriteStream {
 							newContents = bundle.removeAllTSBoilerplate(contents);
 						} else {
 							newContents = contents;
+						}
+
+						// React UI bundles externalize VS Code imports with Windows backslashes,
+						// which prevents esbuild from inlining them into workbench.desktop.main.
+						if (path.replace(/\\/g, '/').includes('react/out/')) {
+							newContents = normalizeEsModuleImportPaths(newContents);
 						}
 
 						// File Content Mapper
@@ -153,8 +174,13 @@ function bundleESMTask(opts: IBundleESMTaskOpts): NodeJS.ReadWriteStream {
 						sourceMapFile = res.outputFiles.find(f => f.path === `${file.path}.map`);
 					}
 
+					let jsContents: Uint8Array = file.contents;
+					if (file.path.endsWith('.js')) {
+						jsContents = Buffer.from(postProcessBundledJs(Buffer.from(file.contents).toString('utf-8'), file.path.replace(/\\/g, '/')));
+					}
+
 					const fileProps = {
-						contents: Buffer.from(file.contents),
+						contents: Buffer.from(jsContents),
 						sourceMap: sourceMapFile ? JSON.parse(sourceMapFile.text) : undefined, // support gulp-sourcemaps
 						path: file.path,
 						base: path.join(REPO_ROOT_PATH, opts.src)

@@ -19,6 +19,17 @@ import { Loader, Circle, CheckCircle2, XCircle } from 'lucide-react'
 import { isCompactCodeBlock, isLikelyFilename, splitTextWithFileReferences, FILE_LINK_STYLE_CLASS, FILE_LINK_INLINE_STYLE, INLINE_CODE_STYLE_CLASS } from './markdownStyleHelpers.js'
 import { sanitizeSvgForRender } from './svgSanitizer.js'
 
+export const MARKDOWN_LEXER_MAX_CHARS = 80_000
+export const MONACO_BLOCK_MAX_CHARS = 8_000
+
+const PlainTextMarkdownFallback = ({ string }: { string: string }) => (
+	<pre className="whitespace-pre-wrap break-words text-void-fg-1 text-sm">{string}</pre>
+)
+
+const LargeCodePre = ({ contents }: { contents: string }) => (
+	<pre className="overflow-x-auto p-2 my-1 bg-void-bg-3 text-sm whitespace-pre-wrap break-words">{contents.trimEnd()}</pre>
+)
+
 
 export type ChatMessageLocation = {
 	threadId: string;
@@ -466,6 +477,9 @@ const RenderToken = ({ token, inPTag, codeURI, chatMessageLocation, tokenIdx, ..
 				messageIdx: chatMessageLocation.messageIdx,
 				tokenIdx: tokenIdx,
 			})
+			if (contents.length > MONACO_BLOCK_MAX_CHARS) {
+				return <LargeCodePre contents={contents} />
+			}
 			return <BlockCodeApplyWrapper
 				canApply={isCodeblockClosed}
 				applyBoxId={applyBoxId}
@@ -478,6 +492,10 @@ const RenderToken = ({ token, inPTag, codeURI, chatMessageLocation, tokenIdx, ..
 					language={language}
 				/>
 			</BlockCodeApplyWrapper>
+		}
+
+		if (contents.length > MONACO_BLOCK_MAX_CHARS) {
+			return <LargeCodePre contents={contents} />
 		}
 
 		return <BlockCode
@@ -962,7 +980,17 @@ const MemoRenderToken = React.memo(
 
 export const ChatMarkdownRender = ({ string, inPTag = false, chatMessageLocation, ...options }: { string: string, inPTag?: boolean, codeURI?: URI, chatMessageLocation: ChatMessageLocation | undefined } & RenderTokenOptions) => {
 	const normalizedString = useMemo(() => string.replaceAll('\n•', '\n\n•'), [string])
-	const tokens = useMemo(() => marked.lexer(normalizedString), [normalizedString]); // https://marked.js.org/using_pro#renderer
+	const tokens = useMemo(() => {
+		if (normalizedString.length > MARKDOWN_LEXER_MAX_CHARS) {
+			return null
+		}
+		return marked.lexer(normalizedString)
+	}, [normalizedString]); // https://marked.js.org/using_pro#renderer
+
+	if (normalizedString.length > MARKDOWN_LEXER_MAX_CHARS || tokens === null) {
+		return <PlainTextMarkdownFallback string={normalizedString} />
+	}
+
 	return (
 		<>
 			{tokens.map((token, index) => (

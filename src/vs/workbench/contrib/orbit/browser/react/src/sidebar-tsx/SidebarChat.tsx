@@ -24,6 +24,8 @@ import { appendTextQuotesToPrompt, quotePreviewTitle, textQuotesEqual } from '..
 import { ThreadType } from '../../../chatThreadService.js';
 import { isFeatureNameDisabled } from '../../../../common/orbitSettingsTypes.js';
 import { isABuiltinToolName } from '../../../../common/prompt/prompts.js';
+import { CHAT_USER_PROMPT_MAX_CHARS, isChatPromptNearLimit, validateChatPromptLength } from '../../../../common/chatInputLimits.js';
+import { WarningBox } from '../orbit-settings-tsx/WarningBox.js';
 
 import { TextAreaFns, VoidInputBox2 } from '../util/inputs.js';
 import { focusInConnectedWindow, downscaleImageDataUrl } from '../util/helpers.js';
@@ -223,6 +225,8 @@ const SidebarChatLoaded = ({ isAgentWindow = false, currentThread, chatSurface, 
 
 	// state of current message
 	const initVal = initialDraftText ?? ''
+	const [promptText, setPromptText] = useState(initVal)
+	const [submitError, setSubmitError] = useState<string | null>(null)
 	const [instructionsAreEmpty, setInstructionsAreEmpty] = useState(!initVal)
 	const [textQuotes, setTextQuotes] = useState<TextQuoteAttachment[]>(() => initialTextQuotes?.map(quote => ({ ...quote })) ?? [])
 	const onTextQuotesChangeRef = useRef(onTextQuotesChange)
@@ -239,7 +243,11 @@ const SidebarChatLoaded = ({ isAgentWindow = false, currentThread, chatSurface, 
 		setTextQuotes(update)
 	}, [])
 
-	const isDisabled = (instructionsAreEmpty && textQuotes.length === 0) || !!isFeatureNameDisabled('Chat', settingsState)
+	const promptLengthCheck = useMemo(() => validateChatPromptLength(promptText), [promptText])
+	const isPromptOverLimit = !promptLengthCheck.ok
+	const isPromptNearLimit = isChatPromptNearLimit(promptText)
+
+	const isDisabled = (instructionsAreEmpty && textQuotes.length === 0) || !!isFeatureNameDisabled('Chat', settingsState) || isPromptOverLimit
 
 	const sidebarRef = useRef<HTMLDivElement>(null)
 	const scrollContainerRef = useRef<HTMLDivElement | null>(null)
@@ -729,21 +737,30 @@ const SidebarChatLoaded = ({ isAgentWindow = false, currentThread, chatSurface, 
 			return
 		}
 
-		try {
-			await chatThreadsService.addUserMessageAndStreamResponse({ userMessage, _chatSelections: selectionsSnapshot, _images: imagesToSend.length > 0 ? imagesToSend : undefined, _textQuotes: textQuotes, threadId })
-		} catch (e) {
-			console.error('Error while sending message in chat:', e)
+		const promptCheck = validateChatPromptLength(userMessage)
+		if (!promptCheck.ok) {
+			setSubmitError(promptCheck.message)
+			return
 		}
 
-		setSelections([]) // clear staging
-		setImages([]) // clear images
-		updateTextQuotes(() => [])
-		setEditingImageTarget(null)
-		textAreaFnsRef.current?.setValue('')
-		focusInConnectedWindow(textAreaRef.current) // focus input after submit (keeps Agents pop-out frontmost)
-		if (!hasSubmittedRef.current) {
-			hasSubmittedRef.current = true
-			onFirstSubmit?.(quotePreviewTitle(userMessage, textQuotes))
+		try {
+			await chatThreadsService.addUserMessageAndStreamResponse({ userMessage, _chatSelections: selectionsSnapshot, _images: imagesToSend.length > 0 ? imagesToSend : undefined, _textQuotes: textQuotes, threadId })
+			setSubmitError(null)
+			setSelections([]) // clear staging
+			setImages([]) // clear images
+			updateTextQuotes(() => [])
+			setEditingImageTarget(null)
+			setPromptText('')
+			textAreaFnsRef.current?.setValue('')
+			focusInConnectedWindow(textAreaRef.current) // focus input after submit (keeps Agents pop-out frontmost)
+			if (!hasSubmittedRef.current) {
+				hasSubmittedRef.current = true
+				onFirstSubmit?.(quotePreviewTitle(userMessage, textQuotes))
+			}
+		} catch (e) {
+			const message = e instanceof Error ? e.message : 'Error while sending message in chat.'
+			setSubmitError(message)
+			console.error('Error while sending message in chat:', e)
 		}
 
 	}, [chatThreadsService, currentThread.id, isDisabled, textAreaRef, textAreaFnsRef, setSelections, settingsState, images, accessor, workspaceGit, isRemoteRunning, selections.length, localMessages.length, tasksForCurrentRunner, tasksForThread, threadRunnerId, executionTarget, inAgentWindow, mcpToolNameSet, textQuotes, updateTextQuotes, onFirstSubmit])
@@ -831,8 +848,10 @@ const SidebarChatLoaded = ({ isAgentWindow = false, currentThread, chatSurface, 
 
 	const onChangeText = useCallback((newStr: string) => {
 		setInstructionsAreEmpty(!newStr)
+		setPromptText(newStr)
+		if (submitError) setSubmitError(null)
 		onDraftTextChangeRef.current?.(newStr)
-	}, [])
+	}, [submitError])
 	const addQuoteToComposer = useCallback((quote: TextQuoteAttachment) => {
 		updateTextQuotes(current => current.some(existing => textQuotesEqual(existing, quote)) ? current : [...current, quote])
 		focusInConnectedWindow(textAreaRef.current)
@@ -1030,6 +1049,22 @@ const SidebarChatLoaded = ({ isAgentWindow = false, currentThread, chatSurface, 
 			onDrop={dragHandlers.handleDrop}
 		>
 			<TextQuoteCards quotes={textQuotes} onRemove={id => updateTextQuotes(current => current.filter(quote => quote.id !== id))} />
+			{(submitError || isPromptNearLimit) && (
+				<div className='mb-1.5'>
+					{submitError ? (
+						<WarningBox text={submitError} />
+					) : isPromptOverLimit ? (
+						<WarningBox text={!promptLengthCheck.ok ? promptLengthCheck.message : ''} />
+					) : (
+						<WarningBox text={`Approaching message limit (${promptText.length.toLocaleString()} / ${CHAT_USER_PROMPT_MAX_CHARS.toLocaleString()} characters).`} />
+					)}
+				</div>
+			)}
+			<div className='flex justify-end mb-0.5'>
+				<span className={`text-xs ${isPromptOverLimit ? 'text-void-warning' : isPromptNearLimit ? 'text-void-fg-3' : 'text-void-fg-4'}`}>
+					{promptText.length.toLocaleString()} / {CHAT_USER_PROMPT_MAX_CHARS.toLocaleString()}
+				</span>
+			</div>
 			<VoidInputBox2
 				isThreadComposer
 				enableAtToMention

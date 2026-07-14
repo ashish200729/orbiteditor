@@ -63,7 +63,7 @@ const externalizeOutsideSrc2 = {
 				}
 			}
 			const entryBase = path.join(src2Root, entryDir)
-			const rel = path.relative(entryBase, resolvedForSpec).replace(/\\\\/g, '/')
+			const rel = path.relative(entryBase, resolvedForSpec).replace(/\\/g, '/')
 			const relSpec = rel.startsWith('.') ? rel : `./${rel}`
 
 			return { path: relSpec, external: true }

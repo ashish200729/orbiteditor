@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------*/
 
 import * as assert from 'assert';
-import { appendMessageImmutable, replaceMessageImmutable, shouldNotifyGlobalThreadChange, threadStructurallyEqual, ThreadStructuralFields } from '../../common/chatThreadHelpers.js';
+import { appendMessageImmutable, replaceMessageImmutable, resolveThreadStorePolicy, shouldNotifyGlobalThreadChange, threadStructurallyEqual, ThreadStructuralFields } from '../../common/chatThreadHelpers.js';
 import { getDateBucket } from '../../common/chatHistoryHelpers.js';
 
 const makeThread = (overrides: Partial<ThreadStructuralFields> = {}): ThreadStructuralFields => ({
@@ -76,5 +76,11 @@ suite('ChatThread performance helpers', () => {
 	test('shouldNotifyGlobalThreadChange only fires for current thread', () => {
 		assert.strictEqual(shouldNotifyGlobalThreadChange('thread-a', 'thread-a'), true);
 		assert.strictEqual(shouldNotifyGlobalThreadChange('thread-b', 'thread-a'), false);
+	});
+
+	test('resolveThreadStorePolicy returns immediate only when requested', () => {
+		assert.strictEqual(resolveThreadStorePolicy({ immediate: true }), 'immediate');
+		assert.strictEqual(resolveThreadStorePolicy({ immediate: false }), 'debounced');
+		assert.strictEqual(resolveThreadStorePolicy({}), 'debounced');
 	});
 });

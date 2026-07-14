@@ -48,3 +48,9 @@ export const replaceMessageImmutable = <T>(messages: readonly T[], messageIdx: n
 		...messages.slice(messageIdx + 1),
 	];
 };
+
+export type ThreadStorePolicy = 'immediate' | 'debounced';
+
+/** Decide whether thread persistence should flush immediately or be debounced. */
+export const resolveThreadStorePolicy = (opts: { immediate?: boolean }): ThreadStorePolicy =>
+	opts.immediate ? 'immediate' : 'debounced';

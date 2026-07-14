@@ -55,21 +55,23 @@ export const StreamingMessagePane = React.memo(({
 
 	const currStreamingMessageHTML = (reasoningSoFar || displayContentSoFar) ?
 		<div className={`orbit-card-enter${shouldAddGapForStreaming ? ' mt-2' : ''}`}>
-			<ChatBubble
-				key={'curr-streaming-msg'}
-				currCheckpointIdx={currCheckpointIdx}
-				chatMessage={{
-					role: 'assistant',
-					displayContent: displayContentSoFar ?? '',
-					reasoning: reasoningSoFar ?? '',
-					anthropicReasoning: null,
-				}}
-				messageIdx={streamingChatIdx}
-				isCommitted={false}
-				chatIsRunning={isRunning}
-				threadId={threadId}
-				scrollActions={null}
-			/>
+			<ErrorBoundary>
+				<ChatBubble
+					key={'curr-streaming-msg'}
+					currCheckpointIdx={currCheckpointIdx}
+					chatMessage={{
+						role: 'assistant',
+						displayContent: displayContentSoFar ?? '',
+						reasoning: reasoningSoFar ?? '',
+						anthropicReasoning: null,
+					}}
+					messageIdx={streamingChatIdx}
+					isCommitted={false}
+					chatIsRunning={isRunning}
+					threadId={threadId}
+					scrollActions={null}
+				/>
+			</ErrorBoundary>
 		</div> : null;
 
 	const generatingTools = streamingToolsToRender.map((tool, i) => {
