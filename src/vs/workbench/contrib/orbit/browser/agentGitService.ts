@@ -80,7 +80,9 @@ class AgentGitService extends Disposable implements IAgentGitService {
 	readonly onDidChange = this._onDidChange.event;
 
 	private readonly channel: IVoidSCMService;
+	/** Per-repository change listeners, disposed when their repository is removed. */
 	private readonly repoListeners = this._register(new DisposableStore());
+	private readonly listenersByRepo = new Map<ISCMRepository, DisposableStore>();
 	private readonly debouncer: RunOnceScheduler;
 	private cachedRoot: { path: string; root: string | null } | null = null;
 
@@ -105,13 +107,28 @@ class AgentGitService extends Disposable implements IAgentGitService {
 			this.hookRepository(repo);
 			this.scheduleChange();
 		}));
-		this._register(this.scmService.onDidRemoveRepository(() => this.scheduleChange()));
+		this._register(this.scmService.onDidRemoveRepository(repo => {
+			// Drop this repo's listeners — they accumulated for the lifetime of
+			// the service before, firing (and leaking) for closed repositories.
+			const store = this.listenersByRepo.get(repo);
+			if (store) {
+				this.repoListeners.delete(store); // delete() also disposes it
+				this.listenersByRepo.delete(repo);
+			}
+			this.scheduleChange();
+		}));
 	}
 
 	private hookRepository(repo: ISCMRepository): void {
+		if (this.listenersByRepo.has(repo)) {
+			return;
+		}
 		const provider = repo.provider;
-		this.repoListeners.add(provider.onDidChangeResources(() => this.scheduleChange()));
-		this.repoListeners.add(provider.onDidChangeResourceGroups(() => this.scheduleChange()));
+		const store = new DisposableStore();
+		store.add(provider.onDidChangeResources(() => this.scheduleChange()));
+		store.add(provider.onDidChangeResourceGroups(() => this.scheduleChange()));
+		this.listenersByRepo.set(repo, store);
+		this.repoListeners.add(store);
 	}
 
 	private scheduleChange(): void {
@@ -125,20 +142,28 @@ class AgentGitService extends Disposable implements IAgentGitService {
 	}
 
 	async resolveRepoRoot(): Promise<string | null> {
-		const folder = this.workspaceContextService.getWorkspace().folders[0];
-		if (!folder || folder.uri.scheme !== 'file') {
+		// Multi-root: the first folder is not necessarily the git repo — walk
+		// the folders in order and use the first that resolves to a repo root.
+		const folders = this.workspaceContextService.getWorkspace().folders.filter(f => f.uri.scheme === 'file');
+		if (folders.length === 0) {
 			return null;
 		}
-		const path = folder.uri.fsPath;
-		// Only cache a *found* root. A null result ("not a git repo yet") must
-		// keep re-checking — otherwise running `git init` in the terminal after
-		// the panel first loads leaves it stuck on "Not a git repository" forever.
-		if (this.cachedRoot && this.cachedRoot.path === path && this.cachedRoot.root !== null) {
-			return this.cachedRoot.root;
+		for (const folder of folders) {
+			const path = folder.uri.fsPath;
+			// Only cache a *found* root. A null result ("not a git repo yet") must
+			// keep re-checking — otherwise running `git init` in the terminal after
+			// the panel first loads leaves it stuck on "Not a git repository" forever.
+			if (this.cachedRoot && this.cachedRoot.path === path && this.cachedRoot.root !== null) {
+				return this.cachedRoot.root;
+			}
+			const root = await this.channel.getRepoRoot(path);
+			if (root !== null) {
+				this.cachedRoot = { path, root };
+				return root;
+			}
 		}
-		const root = await this.channel.getRepoRoot(path);
-		this.cachedRoot = { path, root };
-		return root;
+		this.cachedRoot = { path: folders[0].uri.fsPath, root: null };
+		return null;
 	}
 
 	getStatus(root: string): Promise<GitRepoStatus> { return this.channel.getStatus(root); }

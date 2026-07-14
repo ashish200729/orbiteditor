@@ -315,7 +315,9 @@ export class OpenAiCodexOAuthManager {
 				OPENAI_CODEX_OAUTH_CONFIG.storageKey,
 				encrypted,
 				StorageScope.APPLICATION,
-				StorageTarget.USER,
+				// MACHINE, not USER: OAuth tokens are machine-local secrets and must never be flagged
+				// for Settings Sync roaming (the GitHub flow already uses MACHINE).
+				StorageTarget.MACHINE,
 			)
 		}
 		catch (error) {
@@ -327,9 +329,17 @@ export class OpenAiCodexOAuthManager {
 		this._onDidChangeState.fire(this.getState())
 	}
 
-	private respondWithHtml(res: http.ServerResponse, title: string, message: string) {
-		const isSuccess = title.toLowerCase().includes('signed in')
+	private respondWithHtml(res: http.ServerResponse, titleRaw: string, messageRaw: string) {
+		const isSuccess = titleRaw.toLowerCase().includes('signed in')
 		const statusLabel = isSuccess ? 'Success' : 'Action needed'
+		// `message` can carry the OAuth `error_description` (attacker-controllable via a crafted
+		// loopback request during the pending window). Escape all interpolated values so it can't
+		// inject markup/script into the loopback-origin page.
+		const escapeHtml = (s: string) => s.replace(/[&<>"']/g, c => (
+			{ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string
+		))
+		const title = escapeHtml(titleRaw)
+		const message = escapeHtml(messageRaw)
 		const html = `<!DOCTYPE html>
 <html>
 <head>
@@ -451,7 +461,11 @@ export class OpenAiCodexOAuthManager {
 	</script>
 </body>
 </html>`
-		res.writeHead(200, { 'Content-Type': 'text/html' })
+		res.writeHead(200, {
+			'Content-Type': 'text/html; charset=utf-8',
+			'X-Content-Type-Options': 'nosniff',
+			'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; script-src 'unsafe-inline'",
+		})
 		res.end(html)
 	}
 

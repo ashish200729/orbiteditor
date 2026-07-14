@@ -14,7 +14,7 @@ import { Tool as GeminiTool, FunctionDeclaration, GoogleGenAI, ThinkingConfig, S
 import { GoogleAuth } from 'google-auth-library'
 /* eslint-enable */
 
-import { AnthropicLLMChatMessage, GeminiLLMChatMessage, JsonToolSchema, LLMChatMessage, LLMFIMMessage, ModelListParams, OllamaModelResponse, OnError, OnFinalMessage, OnText, OpenAILLMChatMessage, RawToolCallObj, RawToolParamsObj, ToolPolicy } from '../../common/sendLLMMessageTypes.js';
+import { AnthropicLLMChatMessage, GeminiLLMChatMessage, JsonToolSchema, LLMChatMessage, LLMFIMMessage, LLMUsage, ModelListParams, OllamaModelResponse, OnError, OnFinalMessage, OnText, OpenAILLMChatMessage, RawToolCallObj, RawToolParamsObj, ToolPolicy } from '../../common/sendLLMMessageTypes.js';
 import { ChatMode, displayInfoOfProviderName, ModelSelectionOptions, OverridesOfModel, ProviderName, SettingsOfProvider } from '../../common/orbitSettingsTypes.js';
 import { getSendableReasoningInfo, getModelCapabilities, getProviderCapabilities, defaultProviderSettings, getReservedOutputTokenSpace } from '../../common/modelCapabilities.js';
 import { extractReasoningWrapper, extractXMLToolsWrapper } from './extractGrammar.js';
@@ -32,6 +32,84 @@ const getGoogleApiKey = async () => {
 	const key = await auth.getAccessToken()
 	if (!key) throw new Error(`Google API failed to generate a key.`)
 	return key
+}
+
+// --- token-usage normalization (per-provider shapes -> LLMUsage) ---
+const openAIUsageToLLMUsage = (u: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number; prompt_tokens_details?: { cached_tokens?: number } } | null | undefined): LLMUsage | undefined => {
+	if (!u) return undefined
+	return {
+		promptTokens: u.prompt_tokens,
+		completionTokens: u.completion_tokens,
+		totalTokens: u.total_tokens,
+		cacheReadTokens: u.prompt_tokens_details?.cached_tokens,
+	}
+}
+const anthropicUsageToLLMUsage = (u: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number | null; cache_creation_input_tokens?: number | null } | null | undefined): LLMUsage | undefined => {
+	if (!u) return undefined
+	const promptTokens = u.input_tokens
+	const completionTokens = u.output_tokens
+	return {
+		promptTokens,
+		completionTokens,
+		totalTokens: (promptTokens ?? 0) + (completionTokens ?? 0) || undefined,
+		cacheReadTokens: u.cache_read_input_tokens ?? undefined,
+		cacheWriteTokens: u.cache_creation_input_tokens ?? undefined,
+	}
+}
+const geminiUsageToLLMUsage = (u: { promptTokenCount?: number; candidatesTokenCount?: number; totalTokenCount?: number; cachedContentTokenCount?: number } | null | undefined): LLMUsage | undefined => {
+	if (!u) return undefined
+	return {
+		promptTokens: u.promptTokenCount,
+		completionTokens: u.candidatesTokenCount,
+		totalTokens: u.totalTokenCount,
+		cacheReadTokens: u.cachedContentTokenCount,
+	}
+}
+
+
+// --- streaming safety helpers ---
+
+// If a stream stalls (connection dropped, provider hang) with no data for this long,
+// abort it and surface a clear error instead of leaving the UI spinning forever. Models
+// doing extended internal reasoning can legitimately emit no stream chunk for well over
+// 90s, so callers with reasoning enabled should pass the longer REASONING variant instead.
+const STREAM_IDLE_TIMEOUT_MS = 90_000
+const STREAM_IDLE_TIMEOUT_MS_REASONING = 300_000
+const STREAM_IDLE_TIMEOUT_MESSAGE = 'Stream timed out — no data received for 90s'
+const STREAM_IDLE_TIMEOUT_MESSAGE_REASONING = 'Stream timed out — no data received for 300s'
+
+/**
+ * Guards the two terminal callbacks so that at most one of onFinalMessage/onError
+ * ever fires. Fixes two spurious-event races:
+ *   (a) a throw inside the onFinalMessage wrapper landing in a `.catch(onError)` and
+ *       firing an error AFTER the final message was already delivered, and
+ *   (b) an idle-timeout abort firing onError and then the aborted stream's own reject
+ *       firing a second onError.
+ */
+const makeTerminalGuards = (onFinalMessage: OnFinalMessage, onError: OnError) => {
+	let settled = false
+	const guardedOnFinalMessage: OnFinalMessage = (p) => { if (settled) return; settled = true; onFinalMessage(p) }
+	const guardedOnError: OnError = (p) => { if (settled) return; settled = true; onError(p) }
+	return { onFinalMessage: guardedOnFinalMessage, onError: guardedOnError, isSettled: () => settled }
+}
+
+/**
+ * Idle-timeout watchdog for a streaming loop. Call reset() when the stream starts and
+ * on every chunk received; call stop() once the stream completes or errors. If no
+ * chunk arrives within `timeoutMs` (default STREAM_IDLE_TIMEOUT_MS), onIdle() fires
+ * exactly once. Pass STREAM_IDLE_TIMEOUT_MS_REASONING when the request has reasoning
+ * enabled, since those models can go quiet between chunks far longer than 90s.
+ */
+const createStreamIdleTimeout = (onIdle: () => void, timeoutMs: number = STREAM_IDLE_TIMEOUT_MS) => {
+	let timer: ReturnType<typeof setTimeout> | undefined
+	let stopped = false
+	const stop = () => { stopped = true; if (timer) { clearTimeout(timer); timer = undefined } }
+	const reset = () => {
+		if (stopped) return
+		if (timer) clearTimeout(timer)
+		timer = setTimeout(() => { if (!stopped) { stopped = true; onIdle() } }, timeoutMs)
+	}
+	return { reset, stop }
 }
 
 
@@ -197,6 +275,8 @@ const _sendOpenAICompatibleFIM = async ({ messages: { prefix, suffix, stopTokens
 	}
 
 	const openai = await newOpenAICompatibleSDK({ providerName, settingsOfProvider, includeInPayload: additionalOpenAIPayload })
+	const controller = new AbortController()
+	_setAborter(() => controller.abort())
 	openai.completions
 		.create({
 			model: modelName,
@@ -204,7 +284,7 @@ const _sendOpenAICompatibleFIM = async ({ messages: { prefix, suffix, stopTokens
 			suffix: suffix,
 			stop: stopTokens,
 			max_tokens: 300,
-		})
+		}, { signal: controller.signal })
 		.then(async response => {
 			const fullText = response.choices[0]?.text ?? ''
 			onFinalMessage({ fullText, fullReasoning: '', anthropicReasoning: null });
@@ -308,22 +388,22 @@ const openAiCodexTools = (chatMode: ChatMode | null, mcpTools: InternalToolInfo[
 
 // convert LLM tool call to our tool format
 // convert LLM tool call to our tool format
-const rawToolCallObjOfParamsStr = (name: string, toolParamsStr: string, id: string): RawToolCallObj | null => {
+const rawToolCallObjOfParamsStr = (name: string, toolParamsStr: string, id: string, mcpToolNames?: Iterable<string>): RawToolCallObj | null => {
 	if (!name) {
 		return null;
 	}
-	const { rawParams, doneParams, isDone } = parsePartialToolParams(toolParamsStr);
+	const { rawParams, doneParams, isDone } = parsePartialToolParams(toolParamsStr, name, mcpToolNames);
 	return { id, name, rawParams, doneParams, isDone };
 }
 
 
-const rawToolCallObjOfAnthropicParams = (toolBlock: Anthropic.Messages.ToolUseBlock): RawToolCallObj | null => {
+const rawToolCallObjOfAnthropicParams = (toolBlock: Anthropic.Messages.ToolUseBlock, mcpToolNames?: Iterable<string>): RawToolCallObj | null => {
 	const { id, name, input } = toolBlock
 
 	if (input === null) return null
 	if (typeof input !== 'object') return null
 
-	const rawParams: RawToolParamsObj = normalizeToolParams(input as Record<string, unknown>)
+	const rawParams: RawToolParamsObj = normalizeToolParams(input as Record<string, unknown>, name, mcpToolNames)
 	return { id, name, rawParams, doneParams: Object.keys(rawParams), isDone: true }
 }
 
@@ -332,6 +412,8 @@ const rawToolCallObjOfAnthropicParams = (toolBlock: Anthropic.Messages.ToolUseBl
 
 
 const _sendOpenAICompatibleChat = async ({ messages, onText, onFinalMessage, onError, settingsOfProvider, modelSelectionOptions, modelName: modelName_, _setAborter, providerName, chatMode, separateSystemMessage, overridesOfModel, mcpTools, toolPolicy }: SendChatParams_Internal) => {
+	// So a real MCP tool named e.g. `read_file` isn't misrouted through builtin-Read param normalization.
+	const mcpToolNames = mcpTools?.map(t => t.name)
 	const {
 		modelName,
 		specialToolFormat,
@@ -368,7 +450,14 @@ const _sendOpenAICompatibleChat = async ({ messages, onText, onFinalMessage, onE
 	const cleanedMessages = messages.map(msg => {
 		if (msg.role !== 'user' || typeof (msg as any).content === 'string') return msg
 		const content = (msg as any).content as Array<{ type: string }>
+		const removedImageCount = content.filter((p: { type: string }) => p.type === 'image_url' || p.type === 'image').length
 		const nonImageContent = content.filter((p: { type: string }) => p.type !== 'image_url' && p.type !== 'image')
+		// Leave a breadcrumb instead of silently vanishing the image(s), so the model doesn't act on
+		// a message whose visual content disappeared without explanation.
+		if (removedImageCount > 0) {
+			const note = `[${removedImageCount} image${removedImageCount === 1 ? '' : 's'} omitted: this model does not support image input]`
+			nonImageContent.push({ type: 'text', text: note } as { type: string })
+		}
 		if (nonImageContent.length === 0) return { role: 'user', content: '' }
 		if (nonImageContent.length === 1 && nonImageContent[0].type === 'text') {
 			return { role: 'user', content: (nonImageContent[0] as { type: 'text'; text: string }).text }
@@ -376,10 +465,19 @@ const _sendOpenAICompatibleChat = async ({ messages, onText, onFinalMessage, onE
 		return { role: 'user', content: nonImageContent }
 	})
 
+	// Ask for usage on the final stream chunk. Gated to providers known to accept the
+	// option — some OpenAI-compatible endpoints reject unknown params, so we don't send
+	// it to arbitrary/self-hosted ones (openAICompatible, vLLM, lmStudio, azure, etc.).
+	const providersSupportingUsageStream = new Set<ProviderName>(['openAI', 'openRouter', 'groq', 'deepseek', 'xAI', 'mistral'])
+	const streamOptionsObj = providersSupportingUsageStream.has(providerName)
+		? { stream_options: { include_usage: true } } as const
+		: {}
+
 	const options: OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming = {
 		model: modelName,
 		messages: cleanedMessages as any,
 		stream: true,
+		...streamOptionsObj,
 		...nativeToolsObj,
 		...additionalOpenAIPayload
 		// max_completion_tokens: maxTokens,
@@ -401,19 +499,38 @@ const _sendOpenAICompatibleChat = async ({ messages, onText, onFinalMessage, onE
 		onFinalMessage = newOnFinalMessage
 	}
 
+	// ensure at most one terminal callback fires (no error after final message / after timeout)
+	{
+		const guards = makeTerminalGuards(onFinalMessage, onError)
+		onFinalMessage = guards.onFinalMessage
+		onError = guards.onError
+	}
+
 	let fullReasoningSoFar = ''
 	let fullTextSoFar = ''
 
 	// 🚀 FIX: Track multiple tools by index for parallel tool calling support
 	const toolsByIndex = new Map<number, { name: string; id: string; paramsStr: string }>()
 	const allTools: { name: string; id: string; paramsStr: string }[] = []
+	let usageSoFar: LLMUsage | undefined
 
 	openai.chat.completions
 		.create(options)
 		.then(async response => {
 			_setAborter(() => response.controller.abort())
+			// abort a stalled stream instead of hanging forever — extended-thinking models can
+			// legitimately go quiet between chunks far longer than the default idle window.
+			const idle = createStreamIdleTimeout(() => {
+				try { response.controller.abort() } catch { /* ignore */ }
+				onError({ message: reasoningInfo?.isReasoningEnabled ? STREAM_IDLE_TIMEOUT_MESSAGE_REASONING : STREAM_IDLE_TIMEOUT_MESSAGE, fullError: null })
+			}, reasoningInfo?.isReasoningEnabled ? STREAM_IDLE_TIMEOUT_MS_REASONING : STREAM_IDLE_TIMEOUT_MS)
+			idle.reset()
+			try {
 			// when receive text
 			for await (const chunk of response) {
+				idle.reset()
+				// token usage (present on the final chunk when stream_options.include_usage is set)
+				if (chunk.usage) usageSoFar = openAIUsageToLLMUsage(chunk.usage)
 				// message
 				const newText = chunk.choices[0]?.delta?.content ?? ''
 				fullTextSoFar += newText
@@ -439,7 +556,12 @@ const _sendOpenAICompatibleChat = async ({ messages, onText, onFinalMessage, onE
 				//    we already have arguments for the current tool (genuine sequential call).
 				const hasArgs = toolData && toolData.paramsStr.length > 0
 
-				const isIdMismatch = toolData && tool.id && toolData.id && !toolData.id.startsWith(tool.id) && !tool.id.startsWith(toolData.id)
+				// OpenAI streams each tool call's id whole in its first delta (ids are never
+				// fragmented across chunks — only `arguments` are), and toolData.id is set exactly
+				// once, so compare for exact equality. A prefix check false-matched a genuine new
+				// tool at the same index (e.g. "call_1" vs "call_12") and merged two sequential
+				// tool calls into one.
+				const isIdMismatch = toolData && tool.id && toolData.id && toolData.id !== tool.id
 
 				const incomingName = tool.function?.name ?? ''
 				const isNameUpdate = !!incomingName
@@ -486,11 +608,11 @@ const _sendOpenAICompatibleChat = async ({ messages, onText, onFinalMessage, onE
 				// For streaming, show first tool (if any) for backward compatibility
 				const firstTool = allTools[0]
 				const streamingToolCall = firstTool && firstTool.name ?
-					(rawToolCallObjOfParamsStr(firstTool.name, firstTool.paramsStr, firstTool.id) ?? { name: firstTool.name, rawParams: {}, isDone: false, doneParams: [], id: firstTool.id }) : undefined
+					(rawToolCallObjOfParamsStr(firstTool.name, firstTool.paramsStr, firstTool.id, mcpToolNames) ?? { name: firstTool.name, rawParams: {}, isDone: false, doneParams: [], id: firstTool.id }) : undefined
 
 				// 🚀 FIX: Pass ALL streaming tools (using allTools to preserve order and history)
 				const streamingToolCalls = allTools
-					.map(t => rawToolCallObjOfParamsStr(t.name, t.paramsStr, t.id) ?? { name: t.name, rawParams: {}, isDone: false, doneParams: [], id: t.id })
+					.map(t => rawToolCallObjOfParamsStr(t.name, t.paramsStr, t.id, mcpToolNames) ?? { name: t.name, rawParams: {}, isDone: false, doneParams: [], id: t.id })
 
 				// call onText
 				onText({
@@ -501,9 +623,12 @@ const _sendOpenAICompatibleChat = async ({ messages, onText, onFinalMessage, onE
 				})
 
 			}
+			} finally {
+				idle.stop()
+			}
 			// on final - extract ALL completed tools
 			const allToolCalls = allTools
-				.map(toolData => rawToolCallObjOfParamsStr(toolData.name, toolData.paramsStr, toolData.id))
+				.map(toolData => rawToolCallObjOfParamsStr(toolData.name, toolData.paramsStr, toolData.id, mcpToolNames))
 				.filter((tc): tc is RawToolCallObj => tc !== null)
 
 			const toolCall = allToolCalls[0] // First tool for backward compatibility
@@ -513,13 +638,11 @@ const _sendOpenAICompatibleChat = async ({ messages, onText, onFinalMessage, onE
 			if (toolCall) toolCallObj.toolCall = toolCall
 			if (toolCalls) toolCallObj.toolCalls = toolCalls
 
-			console.log(`[OpenAI SDK] Extracted ${allToolCalls.length} tool(s) from stream:`, allToolCalls.map(t => t.name).join(', '))
-
 			if (!fullTextSoFar && !fullReasoningSoFar && allToolCalls.length === 0) {
 				onError({ message: 'Orbit: Response from model was empty.', fullError: null })
 			}
 			else {
-				onFinalMessage({ fullText: fullTextSoFar, fullReasoning: fullReasoningSoFar, anthropicReasoning: null, ...toolCallObj });
+				onFinalMessage({ fullText: fullTextSoFar, fullReasoning: fullReasoningSoFar, anthropicReasoning: null, usage: usageSoFar, ...toolCallObj });
 			}
 		})
 		// when error/fail - this catches errors of both .create() and .then(for await)
@@ -679,6 +802,8 @@ const buildOpenAiCodexInput = (
 }
 
 const sendOpenAICodexChat = async ({ messages, onText, onFinalMessage, onError, modelSelectionOptions, modelName: modelName_, _setAborter, providerName, chatMode, separateSystemMessage, overridesOfModel, mcpTools, toolPolicy }: SendChatParams_Internal) => {
+	// So a real MCP tool named e.g. `read_file` isn't misrouted through builtin-Read param normalization.
+	const mcpToolNames = mcpTools?.map(t => t.name)
 	const {
 		modelName,
 		specialToolFormat,
@@ -849,6 +974,7 @@ const sendOpenAICodexChat = async ({ messages, onText, onFinalMessage, onError, 
 		let buffer = ''
 		let fullTextSoFar = ''
 		let fullReasoningSoFar = ''
+		let usageSoFar: LLMUsage | undefined
 		const toolCallsById = new Map<string, { id: string; name: string; args: string }>()
 		const toolCallOrder: string[] = []
 		let lastToolCallId: string | null = null
@@ -881,7 +1007,7 @@ const sendOpenAICodexChat = async ({ messages, onText, onFinalMessage, onError, 
 			const toolCalls = toolCallOrder
 				.map(id => toolCallsById.get(id))
 				.filter((tool): tool is { id: string; name: string; args: string } => !!tool)
-				.map(tool => rawToolCallObjOfParamsStr(tool.name, tool.args, tool.id))
+				.map(tool => rawToolCallObjOfParamsStr(tool.name, tool.args, tool.id, mcpToolNames))
 				.filter((toolCall): toolCall is RawToolCallObj => toolCall !== null)
 
 			onText({
@@ -996,6 +1122,14 @@ const sendOpenAICodexChat = async ({ messages, onText, onFinalMessage, onError, 
 				}
 				case 'response.done':
 				case 'response.completed':
+					if (event.response?.usage) {
+						usageSoFar = {
+							promptTokens: event.response.usage.input_tokens,
+							completionTokens: event.response.usage.output_tokens,
+							totalTokens: event.response.usage.total_tokens,
+							cacheReadTokens: event.response.usage.input_tokens_details?.cached_tokens,
+						}
+					}
 					if (!fullTextSoFar && event.response) {
 						appendOutputFromResponse(event.response)
 					}
@@ -1027,7 +1161,7 @@ const sendOpenAICodexChat = async ({ messages, onText, onFinalMessage, onError, 
 		const toolCalls = toolCallOrder
 			.map(id => toolCallsById.get(id))
 			.filter((tool): tool is { id: string; name: string; args: string } => !!tool)
-			.map(tool => rawToolCallObjOfParamsStr(tool.name, tool.args, tool.id))
+			.map(tool => rawToolCallObjOfParamsStr(tool.name, tool.args, tool.id, mcpToolNames))
 			.filter((toolCall): toolCall is RawToolCallObj => toolCall !== null)
 
 		if (!fullTextSoFar && !fullReasoningSoFar && toolCalls.length === 0) {
@@ -1039,6 +1173,7 @@ const sendOpenAICodexChat = async ({ messages, onText, onFinalMessage, onError, 
 			fullText: fullTextSoFar,
 			fullReasoning: fullReasoningSoFar,
 			anthropicReasoning: null,
+			usage: usageSoFar,
 			toolCall: toolCalls[0],
 			toolCalls: toolCalls.length ? toolCalls : undefined,
 		})
@@ -1114,6 +1249,8 @@ const anthropicTools = (chatMode: ChatMode | null, mcpTools: InternalToolInfo[] 
 
 // ------------ ANTHROPIC ------------
 const sendAnthropicChat = async ({ messages, providerName, onText, onFinalMessage, onError, settingsOfProvider, modelSelectionOptions, overridesOfModel, modelName: modelName_, _setAborter, separateSystemMessage, chatMode, mcpTools, toolPolicy }: SendChatParams_Internal) => {
+	// So a real MCP tool named e.g. `read_file` isn't misrouted through builtin-Read param normalization.
+	const mcpToolNames = mcpTools?.map(t => t.name)
 	const {
 		modelName,
 		specialToolFormat,
@@ -1129,10 +1266,17 @@ const sendAnthropicChat = async ({ messages, providerName, onText, onFinalMessag
 	// anthropic-specific - max tokens
 	const maxTokens = getReservedOutputTokenSpace(providerName, modelName_, { isReasoningEnabled: !!reasoningInfo?.isReasoningEnabled, overridesOfModel })
 
-	// tools
+	// tools — put a prompt-caching breakpoint on the LAST tool so the entire tools
+	// prefix (which is stable across turns) is cached. https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching
 	const potentialTools = anthropicTools(chatMode, mcpTools, toolPolicy)
-	const nativeToolsObj = potentialTools && specialToolFormat === 'anthropic-style' ?
-		{ tools: potentialTools, tool_choice: { type: 'auto' } } as const
+	const cachedTools = potentialTools && potentialTools.length > 0
+		? potentialTools.map((tool, i) =>
+			i === potentialTools.length - 1
+				? ({ ...tool, cache_control: { type: 'ephemeral' } } as Anthropic.Messages.ToolUnion)
+				: tool)
+		: potentialTools
+	const nativeToolsObj = cachedTools && specialToolFormat === 'anthropic-style' ?
+		{ tools: cachedTools, tool_choice: { type: 'auto' } } as const
 		: {}
 
 
@@ -1142,9 +1286,41 @@ const sendAnthropicChat = async ({ messages, providerName, onText, onFinalMessag
 		dangerouslyAllowBrowser: true
 	});
 
+	// prompt caching — send the system prompt as a cached block, and place cache
+	// breakpoints on the tail of the conversation (the final message plus the previous
+	// user message, so the cache survives one extra turn of history growth). Together
+	// with the tools breakpoint this stays within Anthropic's max of 4 breakpoints.
+	const cacheControl = { type: 'ephemeral' as const }
+	const systemParam = separateSystemMessage
+		? [{ type: 'text' as const, text: separateSystemMessage, cache_control: cacheControl }]
+		: undefined
+
+	const anthropicMessages = messages as AnthropicLLMChatMessage[]
+	const addCacheControlToLastBlock = (msg: AnthropicLLMChatMessage): AnthropicLLMChatMessage => {
+		const content = msg.content
+		// the Orbit block types don't declare cache_control, but the Anthropic SDK accepts it —
+		// hence the `as unknown as` casts (runtime prop is serialized verbatim)
+		if (typeof content === 'string') {
+			if (!content) return msg
+			return { ...msg, content: [{ type: 'text', text: content, cache_control: cacheControl }] } as unknown as AnthropicLLMChatMessage
+		}
+		if (Array.isArray(content) && content.length > 0) {
+			const newContent = content.map((block, i) => i === content.length - 1 ? { ...block, cache_control: cacheControl } : block)
+			return { ...msg, content: newContent } as unknown as AnthropicLLMChatMessage
+		}
+		return msg
+	}
+	const lastMsgIdx = anthropicMessages.length - 1
+	const prevUserIdx = anthropicMessages
+		.map((m, i) => (m.role === 'user' && i !== lastMsgIdx ? i : -1))
+		.filter(i => i >= 0)
+		.pop() ?? -1
+	const cacheIdxs = new Set<number>([lastMsgIdx, prevUserIdx].filter(i => i >= 0))
+	const cachedMessages = anthropicMessages.map((m, i) => cacheIdxs.has(i) ? addCacheControlToLastBlock(m) : m)
+
 	const stream = anthropic.messages.stream({
-		system: separateSystemMessage ?? undefined,
-		messages: messages as AnthropicLLMChatMessage[],
+		system: systemParam,
+		messages: cachedMessages,
 		model: modelName,
 		max_tokens: maxTokens ?? 4_096, // anthropic requires this
 		...includeInPayload,
@@ -1159,6 +1335,21 @@ const sendAnthropicChat = async ({ messages, providerName, onText, onFinalMessag
 		onFinalMessage = newOnFinalMessage
 	}
 
+	// ensure at most one terminal callback fires (no error after final message / after timeout)
+	{
+		const guards = makeTerminalGuards(onFinalMessage, onError)
+		onFinalMessage = guards.onFinalMessage
+		onError = guards.onError
+	}
+
+	// abort a stalled stream instead of hanging forever — extended-thinking models can
+	// legitimately go quiet between chunks far longer than the default idle window.
+	const idle = createStreamIdleTimeout(() => {
+		try { stream.controller.abort() } catch { /* ignore */ }
+		onError({ message: reasoningInfo?.isReasoningEnabled ? STREAM_IDLE_TIMEOUT_MESSAGE_REASONING : STREAM_IDLE_TIMEOUT_MESSAGE, fullError: null })
+	}, reasoningInfo?.isReasoningEnabled ? STREAM_IDLE_TIMEOUT_MS_REASONING : STREAM_IDLE_TIMEOUT_MS)
+	idle.reset()
+
 	// when receive text
 	let fullText = ''
 	let fullReasoning = ''
@@ -1167,7 +1358,7 @@ const sendAnthropicChat = async ({ messages, providerName, onText, onFinalMessag
 	const allToolCalls: { name: string; paramsStr: string; id: string }[] = []
 
 	const runOnText = () => {
-		const streamingToolCalls = allToolCalls.map(t => rawToolCallObjOfParamsStr(t.name, t.paramsStr, t.id) ?? {
+		const streamingToolCalls = allToolCalls.map(t => rawToolCallObjOfParamsStr(t.name, t.paramsStr, t.id, mcpToolNames) ?? {
 			name: t.name,
 			rawParams: {},
 			isDone: false,
@@ -1176,7 +1367,7 @@ const sendAnthropicChat = async ({ messages, providerName, onText, onFinalMessag
 		})
 
 		const firstTool = allToolCalls[0]
-		const toolCall = firstTool ? (rawToolCallObjOfParamsStr(firstTool.name, firstTool.paramsStr, firstTool.id) ?? { name: firstTool.name, rawParams: {}, isDone: false, doneParams: [], id: firstTool.id }) : undefined
+		const toolCall = firstTool ? (rawToolCallObjOfParamsStr(firstTool.name, firstTool.paramsStr, firstTool.id, mcpToolNames) ?? { name: firstTool.name, rawParams: {}, isDone: false, doneParams: [], id: firstTool.id }) : undefined
 
 		onText({
 			fullText,
@@ -1187,6 +1378,7 @@ const sendAnthropicChat = async ({ messages, providerName, onText, onFinalMessag
 	}
 	// there are no events for tool_use, it comes in at the end
 	stream.on('streamEvent', e => {
+		idle.reset()
 		// start block
 		if (e.type === 'content_block_start') {
 			if (e.content_block.type === 'text') {
@@ -1239,11 +1431,12 @@ const sendAnthropicChat = async ({ messages, providerName, onText, onFinalMessag
 
 	// on done - (or when error/fail) - this is called AFTER last streamEvent
 	stream.on('finalMessage', (response) => {
+		idle.stop()
 		const anthropicReasoning = response.content.filter(c => c.type === 'thinking' || c.type === 'redacted_thinking')
 		const tools = response.content.filter(c => c.type === 'tool_use')
 
 		// Use the authoritative tools from the final response
-		const finalToolCalls = tools.map(tool => rawToolCallObjOfAnthropicParams(tool)).filter((tc): tc is RawToolCallObj => tc !== null)
+		const finalToolCalls = tools.map(tool => rawToolCallObjOfAnthropicParams(tool, mcpToolNames)).filter((tc): tc is RawToolCallObj => tc !== null)
 
 		const toolCall = finalToolCalls[0] // First tool for backward compatibility
 		const toolCalls = finalToolCalls.length > 0 ? finalToolCalls : undefined
@@ -1254,12 +1447,11 @@ const sendAnthropicChat = async ({ messages, providerName, onText, onFinalMessag
 		if (toolCall) toolCallObj.toolCall = toolCall
 		if (toolCalls) toolCallObj.toolCalls = toolCalls
 
-		console.log(`[Anthropic SDK] Extracted ${finalToolCalls.length} tool(s) from finalMessage:`, finalToolCalls.map(t => t.name).join(', '))
-
-		onFinalMessage({ fullText, fullReasoning, anthropicReasoning, ...toolCallObj })
+		onFinalMessage({ fullText, fullReasoning, anthropicReasoning, usage: anthropicUsageToLLMUsage(response.usage), ...toolCallObj })
 	})
 	// on error
 	stream.on('error', (error) => {
+		idle.stop()
 		if (error instanceof Anthropic.APIError && error.status === 401) { onError({ message: invalidApiKeyMessage(providerName), fullError: error }) }
 		else { onError({ message: error + '', fullError: error }) }
 	})
@@ -1281,6 +1473,11 @@ const sendMistralFIM = ({ messages, onFinalMessage, onError, settingsOfProvider,
 	}
 
 	const mistral = new MistralCore({ apiKey: settingsOfProvider.mistral.apiKey })
+	// Abort support: cancel the HTTP request via fetchOptions.signal, and a settled flag
+	// so a late resolve/reject after abort can't fire a spurious callback.
+	const controller = new AbortController()
+	let settled = false
+	_setAborter(() => { settled = true; controller.abort() })
 	fimComplete(mistral,
 		{
 			model: modelName,
@@ -1289,10 +1486,11 @@ const sendMistralFIM = ({ messages, onFinalMessage, onError, settingsOfProvider,
 			stream: false,
 			maxTokens: 300,
 			stop: messages.stopTokens,
-		})
+		},
+		{ fetchOptions: { signal: controller.signal } })
 		.then(async response => {
+			if (settled) return;
 
-			// unfortunately, _setAborter() does not exist
 			let content = response?.ok ? response.value.choices?.[0]?.message?.content ?? '' : '';
 			const fullText = typeof content === 'string' ? content
 				: content.map(chunk => (chunk.type === 'text' ? chunk.text : '')).join('')
@@ -1300,6 +1498,7 @@ const sendMistralFIM = ({ messages, onFinalMessage, onError, settingsOfProvider,
 			onFinalMessage({ fullText, fullReasoning: '', anthropicReasoning: null });
 		})
 		.catch(error => {
+			if (settled) return;
 			onError({ message: error + '', fullError: error });
 		})
 }
@@ -1419,6 +1618,8 @@ const sendGeminiChat = async ({
 	mcpTools,
 	toolPolicy,
 }: SendChatParams_Internal) => {
+	// So a real MCP tool named e.g. `read_file` isn't misrouted through builtin-Read param normalization.
+	const mcpToolNames = mcpTools?.map(t => t.name)
 
 	if (providerName !== 'gemini') throw new Error(`Sending Gemini chat, but provider was ${providerName}`)
 
@@ -1459,12 +1660,46 @@ const sendGeminiChat = async ({
 		onFinalMessage = newOnFinalMessage
 	}
 
+	// ensure at most one terminal callback fires (no error after final message / after timeout)
+	{
+		const guards = makeTerminalGuards(onFinalMessage, onError)
+		onFinalMessage = guards.onFinalMessage
+		onError = guards.onError
+	}
+
+	// AbortController so cancel/timeout actually cancels the HTTP request (stream.return
+	// alone only stops local iteration).
+	const abortController = new AbortController()
+
 	// when receive text
 	let fullReasoningSoFar = ''
 	let fullTextSoFar = ''
 
-	// 🚀 FIX: Track multiple tools by ID for parallel tool calling support
-	const toolsById = new Map<string, { name: string; paramsStr: string }>()
+	// Track multiple tools for parallel tool calling support.
+	// Gemini frequently omits function-call ids; keying strictly by id (and skipping
+	// id-less calls) silently drops those tool calls. Key by real id when present, else
+	// by the call's position within its chunk's functionCalls array (mirroring how the
+	// OpenAI-compatible path dedupes streamed tool calls by `tool.index`) combined with
+	// name+args — this dedupes the same logical call re-emitted across chunks while still
+	// keeping two genuinely-parallel id-less calls to the same tool with identical args
+	// (e.g. two no-arg `list_files()` calls in one chunk) as distinct entries, since they
+	// occupy different positions. A fresh uuid is minted at extraction time for calls that
+	// never carried a real id.
+	const toolsByKey = new Map<string, { name: string; paramsStr: string; realId?: string }>()
+	let usageSoFar: LLMUsage | undefined
+
+	const ingestFunctionCall = (functionCall: { id?: string; name?: string; args?: Record<string, unknown> }, index: number) => {
+		const argsStr = functionCall.args ? JSON.stringify(functionCall.args) : ''
+		const key = functionCall.id || `${index}::${functionCall.name ?? 'tool'}::${argsStr}`
+		let toolData = toolsByKey.get(key)
+		if (!toolData) {
+			toolData = { name: '', paramsStr: '', realId: functionCall.id }
+			toolsByKey.set(key, toolData)
+		}
+		toolData.name = functionCall.name ?? toolData.name
+		if (argsStr) toolData.paramsStr = argsStr
+		if (functionCall.id) toolData.realId = functionCall.id
+	}
 
 	genAI.models.generateContentStream({
 		model: modelName,
@@ -1472,14 +1707,26 @@ const sendGeminiChat = async ({
 			systemInstruction: separateSystemMessage,
 			thinkingConfig: thinkingConfig,
 			tools: toolConfig,
+			abortSignal: abortController.signal,
 		},
 		contents: messages as GeminiLLMChatMessage[],
 	})
 		.then(async (stream) => {
-			_setAborter(() => { stream.return(fullTextSoFar)?.catch(() => {}); });
+			_setAborter(() => { abortController.abort(); stream.return(fullTextSoFar)?.catch(() => {}); });
 
+			// abort a stalled stream instead of hanging forever — extended-thinking models can
+			// legitimately go quiet between chunks far longer than the default idle window.
+			const idle = createStreamIdleTimeout(() => {
+				try { abortController.abort() } catch { /* ignore */ }
+				onError({ message: reasoningInfo?.isReasoningEnabled ? STREAM_IDLE_TIMEOUT_MESSAGE_REASONING : STREAM_IDLE_TIMEOUT_MESSAGE, fullError: null })
+			}, reasoningInfo?.isReasoningEnabled ? STREAM_IDLE_TIMEOUT_MS_REASONING : STREAM_IDLE_TIMEOUT_MS)
+			idle.reset()
+
+			try {
 			// Process the stream
 			for await (const chunk of stream) {
+				idle.reset()
+				if (chunk.usageMetadata) usageSoFar = geminiUsageToLLMUsage(chunk.usageMetadata)
 				// message
 				const newText = chunk.text ?? ''
 				fullTextSoFar += newText
@@ -1487,30 +1734,17 @@ const sendGeminiChat = async ({
 				// tool call - handle ALL function calls for parallel execution
 				const functionCalls = chunk.functionCalls
 				if (functionCalls && functionCalls.length > 0) {
-					for (const functionCall of functionCalls) {
-						const toolId = functionCall.id ?? ''
-						if (!toolId) continue
-
-						// Initialize tool tracking for this ID if not exists
-						if (!toolsById.has(toolId)) {
-							toolsById.set(toolId, { name: '', paramsStr: '' })
-						}
-
-						const toolData = toolsById.get(toolId)!
-						toolData.name = functionCall.name ?? toolData.name
-						// Accumulate params if they come in chunks, otherwise use the full args
-						if (functionCall.args) {
-							toolData.paramsStr = JSON.stringify(functionCall.args)
-						}
-					}
+					functionCalls.forEach((functionCall, index) => {
+						ingestFunctionCall(functionCall, index)
+					})
 				}
 
 				// (do not handle reasoning yet)
 
 				// For streaming, show first tool (if any) for backward compatibility
-				const firstTool = Array.from(toolsById.entries())[0]
-				const streamingToolCall = firstTool && firstTool[1].name ?
-					(rawToolCallObjOfParamsStr(firstTool[1].name, firstTool[1].paramsStr, firstTool[0]) ?? { name: firstTool[1].name, rawParams: {}, isDone: false, doneParams: [], id: firstTool[0] }) : undefined
+				const firstTool = Array.from(toolsByKey.values())[0]
+				const streamingToolCall = firstTool && firstTool.name ?
+					(rawToolCallObjOfParamsStr(firstTool.name, firstTool.paramsStr, firstTool.realId ?? '', mcpToolNames) ?? { name: firstTool.name, rawParams: {}, isDone: false, doneParams: [], id: firstTool.realId ?? '' }) : undefined
 
 				// call onText
 				onText({
@@ -1519,13 +1753,16 @@ const sendGeminiChat = async ({
 					toolCall: streamingToolCall,
 				})
 			}
+			} finally {
+				idle.stop()
+			}
 
 			// on final - extract ALL completed tools
-			const allToolCalls = Array.from(toolsById.entries())
-				.map(([toolId, toolData]) => {
-					// Generate ID if missing (Gemini sometimes doesn't provide IDs)
-					const finalId = toolId || generateUuid()
-					return rawToolCallObjOfParamsStr(toolData.name, toolData.paramsStr, finalId)
+			const allToolCalls = Array.from(toolsByKey.values())
+				.map((toolData) => {
+					// Mint an id if this call never carried a real one (Gemini omits ids).
+					const finalId = toolData.realId || generateUuid()
+					return rawToolCallObjOfParamsStr(toolData.name, toolData.paramsStr, finalId, mcpToolNames)
 				})
 				.filter((tc): tc is RawToolCallObj => tc !== null)
 
@@ -1536,12 +1773,10 @@ const sendGeminiChat = async ({
 			if (toolCall) toolCallObj.toolCall = toolCall
 			if (toolCalls) toolCallObj.toolCalls = toolCalls
 
-			console.log(`[Gemini SDK] Extracted ${allToolCalls.length} tool(s) from stream:`, allToolCalls.map(t => t.name).join(', '))
-
 			if (!fullTextSoFar && !fullReasoningSoFar && allToolCalls.length === 0) {
 				onError({ message: 'Orbit: Response from model was empty.', fullError: null })
 			} else {
-				onFinalMessage({ fullText: fullTextSoFar, fullReasoning: fullReasoningSoFar, anthropicReasoning: null, ...toolCallObj });
+				onFinalMessage({ fullText: fullTextSoFar, fullReasoning: fullReasoningSoFar, anthropicReasoning: null, usage: usageSoFar, ...toolCallObj });
 			}
 		})
 		.catch(error => {

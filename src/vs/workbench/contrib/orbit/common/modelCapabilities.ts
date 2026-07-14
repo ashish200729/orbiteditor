@@ -2056,14 +2056,18 @@ export const getIsReasoningEnabledState = (
 	_featureName: FeatureName,
 	providerName: ProviderName,
 	modelName: string,
-	_modelSelectionOptions: ModelSelectionOptions | undefined,
+	modelSelectionOptions: ModelSelectionOptions | undefined,
 	overridesOfModel: OverridesOfModel | undefined,
 ) => {
-	const { supportsReasoning } = getModelCapabilities(providerName, modelName, overridesOfModel).reasoningCapabilities || {}
+	const { supportsReasoning, canTurnOffReasoning } = getModelCapabilities(providerName, modelName, overridesOfModel).reasoningCapabilities || {}
 	if (!supportsReasoning) return false
 
-	// Force reasoning on when supported; ignore user overrides.
-	return true
+	// If the model can't turn reasoning off, it's always on regardless of the user's setting.
+	if (!canTurnOffReasoning) return true
+
+	// Otherwise honor the user's choice; default ON when they haven't set one (matches prior behavior
+	// for users who never touched the toggle, while now respecting those who explicitly turn it off).
+	return modelSelectionOptions?.reasoningEnabled ?? true
 }
 
 
@@ -2077,26 +2081,30 @@ export const getReservedOutputTokenSpace = (providerName: ProviderName, modelNam
 
 // used to force reasoning state (complex) into something simple we can just read from when sending a message
 export const getSendableReasoningInfo = (
-	_featureName: FeatureName,
+	featureName: FeatureName,
 	providerName: ProviderName,
 	modelName: string,
-	_modelSelectionOptions: ModelSelectionOptions | undefined,
+	modelSelectionOptions: ModelSelectionOptions | undefined,
 	overridesOfModel: OverridesOfModel | undefined,
 ): SendableReasoningInfo => {
 
 	const { reasoningSlider: reasoningBudgetSlider, supportsReasoning } = getModelCapabilities(providerName, modelName, overridesOfModel).reasoningCapabilities || {}
 	if (!supportsReasoning) return null
 
-	const isReasoningEnabled = true
+	// Honor the user's on/off choice (default ON) instead of forcing reasoning on unconditionally.
+	const isReasoningEnabled = getIsReasoningEnabledState(featureName, providerName, modelName, modelSelectionOptions, overridesOfModel)
+	if (!isReasoningEnabled) return null
 
-	// check for reasoning budget
+	// check for reasoning budget — honor the user's chosen budget, else the model default.
 	if (reasoningBudgetSlider?.type === 'budget_slider') {
-		return { type: 'budget_slider_value', isReasoningEnabled, reasoningBudget: reasoningBudgetSlider.default }
+		const reasoningBudget = modelSelectionOptions?.reasoningBudget ?? reasoningBudgetSlider.default
+		return { type: 'budget_slider_value', isReasoningEnabled: true, reasoningBudget }
 	}
 
-	// check for reasoning effort
+	// check for reasoning effort — honor the user's chosen effort, else the model default.
 	if (reasoningBudgetSlider?.type === 'effort_slider') {
-		return { type: 'effort_slider_value', isReasoningEnabled, reasoningEffort: reasoningBudgetSlider.default }
+		const reasoningEffort = modelSelectionOptions?.reasoningEffort ?? reasoningBudgetSlider.default
+		return { type: 'effort_slider_value', isReasoningEnabled: true, reasoningEffort }
 	}
 
 	return null

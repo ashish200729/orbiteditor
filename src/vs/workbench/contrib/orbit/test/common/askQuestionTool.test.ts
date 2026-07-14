@@ -148,13 +148,15 @@ suite('AskQuestionTool', () => {
 	});
 
 	suite('availableTools', () => {
-		test('AskQuestion in plan and agent, not in normal', () => {
+		test('AskQuestion available in every chat mode', () => {
+			// normalModeToolNames deliberately includes AskQuestion — it's a read-only
+			// clarification tool, useful in Chat (normal) mode too.
 			const plan = availableTools('plan', undefined) ?? [];
 			const agent = availableTools('agent', undefined) ?? [];
 			const normal = availableTools('normal', undefined) ?? [];
 			assert.ok(plan.some((t) => t.name === 'AskQuestion'));
 			assert.ok(agent.some((t) => t.name === 'AskQuestion'));
-			assert.ok(!normal.some((t) => t.name === 'AskQuestion'));
+			assert.ok(normal.some((t) => t.name === 'AskQuestion'));
 		});
 
 		test('denyDelegation does not remove AskQuestion', () => {

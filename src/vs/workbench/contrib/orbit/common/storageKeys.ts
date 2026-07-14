@@ -21,6 +21,10 @@ export const THREAD_STORAGE_KEY = 'void.chatThreadStorageII'
 
 export const OPT_OUT_KEY = 'void.app.optOutAll'
 
+// Persisted per-thread message queue (Cursor-style send-while-running queue). Survives reload/restart;
+// rehydrated as PAUSED so a cold thread never auto-fires. Stored as { [threadId]: QueuedUserMessage[] }.
+export const QUEUED_MESSAGES_STORAGE_KEY = 'orbit.chatQueuedMessagesI'
+
 export const GITHUB_AUTH_STORAGE_KEY = 'orbit.githubAuth.credentials'
 
 /**

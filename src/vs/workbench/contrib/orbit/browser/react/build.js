@@ -26,6 +26,19 @@ function doesPathExist(filePath) {
 	}
 }
 
+// scope-tailwind (`-o src2/`) copies src -> src2 but never removes files that were
+// deleted from src, so stale/renamed sources accumulate in src2/ and can be picked up
+// by the bundler. Wipe src2/ before each full (re)generation so it exactly mirrors src/.
+function cleanGeneratedSrc2() {
+	const src2Dir = path.join(__dirname, 'src2');
+	try {
+		fs.rmSync(src2Dir, { recursive: true, force: true });
+		console.log('🧹 Cleaned stale src2/ before generation.');
+	} catch (err) {
+		console.error('⚠️  Failed to clean src2/:', err);
+	}
+}
+
 /*
 
 This function finds `globalDesiredPath` given `localDesiredPath` and `currentPath`
@@ -87,6 +100,8 @@ const isWatch = args.includes('--watch') || args.includes('-w');
 
 if (isWatch) {
 	// this just builds it if it doesn't exist instead of waiting for the watcher to trigger
+	// Start each watch session from a clean src2/ so deleted sources don't linger.
+	cleanGeneratedSrc2();
 	// Check if src2/ exists; if not, do an initial scope-tailwind build
 	if (!fs.existsSync('src2')) {
 		try {
@@ -148,6 +163,9 @@ if (isWatch) {
 } else {
 	// Build mode
 	console.log('📦 Building...');
+
+	// Ensure src2/ is a faithful, stale-free mirror of src/ before generating.
+	cleanGeneratedSrc2();
 
 	// Run scope-tailwind once
 	execSync('npx scope-tailwind ./src -o src2/ -s void-scope -c styles.css -p "void-"', { stdio: 'inherit' });

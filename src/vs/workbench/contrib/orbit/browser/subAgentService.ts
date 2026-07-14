@@ -20,6 +20,7 @@ import { RawMCPToolCall } from '../common/mcpServiceTypes.js';
 import { IConvertToLLMMessageService } from './convertToLLMMessageService.js';
 import { IVoidNativeNotificationService } from './nativeNotificationService.js';
 import { withTimeout } from '../common/asyncUtils.js';
+import { CancellationTokenSource } from '../../../../base/common/cancellation.js';
 
 export interface ISubAgentService {
 	readonly _serviceBrand: undefined;
@@ -462,13 +463,23 @@ export class SubAgentService extends Disposable implements ISubAgentService {
 								appendChatMessage({ role: 'tool', type: 'tool_error', name: toolName, params: toolCall.rawParams as any, result: resultStr, content: resultStr, id: callId, rawParams: toolCall.rawParams, mcpServerName: mcpTool.mcpServerName });
 								continue;
 							}
-							// NOTE: callMCPTool has no abort primitive, so an in-flight MCP call cannot be interrupted; cancellation is only honored via _throwIfCancelled after it returns. cancelCurrent is intentionally left null here.
+							// Cancel the underlying MCP call on timeout (or if the run is cancelled) so it
+							// doesn't keep running server-side. The token is bridged to an AbortSignal in
+							// the MCP channel.
 							const mcpTimeoutMs = this._settingsService.state.globalSettings.mcpToolTimeoutMs ?? DEFAULT_MCP_TOOL_TIMEOUT_MS;
-							const mcpResult = await withTimeout(
-								this._mcpService.callMCPTool({ serverName: mcpTool.mcpServerName ?? 'unknown', toolName, params: toolCall.rawParams }),
-								mcpTimeoutMs,
-								toolName,
-							);
+							const mcpCts = new CancellationTokenSource();
+							const mcpTimer = setTimeout(() => mcpCts.cancel(), mcpTimeoutMs);
+							let mcpResult;
+							try {
+								mcpResult = await withTimeout(
+									this._mcpService.callMCPTool({ serverName: mcpTool.mcpServerName ?? 'unknown', toolName, params: toolCall.rawParams }, mcpCts.token),
+									mcpTimeoutMs,
+									toolName,
+								);
+							} finally {
+								clearTimeout(mcpTimer);
+								mcpCts.dispose(true);
+							}
 							this._throwIfCancelled(activeRun);
 							resultStr = this._mcpService.stringifyResult(mcpResult.result as RawMCPToolCall);
 						} else {

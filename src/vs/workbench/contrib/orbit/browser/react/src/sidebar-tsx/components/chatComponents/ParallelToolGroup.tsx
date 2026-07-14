@@ -3,7 +3,7 @@
  *  Licensed under the Apache License, Version 2.0. See LICENSE.txt for more information.
  *--------------------------------------------------------------------------------------------*/
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { AlertTriangle, ChevronRight } from 'lucide-react';
 import { ChatMessage } from '../../../../../../common/chatThreadServiceTypes.js';
 import { IsRunningType } from '../../../../../chatThreadService.js';
@@ -33,18 +33,20 @@ export const ParallelToolGroup = React.memo(({
 
 	const allToolsCompleted = messages.every(({ index }) => {
 		const msg = previousMessages[index];
-		if (msg.role !== 'tool') return false;
+		// Guard: `index` can go stale after the message list mutates (streaming/branching), leaving
+		// `previousMessages[index]` undefined — accessing `.role` unguarded would crash the render.
+		if (msg?.role !== 'tool') return false;
 		return msg.type === 'success' || msg.type === 'tool_error' || msg.type === 'rejected' || msg.type === 'invalid_params';
 	});
 
 	const hasErrors = messages.some(({ index }) => {
 		const msg = previousMessages[index];
-		return msg.role === 'tool' && (msg.type === 'tool_error' || msg.type === 'invalid_params');
+		return msg?.role === 'tool' && (msg.type === 'tool_error' || msg.type === 'invalid_params');
 	});
 
 	const toolStats = messages.reduce((acc, { index }) => {
 		const msg = previousMessages[index];
-		if (msg.role === 'tool') {
+		if (msg?.role === 'tool') {
 			if (msg.type === 'success') acc.success++;
 			else if (msg.type === 'tool_error') acc.error++;
 			else if (msg.type === 'rejected') acc.rejected++;
@@ -66,7 +68,7 @@ export const ParallelToolGroup = React.memo(({
 
 		messages.forEach(({ index }) => {
 			const msg = previousMessages[index];
-			if (msg.role === 'tool' && msg.type === 'success') {
+			if (msg?.role === 'tool' && msg.type === 'success') {
 				const toolName = (msg as any).name;
 				toolCounts[toolName] = (toolCounts[toolName] || 0) + 1;
 			}
@@ -107,7 +109,7 @@ export const ParallelToolGroup = React.memo(({
 	const showSummaryHeader = allToolsCompleted && messages.length > 0;
 	const statsTooltip = `${toolStats.success} succeeded${toolStats.error > 0 ? `, ${toolStats.error} failed` : ''}${toolStats.rejected > 0 ? `, ${toolStats.rejected} canceled` : ''}${toolStats.invalid > 0 ? `, ${toolStats.invalid} invalid` : ''}`;
 
-	const toolList = (
+	const toolList = useMemo(() => (
 		<div className="flex flex-col gap-0 min-w-0 w-full">
 			{messages.map(({ index, message }) => {
 				const messageKey = `tool-${index}-${message.role}-${(message as any).name || 'unknown'}`;
@@ -128,7 +130,7 @@ export const ParallelToolGroup = React.memo(({
 				);
 			})}
 		</div>
-	);
+	), [messages, previousMessages, currCheckpointIdx, isRunning, threadId, scrollActions]);
 
 	return (
 		<div className="flex flex-col my-0.5 min-w-0 w-full">
@@ -170,23 +172,7 @@ export const ParallelToolGroup = React.memo(({
 				</CollapsibleSection>
 			) : (
 				<div className="min-w-0 w-full">
-					{messages.map(({ index, message }) => {
-						const messageKey = `tool-${index}-${message.role}-${(message as any).name || 'unknown'}`;
-						return (
-							<div key={messageKey} className="min-w-0 w-full">
-								<ChatBubble
-									currCheckpointIdx={currCheckpointIdx}
-									chatMessage={previousMessages[index]}
-									messageIdx={index}
-									isCommitted={true}
-									chatIsRunning={isRunning}
-									threadId={threadId}
-									scrollActions={scrollActions}
-									toolRenderCompact={true}
-								/>
-							</div>
-						);
-					})}
+					{toolList}
 				</div>
 			)}
 		</div>

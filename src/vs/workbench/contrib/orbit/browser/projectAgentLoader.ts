@@ -22,6 +22,7 @@
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { registerWorkbenchContribution2, WorkbenchPhase } from '../../../common/contributions.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
+import { IWorkspaceTrustManagementService } from '../../../../platform/workspace/common/workspaceTrust.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import { URI } from '../../../../base/common/uri.js';
@@ -43,18 +44,45 @@ const MAX_AGENT_FILE_BYTES = 1_000_000;
 
 const AGENT_TYPE_RE = /^[a-zA-Z][a-zA-Z0-9_-]*$/;
 
+/** Same parsing rules as `parseSkillFrontmatter` (CRLF normalization, quote stripping, YAML
+ * block scalars for multi-line values like `whenToUse: >`), but generic over keys. */
 export function parseFrontmatter(content: string): { meta: Record<string, string>; body: string } {
-	const lines = content.split('\n');
-	if (lines[0]?.trim() !== '---') return { meta: {}, body: content };
+	// Normalize CRLF up front so Windows-authored agent files don't leave a trailing \r on
+	// values or on every body line.
+	const lines = content.replace(/\r\n?/g, '\n').split('\n');
+	if (lines[0]?.trim() !== '---') return { meta: {}, body: lines.join('\n') };
 	const endIdx = lines.findIndex((l, i) => i > 0 && l.trim() === '---');
-	if (endIdx === -1) return { meta: {}, body: content };
+	if (endIdx === -1) return { meta: {}, body: lines.join('\n') };
 	const meta: Record<string, string> = {};
-	for (let i = 1; i < endIdx; i++) {
-		const colonIdx = lines[i].indexOf(':');
+	let i = 1;
+	while (i < endIdx) {
+		const line = lines[i];
+		i++;
+		// Skip indented / list lines (children of a nested block we don't parse).
+		if (/^\s/.test(line) || line.trimStart().startsWith('-')) continue;
+		const colonIdx = line.indexOf(':');
 		if (colonIdx === -1) continue;
-		const key = lines[i].slice(0, colonIdx).trim();
-		const value = lines[i].slice(colonIdx + 1).trim();
-		if (key) meta[key] = value;
+		const key = line.slice(0, colonIdx).trim();
+		if (!key) continue;
+		let value = line.slice(colonIdx + 1).trim();
+
+		// YAML block scalar (`>` folded / `|` literal, optional chomping indicator) — only when
+		// an indented/blank continuation line actually follows.
+		const blockMatch = value.match(/^([|>])([+-]?)\d*$/);
+		if (blockMatch && i < endIdx && (lines[i].trim() === '' || /^\s/.test(lines[i]))) {
+			const folded = blockMatch[1] === '>';
+			const blockLines: string[] = [];
+			while (i < endIdx && (lines[i].trim() === '' || /^\s/.test(lines[i]))) {
+				blockLines.push(lines[i].replace(/^\s+/, ''));
+				i++;
+			}
+			while (blockLines.length && blockLines[blockLines.length - 1] === '') blockLines.pop();
+			value = (folded ? blockLines.join(' ') : blockLines.join('\n')).trim();
+		} else if ((value.startsWith('"') && value.endsWith('"') && value.length >= 2) || (value.startsWith("'") && value.endsWith("'") && value.length >= 2)) {
+			value = value.slice(1, -1);
+		}
+
+		meta[key] = value;
 	}
 	return { meta, body: lines.slice(endIdx + 1).join('\n').trim() };
 }
@@ -93,15 +121,19 @@ export async function loadAgentsFromDir(
 				const { meta, body } = parseFrontmatter(content.value.toString());
 				const agentType = meta['agentType']?.trim();
 				const whenToUse = meta['whenToUse']?.trim();
-				if (!agentType || !whenToUse || !body) continue;
 
-				if (!AGENT_TYPE_RE.test(agentType)) {
+				// A present-but-empty/invalid agentType is a malformed agent file, not a
+				// non-agent .md — validate emptiness and the regex together and log why we
+				// skip it, so it's debuggable instead of being dropped silently below.
+				if (meta['agentType'] !== undefined && (!agentType || !AGENT_TYPE_RE.test(agentType))) {
 					console.warn(
 						`[ProjectAgentLoader] Skipping ${child.resource.fsPath}: ` +
-						`invalid agentType "${agentType}" (must match /^[a-zA-Z][a-zA-Z0-9_-]*$/).`
+						`invalid agentType "${agentType ?? ''}" (must match /^[a-zA-Z][a-zA-Z0-9_-]*$/).`
 					);
 					continue;
 				}
+
+				if (!agentType || !whenToUse || !body) continue;
 
 				const permissionModeRaw = meta['permissionMode']?.trim();
 				const permissionMode = permissionModeRaw && VALID_PERMISSION_MODES.has(permissionModeRaw)
@@ -146,6 +178,7 @@ class ProjectAgentLoader extends Disposable {
 		@IFileService private readonly _fileService: IFileService,
 		@INativeEnvironmentService private readonly _environmentService: INativeEnvironmentService,
 		@IVoidSettingsService private readonly _settingsService: IVoidSettingsService,
+		@IWorkspaceTrustManagementService private readonly _workspaceTrust: IWorkspaceTrustManagementService,
 	) {
 		super();
 		this._load();
@@ -159,20 +192,27 @@ class ProjectAgentLoader extends Disposable {
 			setDisabledAgentTypes(this._settingsService.state.globalSettings.disabledAgentTypes ?? []);
 		}));
 
+		await this._scanAgents();
+		// Re-scan when workspace trust changes so project agents appear/disappear accordingly.
+		this._register(this._workspaceTrust.onDidChangeTrust(() => { void this._scanAgents(); }));
+	}
+
+	private async _scanAgents(): Promise<void> {
 		// Load user-level agents from ~/.orbit/agents/
 		const userAgentsDir = URI.joinPath(this._environmentService.userHome, '.orbit', 'agents');
 		const userAgents = await loadAgentsFromDir(userAgentsDir, 'user', this._fileService);
-		if (userAgents.length > 0) setUserAgents(userAgents);
+		setUserAgents(userAgents); // unconditional so removing all user agents clears stale entries
 
-		// Load project-level agents from .orbit/agents/ in each workspace folder
-		const folders = this._workspaceContextService.getWorkspace().folders;
+		// Load project-level agents — gated on workspace trust (untrusted repos must not register
+		// agent types whose system prompts get injected into the model context).
 		const projectAgents: SubAgentDefinition[] = [];
-		for (const folder of folders) {
-			const projectAgentsDir = URI.joinPath(folder.uri, '.orbit', 'agents');
-			const agents = await loadAgentsFromDir(projectAgentsDir, 'project', this._fileService);
-			projectAgents.push(...agents);
+		if (this._workspaceTrust.isWorkspaceTrusted()) {
+			for (const folder of this._workspaceContextService.getWorkspace().folders) {
+				const projectAgentsDir = URI.joinPath(folder.uri, '.orbit', 'agents');
+				projectAgents.push(...await loadAgentsFromDir(projectAgentsDir, 'project', this._fileService));
+			}
 		}
-		if (projectAgents.length > 0) setProjectAgents(projectAgents);
+		setProjectAgents(projectAgents);
 	}
 }
 

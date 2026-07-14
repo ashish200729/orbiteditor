@@ -150,6 +150,13 @@ export class VoidCommandBarService extends Disposable implements IVoidCommandBar
 
 		// state updaters
 		this._register(this._editCodeService.onDidAddOrDeleteDiffZones(e => {
+			// A diffZone may fire for a URI whose model wasn't registered yet (added before
+			// onModelAdded ran). Track it now so the loop below can create its state, using
+			// the same dedup key as initializeModel to avoid a duplicate fsPath in the set.
+			if (!registeredModelURIs.has(e.uri.fsPath)) {
+				registeredModelURIs.add(e.uri.fsPath)
+				this._listenToTheseURIs.add(e.uri)
+			}
 			for (const uri of this._listenToTheseURIs) {
 				if (e.uri.fsPath !== uri.fsPath) continue
 				// --- sortedURIs: delete if empty, add if not in state yet
@@ -332,10 +339,12 @@ export class VoidCommandBarService extends Disposable implements IVoidCommandBar
 			...opts
 		}
 
-		// make sure diffIdx is always correct
-		if (newState.diffIdx !== null && newState.diffIdx > newState.sortedDiffIds.length) {
-			newState.diffIdx = newState.sortedDiffIds.length
-			if (newState.diffIdx <= 0) newState.diffIdx = null
+		// make sure diffIdx is always correct. The last valid index is length-1, so
+		// diffIdx === length is already past the end — clamp it to the last diff (or null
+		// when there are none) rather than leaving it pointing at an out-of-bounds slot.
+		if (newState.diffIdx !== null && newState.diffIdx >= newState.sortedDiffIds.length) {
+			newState.diffIdx = newState.sortedDiffIds.length - 1
+			if (newState.diffIdx < 0) newState.diffIdx = null
 		}
 
 		this.stateOfURI = {

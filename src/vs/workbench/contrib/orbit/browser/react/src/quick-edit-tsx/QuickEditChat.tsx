@@ -71,7 +71,10 @@ export const QuickEditChat = ({
 			startBehavior: 'keep-conflicts',
 		} as const
 
-		await editCodeService.callBeforeApplyOrEdit(opts)
+		// callBeforeApplyOrEdit takes the target URI (it initializes + saves the model),
+		// not the StartApplyingOpts — resolve it from the Ctrl+K zone
+		const ctrlKZoneUri = editCodeService.diffAreaOfId[diffareaid]?._URI
+		if (ctrlKZoneUri) await editCodeService.callBeforeApplyOrEdit(ctrlKZoneUri)
 		const [newApplyingUri, applyDonePromise] = editCodeService.startApplying(opts) ?? []
 		// catch any errors by interrupting the stream
 		applyDonePromise?.catch(e => { if (newApplyingUri) editCodeService.interruptCtrlKStreaming({ diffareaid }) })

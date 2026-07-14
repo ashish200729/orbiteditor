@@ -47,6 +47,36 @@ export const parseOptionalBool = (raw: unknown, dflt: boolean): boolean => {
 	throw new Error(`Invalid LLM output format: expected boolean, got ${JSON.stringify(raw)}.`);
 };
 
+/**
+ * Reject pathological regex patterns that can cause catastrophic backtracking
+ * (ReDoS) or that are simply too long. The pattern is run against the live
+ * terminal output stream on every onData, so a pattern like `(a+)+$` could pin
+ * the main thread for seconds. Also verifies the pattern actually compiles so an
+ * invalid regex surfaces as a clean tool error instead of throwing later.
+ */
+export const validateShellRegexPattern = (argName: string, pattern: string): void => {
+	if (pattern.length > 1024) {
+		throw new Error(`Invalid ${argName}: pattern is too long (${pattern.length} chars, max 1024).`);
+	}
+	// Block nested quantifiers (e.g. "(a+)+", "(\w*)*") — a classic ReDoS pattern.
+	if (/\([^)]*[+*][^)]*\)[+*]/.test(pattern) || /\([^)]*[+*][^)]*\)\{/.test(pattern)) {
+		throw new Error(`Invalid ${argName}: nested quantifiers (e.g. "(a+)+") are not allowed (ReDoS risk).`);
+	}
+	// Block alternation-based catastrophic patterns: many alternatives inside a
+	// quantifier (e.g. "(a|b|c|d|e|f)+", "(a|aa)*") cause O(2^n) backtracking.
+	// A group with 3+ alternations followed by a quantifier is a strong heuristic
+	// for alternation-based ReDoS.
+	if (/\([^)]+\|[^)]+\|[^)]*\)[*+]/.test(pattern) || /\([^)]+\|[^)]+\|[^)]*\)\{/.test(pattern)) {
+		throw new Error(`Invalid ${argName}: alternation with 3+ branches inside a quantifier is not allowed (ReDoS risk).`);
+	}
+	try {
+		// Matches the flags the terminal service uses to run the pattern.
+		void new RegExp(pattern, 'm');
+	} catch (e) {
+		throw new Error(`Invalid ${argName}: not a valid regular expression. ${e instanceof Error ? e.message : String(e)}`);
+	}
+};
+
 export type NotifyOnOutput = { pattern: string; debounceMs: number; reason: string };
 
 export const parseNotifyOnOutput = (raw: unknown): NotifyOnOutput | null => {
@@ -69,16 +99,7 @@ export const parseNotifyOnOutput = (raw: unknown): NotifyOnOutput | null => {
 	// catastrophic backtracking (ReDoS). The notify matcher runs the pattern
 	// against the live terminal output stream, so a malicious or accidental
 	// pattern like `(a+)+$` could pin the main thread for seconds.
-	if (pattern.length > 1024) {
-		throw new Error(
-			`Invalid notify_on_output.pattern: pattern is too long (${pattern.length} chars, max 1024).`
-		);
-	}
-	if (/\([^)]*[+*][^)]*\)[+*]/.test(pattern) || /\([^)]*[+*][^)]*\)\{/.test(pattern)) {
-		throw new Error(
-			`Invalid notify_on_output.pattern: nested quantifiers (e.g. "(a+)+") are not allowed (ReDoS risk).`
-		);
-	}
+	validateShellRegexPattern('notify_on_output.pattern', pattern);
 	const debounceMs = parseOptionalIntInRange('notify_on_output.debounce_ms', obj.debounce_ms, MIN_NOTIFY_DEBOUNCE_MS, MAX_SHELL_BLOCK_UNTIL_MS, MIN_NOTIFY_DEBOUNCE_MS);
 	const reason = validateShellStr('notify_on_output.reason', obj.reason);
 	return { pattern, debounceMs, reason };
@@ -99,6 +120,12 @@ export const validateAwaitShellParams = (params: RawToolParamsObj): BuiltinToolC
 	const shellId = validateShellOptionalStr('shell_id', params.shell_id);
 	const blockUntilMs = parseOptionalIntInRange('block_until_ms', params.block_until_ms, MIN_SHELL_BLOCK_UNTIL_MS, MAX_SHELL_BLOCK_UNTIL_MS, DEFAULT_AWAIT_SHELL_BLOCK_UNTIL_MS);
 	const pattern = validateShellOptionalStr('pattern', params.pattern);
+	// AwaitShell.pattern is compiled with `new RegExp(pattern, 'm')` and run
+	// against the live buffer on every onData — same ReDoS/invalid-regex risk as
+	// notify_on_output.pattern, so apply the same guard here.
+	if (pattern !== null) {
+		validateShellRegexPattern('pattern', pattern);
+	}
 	return { shellId, blockUntilMs, pattern };
 };
 

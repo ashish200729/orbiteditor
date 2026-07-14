@@ -184,7 +184,34 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 	//#region Properties
 
 	readonly mainContainer = document.createElement('div');
-	get activeContainer() { return this.getContainerFromDocument(getActiveDocument()); }
+
+	/**
+	 * The OS-reported id of the currently focused window (main or auxiliary),
+	 * tracked from `hostService.onDidChangeActiveWindow`. This is the authoritative
+	 * signal for "which window is active" — unlike the DOM `hasFocus()` scan used by
+	 * `getActiveDocument()`, it is correct for auxiliary windows whose focusable
+	 * content is realm-bound to another window's document (e.g. Orbit's Agents
+	 * window, which mounts React through delegated node factories). Relying on
+	 * `hasFocus()` there resolves the active container to the MAIN window, so quick
+	 * input / dialogs / context menus / notifications opened from the Agents window
+	 * wrongly render into — and raise — the main IDE. `undefined` until the first
+	 * focus event, in which case we fall back to the DOM scan.
+	 */
+	private _activeWindowId: number | undefined = undefined;
+
+	get activeContainer(): HTMLElement {
+		if (typeof this._activeWindowId === 'number') {
+			for (const { window } of getWindows()) {
+				if (window.vscodeWindowId === this._activeWindowId) {
+					return this.getContainerFromDocument(window.document);
+				}
+			}
+		}
+
+		// Fallback: DOM focus detection. Used at startup before any focus event has
+		// fired, or when the tracked window has since unregistered (e.g. closed).
+		return this.getContainerFromDocument(getActiveDocument());
+	}
 	get containers(): Iterable<HTMLElement> {
 		const containers: HTMLElement[] = [];
 		for (const { window } of getWindows()) {
@@ -421,7 +448,10 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 
 		// Window active / focus changes
 		this._register(this.hostService.onDidChangeFocus(focused => this.onWindowFocusChanged(focused)));
-		this._register(this.hostService.onDidChangeActiveWindow(() => this.onActiveWindowChanged()));
+		this._register(this.hostService.onDidChangeActiveWindow(windowId => {
+			this._activeWindowId = windowId;
+			this.onActiveWindowChanged();
+		}));
 
 		// WCO changes
 		if (isWeb && typeof (navigator as any).windowControlsOverlay === 'object') {

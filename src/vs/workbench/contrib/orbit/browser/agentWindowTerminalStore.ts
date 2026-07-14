@@ -10,7 +10,7 @@ import { createDecorator } from '../../../../platform/instantiation/common/insta
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IProcessDetails } from '../../../../platform/terminal/common/terminalProcess.js';
-import { ITerminalBackend } from '../../../../platform/terminal/common/terminal.js';
+import { ITerminalBackend, TerminalExitReason } from '../../../../platform/terminal/common/terminal.js';
 import { ITerminalInstance, ITerminalInstanceService } from '../../terminal/browser/terminal.js';
 import { AGENT_WINDOW_TERMINAL_STORAGE_KEY } from '../common/storageKeys.js';
 
@@ -67,6 +67,27 @@ export interface IAgentWindowTerminalStore {
 
 	/** Remove an entry (e.g. when the user closes the tab and chooses to kill the shell). */
 	removeEntry(id: string): void;
+
+	/**
+	 * True while the agents window is tearing down (set by AgentWindowService
+	 * around the React unmount). TerminalPanel cleanups check this to detach —
+	 * keeping the pty AND the persisted entry alive for the next window open —
+	 * instead of treating the unmount like a user tab-close (which kills the
+	 * shell and drops the entry).
+	 */
+	readonly windowTeardownActive: boolean;
+
+	/** See {@link windowTeardownActive}. */
+	setWindowTeardown(active: boolean): void;
+
+	/**
+	 * Called after the agents window has fully closed. Clears the once-per-open
+	 * reattach guard so the NEXT window open re-runs reattachOnStartup (the
+	 * cached promise would otherwise report the first open's results forever),
+	 * and detaches any reattached-but-unclaimed instances without killing their
+	 * ptys.
+	 */
+	resetReattachSession(): void;
 }
 
 export interface IAgentWindowTerminalHandle extends IDisposable {
@@ -105,6 +126,29 @@ class AgentWindowTerminalStore extends Disposable implements IAgentWindowTermina
 	 * if a persisted tab never reopens (e.g. the user closed the workspace).
 	 */
 	private readonly _reattachedInstances = new Map<string, ITerminalInstance>();
+	private _windowTeardownActive = false;
+
+	get windowTeardownActive(): boolean {
+		return this._windowTeardownActive;
+	}
+
+	setWindowTeardown(active: boolean): void {
+		this._windowTeardownActive = active;
+	}
+
+	resetReattachSession(): void {
+		this._reattachPromise = undefined;
+		for (const instance of this._reattachedInstances.values()) {
+			// Unclaimed reattached instance: detach so the pty survives for the
+			// next reattach — dispose() would kill it.
+			try {
+				instance.detachProcessAndDispose(TerminalExitReason.User);
+			} catch {
+				try { instance.dispose(); } catch { /* ignore */ }
+			}
+		}
+		this._reattachedInstances.clear();
+	}
 
 	constructor(
 		@IStorageService private readonly _storageService: IStorageService,
@@ -211,6 +255,13 @@ class AgentWindowTerminalStore extends Disposable implements IAgentWindowTermina
 		if (this._entries.length === 0) {
 			return [];
 		}
+		// Snapshot the persisted entries NOW: by the time listProcesses resolves,
+		// `this._entries` can contain a terminal freshly created THIS session
+		// (registerTerminal pushes into the same array and its live pty shows up
+		// in listProcesses) — reattaching that one would attach a second,
+		// never-claimed instance to a live pty.
+		const snapshot = this._entries.slice();
+		const snapshotIds = new Set(snapshot.map(e => e.id));
 		const backend = await this._resolveLocalBackend();
 		if (!backend) {
 			this._logService.warn('[agentWindowTerminalStore] No local terminal backend; cannot reattach.');
@@ -234,7 +285,7 @@ class AgentWindowTerminalStore extends Disposable implements IAgentWindowTermina
 
 		const surviving: IAgentWindowTerminalEntry[] = [];
 
-		for (const entry of this._entries) {
+		for (const entry of snapshot) {
 			if (entry.ptyId === undefined || !alive.has(entry.ptyId)) {
 				// The pty died (or never spawned). The caller will create a fresh shell.
 				entry.ptyId = undefined;
@@ -261,9 +312,11 @@ class AgentWindowTerminalStore extends Disposable implements IAgentWindowTermina
 			}
 		}
 
-		this._entries = surviving;
+		// Keep any entries registered while we were awaiting (fresh terminals
+		// created this session) — they were not part of the snapshot.
+		this._entries = [...surviving, ...this._entries.filter(e => !snapshotIds.has(e.id))];
 		this._persist();
-		return this._entries.slice();
+		return surviving.slice();
 	}
 
 	takeReattachedInstance(id: string): ITerminalInstance | undefined {

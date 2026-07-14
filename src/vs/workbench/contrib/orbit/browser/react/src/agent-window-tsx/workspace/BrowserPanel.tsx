@@ -372,9 +372,17 @@ export const BrowserPanel = ({ tab, isActive, overlayOpen = false, setTitle, clo
 						notificationService.info('Element added to chat. Switch to the chat to reference it.');
 					}
 				} catch (e) {
-					notificationService.error(`Element picker failed: ${String((e as Error)?.message ?? e)}`);
+					if (!disposed) {
+						notificationService.error(`Element picker failed: ${String((e as Error)?.message ?? e)}`);
+					}
 				} finally {
-					setPickerChrome(false);
+					// The pick can resolve after the tab closed (unmount tears down the
+					// picker) — don't setState on an unmounted component.
+					if (!disposed) {
+						setPickerChrome(false);
+					} else {
+						pickerActiveRef.current = false;
+					}
 					pickerInFlight = null;
 				}
 			})();
@@ -423,7 +431,12 @@ export const BrowserPanel = ({ tab, isActive, overlayOpen = false, setTitle, clo
 		if (typeof win.ResizeObserver === 'function') {
 			ro = new win.ResizeObserver(() => {
 				void tryOpen();
-				scheduleSync();
+				// While the tab is hidden the native view is already setVisible(false),
+				// so syncView would only re-hide it. Skip the IPC churn on hidden
+				// resizes; the activation effect re-measures and re-syncs bounds on show.
+				if (isActiveRef.current && !overlayOpenRef.current) {
+					scheduleSync();
+				}
 			});
 			ro.observe(host);
 		}
@@ -530,9 +543,22 @@ export const BrowserPanel = ({ tab, isActive, overlayOpen = false, setTitle, clo
 			}
 			lastBoundsRef.current = rect;
 			void (async () => {
-				await inst.setBounds(id, rect);
-				await inst.setVisible(id, true);
-				await inst.bringToFront(id);
+				try {
+					await inst.setBounds(id, rect);
+					// The tab may have been switched away (or the view swapped/closed)
+					// during the IPC round-trip — revealing then would composite the
+					// native view OVER whatever panel replaced it and steal its
+					// clicks, with nothing to re-hide it until the next layout event.
+					if (proxyRef.current !== inst || !isActiveRef.current || overlayOpenRef.current) {
+						await inst.setVisible(id, false);
+						return;
+					}
+					await inst.setVisible(id, true);
+					await inst.bringToFront(id);
+					if (proxyRef.current !== inst || !isActiveRef.current || overlayOpenRef.current) {
+						await inst.setVisible(id, false);
+					}
+				} catch { /* view torn down mid-flight */ }
 			})();
 		}
 	} else {

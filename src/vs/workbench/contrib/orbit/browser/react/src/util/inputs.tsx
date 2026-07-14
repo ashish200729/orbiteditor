@@ -347,8 +347,10 @@ export const VoidInputBox2 = forwardRef<HTMLTextAreaElement, InputBox2Props>(fun
 		const startPos = textarea.selectionStart;
 		const endPos = textarea.selectionEnd;
 
-		// Get the text before the cursor, excluding the @ symbol that triggered the menu
-		const textBeforeCursor = textarea.value.substring(0, startPos - 1);
+		// Get the text before the cursor, excluding the @ symbol that triggered the menu.
+		// Clamp at 0: if the cursor is at position 0 there is no preceding "@" to remove, and
+		// substring(0, -1) would silently swallow characters instead of being a no-op.
+		const textBeforeCursor = textarea.value.substring(0, Math.max(0, startPos - 1));
 		const textAfterCursor = textarea.value.substring(endPos);
 
 		// Replace the text including the @ symbol with the selected option
@@ -459,6 +461,9 @@ export const VoidInputBox2 = forwardRef<HTMLTextAreaElement, InputBox2Props>(fun
 	}
 
 	const debounceTimerRef = useRef<number | null>(null);
+	// Monotonic token: an in-flight getOptionsAtPath may resolve out of order (a debounced fetch
+	// still awaiting when a newer keystroke fires its own). Only the newest request may commit.
+	const pathRequestSeqRef = useRef(0);
 
 	useEffect(() => {
 		// Cleanup function to cancel any pending timeouts when unmounting
@@ -481,9 +486,11 @@ export const VoidInputBox2 = forwardRef<HTMLTextAreaElement, InputBox2Props>(fun
 		}
 
 		currentPathRef.current = JSON.stringify(optionPath);
+		const seq = ++pathRequestSeqRef.current;
 
 		const fetchOptions = async () => {
 			const newOpts = await getOptionsAtPath(accessor, optionPath, newStr) || [];
+			if (seq !== pathRequestSeqRef.current) { return; } // superseded by a newer query
 			if (currentPathRef.current !== JSON.stringify(optionPath)) { return; }
 			setOptions(newOpts);
 			setOptionIdx(0);
@@ -837,7 +844,10 @@ export const VoidInputBox2 = forwardRef<HTMLTextAreaElement, InputBox2Props>(fun
 					return;
 				}
 
-				if (e.key === 'Backspace') { // TODO allow user to undo this.
+				// Ignore Backspace mid-IME-composition: the committed `value` is stale during composition,
+				// so acting on it here would pop staging selections while the user is only editing the
+				// in-progress composition buffer. Let the IME consume the key.
+				if (e.key === 'Backspace' && !e.nativeEvent.isComposing) { // TODO allow user to undo this.
 					if (!e.currentTarget.value || (e.currentTarget.selectionStart === 0 && e.currentTarget.selectionEnd === 0)) { // if there is no text or cursor is at position 0, remove a selection
 						if (e.metaKey || e.ctrlKey) { // Ctrl+Backspace = remove all
 							chatThreadService.popStagingSelections(Number.MAX_SAFE_INTEGER)

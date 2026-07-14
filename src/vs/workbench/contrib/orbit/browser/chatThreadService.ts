@@ -13,15 +13,17 @@ import { Emitter, Event } from '../../../../base/common/event.js';
 import { ILLMMessageService } from '../common/sendLLMMessageService.js';
 import { chat_userMessageContent, isABuiltinToolName, isLLMHiddenBuiltinToolName, llmVisibleBuiltinToolNames, readOnlyToolNames, resolveBuiltinToolName, resolveBuiltinToolNameLoose, InternalToolInfo } from '../common/prompt/prompts.js';
 import { parseSlashTokenNames } from '../common/slashCommands/slashTokens.js';
-import { AnthropicReasoning, getErrorMessage, RawToolCallObj, RawToolParamsObj } from '../common/sendLLMMessageTypes.js';
+import { AnthropicReasoning, getErrorMessage, LLMUsage, RawToolCallObj, RawToolParamsObj } from '../common/sendLLMMessageTypes.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { FeatureName, ModelSelection, ModelSelectionOptions } from '../common/orbitSettingsTypes.js';
+import { getModelCapabilities } from '../common/modelCapabilities.js';
+import { selectCompactionBoundary } from '../common/compactionHelpers.js';
 import { IVoidSettingsService } from '../common/orbitSettingsService.js';
 import { withTimeout } from '../common/asyncUtils.js';
-import { approvalTypeOfBuiltinToolName, BuiltinToolCallParams, BuiltinToolResultType, IToolsService, ToolCallParams, ToolName, ToolResult } from '../common/toolsServiceTypes.js';
+import { approvalTypeOfBuiltinToolName, BuiltinToolCallParams, BuiltinToolName, BuiltinToolResultType, IToolsService, ToolCallParams, ToolName, ToolResult } from '../common/toolsServiceTypes.js';
 import { getEffectiveGrepHeadLimit } from '../common/grepToolHelpers.js';
 import { toFilenameSearchGlobPattern } from '../common/globToolHelpers.js';
-import { CancellationToken } from '../../../../base/common/cancellation.js';
+import { CancellationToken, CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { ILanguageFeaturesService } from '../../../../editor/common/services/languageFeatures.js';
 import { AskQuestionUserAnswer, ChatMessage, CheckpointEntry, CodespanLocationLink, PlanBuildState, PlanDraft, StagingSelectionItem, TodoItem, TodoStatus, ToolMessage } from '../common/chatThreadServiceTypes.js';
 import { formatAnswersForLLM, normalizeAnswer } from '../common/askQuestionToolHelpers.js';
@@ -34,13 +36,14 @@ import { IEditCodeService } from './editCodeServiceInterface.js';
 import { VoidFileSnapshot } from '../common/editCodeServiceTypes.js';
 import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { truncate } from '../../../../base/common/strings.js';
-import { THREAD_STORAGE_KEY } from '../common/storageKeys.js';
+import { THREAD_STORAGE_KEY, QUEUED_MESSAGES_STORAGE_KEY } from '../common/storageKeys.js';
 import { IConvertToLLMMessageService } from './convertToLLMMessageService.js';
 import { RunOnceScheduler, timeout } from '../../../../base/common/async.js';
 import { deepClone } from '../../../../base/common/objects.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IDirectoryStrService } from '../common/directoryStrService.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
+import { VSBuffer } from '../../../../base/common/buffer.js';
 import { IMCPService } from '../common/mcpService.js';
 import { RawMCPToolCall } from '../common/mcpServiceTypes.js';
 import { FileAccess } from '../../../../base/common/network.js';
@@ -57,6 +60,42 @@ import { findThreadComposerInWindow, focusInConnectedWindow } from './connectedW
 const CHAT_RETRIES = 3
 const RETRY_DELAY = 2500
 
+// Hard cap on the agentic tool-use loop so a model that keeps calling tools can't run forever.
+const MAX_AGENT_LOOP_ITERATIONS = 150
+const MAX_QUEUED_USER_MESSAGES = 20        // cap queue depth so a runaway loop of Enter presses can't grow it unbounded
+
+// Upper bound on a provider-supplied Retry-After we'll actually wait before retrying.
+const MAX_RETRY_AFTER_MS = 60_000
+
+// ---------------- context compaction (Cursor-style summarization) ----------------
+// When the prompt approaches the model's context window, summarize the older part of the
+// conversation into a compact progress note and send [task + summary + recent turns] instead of
+// the full transcript. The full history is never deleted from the thread (UI/storage keep it);
+// only the payload SENT to the model is compacted. This mirrors Cursor's "fresh context window
+// with a summary" behavior and prevents context-length failures on long agent sessions.
+const COMPACTION_TRIGGER_FRACTION = 0.75   // start compacting when the prompt fills this much of the window
+const COMPACTION_TARGET_FRACTION = 0.55    // summarize old turns until the kept transcript is ~this much of the window
+const COMPACTION_MIN_MESSAGES = 12         // don't bother compacting very short threads
+const COMPACTION_MIN_NEW_MESSAGES = 6      // don't re-summarize until enough new messages accrue since the last compaction
+const COMPACTION_CHARS_PER_TOKEN = 4       // rough chars->tokens estimate when no real usage is available yet
+const COMPACTION_MAX_PER_MSG_CHARS = 2_000 // cap each message's contribution to the summarization transcript
+const COMPACTION_SUMMARY_PREFIX = 'Summary of the earlier conversation (older messages were compacted to fit the context window):\n\n'
+const COMPACTION_SYSTEM_PROMPT = `You are compacting the context of an ongoing AI coding-agent session so it fits within the model's context window. You will be given the conversation so far (and possibly a previous summary). Produce a single, self-contained summary that lets the agent continue seamlessly without the original transcript.
+
+Preserve, concisely but completely:
+- The user's original goal / task and any explicit requirements or constraints.
+- Key decisions made and the reasoning behind them.
+- Files created, modified, or investigated, with the important changes to each.
+- Important facts discovered about the codebase (APIs, patterns, gotchas, file paths).
+- Commands run and their salient results (errors, test outcomes).
+- The current state of the work and what remains to be done (next steps / open questions).
+
+Rules:
+- Write in the third person about "the agent" and "the user".
+- Be specific: keep file paths, symbol names, and concrete values. Do NOT invent details.
+- Do NOT include large code blocks verbatim; describe changes instead.
+- Output ONLY the summary text — no preamble, no meta commentary.`
+
 class StaleTurnError extends Error {
 	constructor(message: string) {
 		super(message)
@@ -65,6 +104,11 @@ class StaleTurnError extends Error {
 }
 
 const MAX_BROWSER_ELEMENT_SCREENSHOT_CHARS = 1_000_000
+
+// Credential-like paths that require explicit approval even when inside the workspace (e.g. a repo
+// that contains a committed .env or key). Matches sensitive directories anywhere in the path and
+// sensitive basenames/extensions.
+const SENSITIVE_PATH_RE = /(?:^|[\\/])(\.env(\.[\w.-]+)?|\.netrc|\.pgpass|\.htpasswd|id_rsa|id_dsa|id_ecdsa|id_ed25519|credentials|\.ssh|\.aws|\.gnupg|\.kube|secrets?)(?:[\\/]|$)|\.(pem|key|p12|pfx|keystore)$/i
 
 // Persistence guardrails. These bound the size of the on-disk chat-history blob so serializing it
 // never blocks the renderer. Applied ONLY when writing to storage (see `storageStringifyReplacer`);
@@ -196,6 +240,17 @@ type WhenMounted = {
 
 
 
+/** Persisted context-compaction state for a thread. `throughMessageIdx` is always a 'user'
+ * message boundary so the compacted tail never orphans a tool_result. */
+export type ThreadCompaction = {
+	summaryText: string;
+	throughMessageIdx: number;
+	summarizedMessageCount: number;
+	/** Workspace-relative path to the full pre-compaction transcript, so the agent can re-read
+	 * details the summary omits (Cursor's "chat history as files"). Undefined if no workspace. */
+	historyPath?: string;
+}
+
 export type ThreadType = {
 	id: string; // store the id here too
 	createdAt: string; // ISO string
@@ -206,6 +261,7 @@ export type ThreadType = {
 	todoList?: TodoItem[]; // TODO list for this thread
 	linkedPlanPath?: string; // Path to linked plan file for bidirectional sync
 	planDraft?: PlanDraft; // Ephemeral plan draft (cleared after save)
+	compaction?: ThreadCompaction; // Cursor-style summarization of older turns (persisted)
 
 	// this doesn't need to go in a state object, but feels right
 	state: {
@@ -387,6 +443,20 @@ export interface IChatThreadService {
 	// call to add a message
 	addUserMessageAndStreamResponse({ userMessage, llmInstructions, _chatSelections, _images, threadId }: { userMessage: string, llmInstructions?: string, _chatSelections?: StagingSelectionItem[], _images?: string[], threadId: string }): Promise<void>;
 
+	// message queueing (Cursor-style: sending while the agent runs queues instead of aborting)
+	/** Messages queued while the agent is running; drained FIFO as each run ends. */
+	getQueuedUserMessages(threadId: string): readonly QueuedUserMessage[];
+	/** Remove a queued message by index (composer × button). */
+	removeQueuedUserMessage(threadId: string, idx: number): void;
+	/** True when the queue is paused (a run errored / a drained send failed) — messages are kept, not sent. */
+	getIsQueuePaused(threadId: string): boolean;
+	/** Resume a paused queue: drain the next message if the thread is idle. */
+	resumeQueuedUserMessages(threadId: string): void;
+	/** Clear the whole queue without aborting the current run. */
+	clearQueuedUserMessages(threadId: string): void;
+	/** Fires when a thread's queued-message list changes. */
+	onDidChangeQueuedMessages: Event<{ threadId: string }>;
+
 	// approve/reject
 	approveLatestToolRequest(threadId: string, toolId?: string): void;
 	rejectLatestToolRequest(threadId: string, toolId?: string): void;
@@ -407,6 +477,7 @@ export interface IChatThreadService {
 
 	/** Live internal conversation for a sub-agent task tool (for popup UI). */
 	getSubAgentConversation(toolId: string): Readonly<ChatMessage[]> | undefined;
+	getLatestThreadUsage(threadId: string): Readonly<LLMUsage> | undefined;
 
 	/** Live sub-agent labels when there is no active stream state entry. */
 	getToolProgressOverlay(threadId: string): Readonly<Record<string, string>> | undefined
@@ -453,6 +524,8 @@ export interface IChatThreadService {
 	waitForThreadAgentRunEnd(threadId: string): Promise<void>;
 }
 
+export type QueuedUserMessage = { userMessage: string, llmInstructions?: string, _chatSelections?: StagingSelectionItem[], _images?: string[] }
+
 export const IChatThreadService = createDecorator<IChatThreadService>('voidChatThreadService');
 
 const HIDDEN_TOOL_REPLACEMENT_MESSAGE = (name: string) =>
@@ -476,6 +549,19 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 
 	private readonly _onDidChangePlanBuildState = new Emitter<{ threadId: string }>();
 	readonly onDidChangePlanBuildState: Event<{ threadId: string }> = this._onDidChangePlanBuildState.event;
+
+	private readonly _onDidChangeQueuedMessages = new Emitter<{ threadId: string }>();
+	readonly onDidChangeQueuedMessages: Event<{ threadId: string }> = this._onDidChangeQueuedMessages.event;
+	/** Messages sent while the agent was running; drained FIFO at run end. Not persisted. */
+	private readonly _queuedUserMessagesByThread = new Map<string, QueuedUserMessage[]>();
+	/** Threads whose queue is paused (a run errored, or a drained send threw). Messages are kept but
+	 *  not auto-drained until the user resumes — avoids blasting the next message into a broken turn. */
+	private readonly _queuePausedByThread = new Set<string>();
+	/** Debounced writer for the persisted message queue (Q4). */
+	private _queuePersistScheduler: RunOnceScheduler | null = null;
+	/** Threads already warned that compaction summarization failed (A4) — avoids repeating the notice
+	 *  every high-fill turn. Cleared when a summary later succeeds for that thread. */
+	private readonly _compactionFallbackNotified = new Set<string>();
 
 	/** Per-thread UI build phase (Build button). Not persisted. */
 	private readonly _planBuildStateByThread: Map<string, PlanBuildState> = new Map();
@@ -501,6 +587,11 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 	// Sub-agent internal conversations keyed by parent task tool id
 	private readonly _subAgentConversations = new Map<string, ChatMessage[]>();
 	private readonly _subAgentConversationThreadByToolId = new Map<string, string>();
+
+	// Latest provider-reported token usage per thread. The last turn's promptTokens is the
+	// best real measure of current context size; used by context-window management and the UI.
+	private readonly _latestUsageByThread = new Map<string, LLMUsage>();
+
 
 	// used in checkpointing
 	// private readonly _userModifiedFilesToCheckInCheckpoints = new LRUCache<string, null>(50)
@@ -539,6 +630,11 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 		for (const threadId of Object.keys(allThreads)) {
 			this._turnSequenceOfThread[threadId] = 0
 		}
+
+		// Q4: rehydrate any persisted message queues (as PAUSED — never auto-fire into a cold thread on
+		// startup), and persist (debounced) whenever the queue changes.
+		this._loadPersistedQueues(new Set(Object.keys(allThreads)))
+		this._register(this.onDidChangeQueuedMessages(() => this._schedulePersistQueues()))
 
 		// Self-heal an on-disk blob that predates MAX_PERSISTED_THREADS (or just grew past
 		// it) — re-persisting now (pruned by _sanitizeThreadsForStorage) makes the NEXT
@@ -792,7 +888,7 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 	private _convertThreadDataFromStorage(threadsStr: string): ChatThreads {
 		return JSON.parse(threadsStr, (key, value) => {
 			if (value && typeof value === 'object' && value.$mid === 1) { // $mid is the MarshalledId. $mid === 1 means it is a URI
-				return URI.from(value); // TODO URI.revive instead of this?
+				return URI.revive(value); // canonical revive of a marshalled URI (preserves cached fsPath/external markers)
 			}
 			return value;
 		});
@@ -881,12 +977,340 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 		}
 	}
 
+	// ---- Q4: persist the message queue across reload / restart ----
+
+	private _schedulePersistQueues() {
+		if (!this._queuePersistScheduler) {
+			this._queuePersistScheduler = new RunOnceScheduler(() => this._persistQueues(), 800)
+			this._register(this._queuePersistScheduler)
+		}
+		this._queuePersistScheduler.schedule()
+	}
+
+	private _persistQueues() {
+		try {
+			const out: { [threadId: string]: QueuedUserMessage[] } = {}
+			for (const [threadId, queue] of this._queuedUserMessagesByThread) {
+				if (!queue || queue.length === 0) continue
+				// Persist text + file/selection context. Drop heavy image data-URIs from the persisted copy
+				// (they can be re-attached after a reload); the string replacer caps any oversized field.
+				out[threadId] = queue.map(q => ({ userMessage: q.userMessage, llmInstructions: q.llmInstructions, _chatSelections: q._chatSelections }))
+			}
+			if (Object.keys(out).length === 0) {
+				this._storageService.remove(QUEUED_MESSAGES_STORAGE_KEY, StorageScope.APPLICATION)
+				return
+			}
+			this._storageService.store(QUEUED_MESSAGES_STORAGE_KEY, JSON.stringify(out, storageStringifyReplacer), StorageScope.APPLICATION, StorageTarget.USER)
+		} catch (error) {
+			console.error('[chatThreadService] Failed to persist message queue:', getErrorMessage(error))
+		}
+	}
+
+	private _loadPersistedQueues(validThreadIds: Set<string>) {
+		try {
+			const str = this._storageService.get(QUEUED_MESSAGES_STORAGE_KEY, StorageScope.APPLICATION)
+			if (!str) return
+			const parsed = JSON.parse(str) as { [threadId: string]: QueuedUserMessage[] }
+			for (const threadId of Object.keys(parsed)) {
+				if (!validThreadIds.has(threadId)) continue // thread was deleted since it was persisted
+				const queue = parsed[threadId]
+				if (!Array.isArray(queue) || queue.length === 0) continue
+				this._queuedUserMessagesByThread.set(threadId, queue)
+				this._queuePausedByThread.add(threadId) // paused on startup — never auto-fire into a cold thread
+			}
+		} catch (error) {
+			console.error('[chatThreadService] Failed to load persisted message queue:', getErrorMessage(error))
+		}
+	}
+
 	getToolProgressOverlay(threadId: string): Readonly<Record<string, string>> | undefined {
 		return this._toolProgressOverlayByThread[threadId]
 	}
 
 	getSubAgentConversation(toolId: string): Readonly<ChatMessage[]> | undefined {
 		return this._subAgentConversations.get(toolId);
+	}
+
+	/** The filesystem URIs a path-taking builtin tool would touch (empty for non-path tools). */
+	private _pathToolUris(builtinToolName: BuiltinToolName, params: unknown): URI[] {
+		const p = params as Record<string, URI | null | undefined>
+		const pick = (...uris: (URI | null | undefined)[]) => uris.filter((u): u is URI => !!u)
+		switch (builtinToolName) {
+			case 'Read':
+			case 'read_lint_errors':
+				return pick(p.uri)
+			case 'Write':
+			case 'StrReplace':
+				return pick(p.path)
+			case 'Grep':
+				return pick(p.path)
+			case 'Glob':
+				return pick(p.targetDirectory)
+			default:
+				return []
+		}
+	}
+
+	/** If a path tool targets a location outside the workspace or a credential-like path, returns a
+	 * human-readable reason the access needs explicit approval; otherwise undefined. This is the
+	 * workspace-confinement guard: Read/Grep/Glob otherwise have NO approval gate, so an agent could
+	 * read ~/.ssh/id_rsa or ~/.aws/credentials and ship them to the model. */
+	private _pathAccessApprovalReason(uris: URI[]): string | undefined {
+		for (const uri of uris) {
+			if (uri.scheme !== 'file' && uri.scheme !== 'vscode-remote') continue
+			const fsPath = uri.fsPath
+			if (SENSITIVE_PATH_RE.test(fsPath)) return `access to a sensitive path (${fsPath})`
+			if (!this._workspaceContextService.isInsideWorkspace(uri)) return `access to a path outside your workspace (${fsPath})`
+		}
+		return undefined
+	}
+
+	/** Store the most recent provider-reported usage for a thread (ignores empty/absent usage). */
+	private _recordThreadUsage(threadId: string, usage: LLMUsage | undefined): void {
+		if (!usage) return
+		if (usage.promptTokens === undefined && usage.completionTokens === undefined && usage.totalTokens === undefined) return
+		this._latestUsageByThread.set(threadId, usage)
+	}
+
+	/** The latest provider-reported usage for a thread, if any turn has completed with usage data. */
+	getLatestThreadUsage(threadId: string): Readonly<LLMUsage> | undefined {
+		return this._latestUsageByThread.get(threadId)
+	}
+
+	/** Whether an LLM error is worth retrying. Transient (network / 429 / 5xx) => yes;
+	 * auth / bad-request / not-found / quota / empty-response => no (retry won't help). */
+	private _isRetryableLLMError(error?: { message: string; fullError: Error | null }): boolean {
+		if (!error) return true
+		const status = (error.fullError as { status?: number; statusCode?: number } | null)?.status
+			?? (error.fullError as { status?: number; statusCode?: number } | null)?.statusCode
+		if (typeof status === 'number') {
+			if (status === 429 || status >= 500) return true
+			if (status >= 400) return false // other 4xx are client errors — not retryable
+			return true
+		}
+		// No status code available — classify by message text.
+		const msg = (error.message || '').toLowerCase()
+		const nonRetryable = ['sign in', 'invalid api key', 'api key', 'unauthorized', 'permission', 'forbidden', 'not found', 'invalid request', 'bad request', 'context length', 'maximum context', 'context_length', 'quota', 'billing', 'insufficient', 'was empty']
+		if (nonRetryable.some(s => msg.includes(s))) return false
+		return true
+	}
+
+	/** Best-effort Retry-After (ms) parsed from a provider error. Returns undefined when absent. */
+	private _retryAfterMsFromError(error?: { message: string; fullError: Error | null }): number | undefined {
+		if (!error) return undefined
+		const headers = (error.fullError as { headers?: Record<string, string> } | null)?.headers
+		const raw = headers?.['retry-after'] ?? headers?.['Retry-After']
+		if (raw) {
+			const secs = Number(raw)
+			if (Number.isFinite(secs) && secs >= 0) return Math.min(secs * 1000, MAX_RETRY_AFTER_MS)
+		}
+		// Some providers embed "retry after N seconds" / "try again in Ns" in the message.
+		const m = (error.message || '').match(/(?:retry after|try again in)\s+(\d+(?:\.\d+)?)\s*(ms|s|seconds?)?/i)
+		if (m) {
+			const n = Number(m[1])
+			if (Number.isFinite(n)) return m[2]?.toLowerCase().startsWith('ms') ? n : n * 1000
+		}
+		return undefined
+	}
+
+	// ---------------- context compaction ----------------
+
+	/** Chars a chat message contributes to the LLM payload (what the converter actually sends). */
+	private _messageSendChars(m: ChatMessage): number {
+		if (m.role === 'assistant') return (m.displayContent?.length ?? 0) + (m.reasoning?.length ?? 0)
+		if (m.role === 'user') return m.content?.length ?? 0
+		if (m.role === 'tool') return (m.content?.length ?? 0)
+		return 0 // checkpoint / interrupted_streaming_tool are dropped before sending
+	}
+
+	/** Estimated prompt tokens for a set of messages (rough chars/token when no real usage exists). */
+	private _estimatePromptTokens(messages: ChatMessage[]): number {
+		let chars = 0
+		for (const m of messages) chars += this._messageSendChars(m)
+		return Math.ceil(chars / COMPACTION_CHARS_PER_TOKEN)
+	}
+
+	/** Build the message list actually sent to the LLM, substituting a summary for compacted turns.
+	 * The thread's real messages are never mutated — only this sent view is compacted. Pure: a stale
+	 * compaction (boundary no longer a user message) is simply ignored, never mutated here. */
+	private _buildCompactedChatMessages(threadId: string, messages: ChatMessage[]): ChatMessage[] {
+		const c = this.state.allThreads[threadId]?.compaction
+		if (!c) return messages
+		// Ignore stale compaction if the thread was edited/branched such that the boundary is no
+		// longer a user message (or the array shrank below it). It gets overwritten on the next
+		// compaction; meanwhile the full transcript + deterministic truncation keep us under budget.
+		if (messages.length <= c.throughMessageIdx || messages[c.throughMessageIdx]?.role !== 'user') {
+			return messages
+		}
+		const firstUserIdx = messages.findIndex(m => m.role === 'user')
+		if (firstUserIdx < 0 || c.throughMessageIdx <= firstUserIdx) return messages
+
+		const head = messages.slice(0, firstUserIdx + 1) // preamble + original task
+		const historyNote = c.historyPath
+			? `\n\nThe full detail of the earlier conversation is saved at \`${c.historyPath}\`. If you need specifics not captured in this summary, read that file.`
+			: ''
+		const summaryMsg: ChatMessage = { role: 'assistant', displayContent: COMPACTION_SUMMARY_PREFIX + c.summaryText + historyNote, reasoning: '', anthropicReasoning: null }
+		const tail = messages.slice(c.throughMessageIdx) // starts at a user message (safe boundary)
+		return [...head, summaryMsg, ...tail]
+	}
+
+	/** Serialize messages into a plain-text transcript for the summarizer (no tool-pairing concerns). */
+	private _transcriptForSummarization(messages: ChatMessage[]): string {
+		const parts: string[] = []
+		for (const m of messages) {
+			let line: string | undefined
+			if (m.role === 'user') line = `USER: ${m.content ?? ''}`
+			else if (m.role === 'assistant') {
+				const reasoning = m.reasoning ? `\n(thinking: ${m.reasoning})` : ''
+				line = `ASSISTANT: ${m.displayContent ?? ''}${reasoning}`
+			}
+			else if (m.role === 'tool') line = `TOOL[${m.name}] -> ${typeof m.content === 'string' ? m.content : JSON.stringify(m.content)}`
+			if (line === undefined) continue
+			if (line.length > COMPACTION_MAX_PER_MSG_CHARS) line = line.slice(0, COMPACTION_MAX_PER_MSG_CHARS) + '…(truncated)'
+			parts.push(line)
+		}
+		return parts.join('\n\n')
+	}
+
+	/** One-shot, no-tools LLM call that produces the compaction summary. Resolves null on any failure
+	 * so the caller can fall back to deterministic truncation. */
+	private _summarizeForCompaction(modelSelection: ModelSelection, priorSummary: string | undefined, messagesToSummarize: ChatMessage[]): Promise<string | null> {
+		return new Promise<string | null>((resolve) => {
+			const transcript = this._transcriptForSummarization(messagesToSummarize)
+			if (!transcript.trim()) { resolve(null); return }
+			const userContent = (priorSummary ? `Previous summary:\n${priorSummary}\n\n` : '') + `Conversation transcript to fold into the summary:\n\n${transcript}`
+			let settled = false
+			const done = (v: string | null) => { if (!settled) { settled = true; resolve(v) } }
+			const token = this._llmMessageService.sendLLMMessage({
+				messagesType: 'chatMessages',
+				chatMode: null,
+				messages: [{ role: 'user', content: userContent }],
+				modelSelection,
+				modelSelectionOptions: undefined,
+				overridesOfModel: this._settingsService.state.overridesOfModel,
+				logging: { loggingName: 'Chat - Compaction' },
+				separateSystemMessage: COMPACTION_SYSTEM_PROMPT,
+				suppressStreamingEvents: true,
+				onText: () => { },
+				onFinalMessage: ({ fullText }) => done(fullText?.trim() || null),
+				onError: () => done(null),
+				onAbort: () => done(null),
+			})
+			if (!token) done(null)
+		})
+	}
+
+	/** If the thread's prompt is approaching the model's context window, summarize older turns and
+	 * record the compaction so subsequent turns send [task + summary + recent turns]. */
+	private async _maybeCompactThread(threadId: string, modelSelection: ModelSelection | null, messages: ChatMessage[]): Promise<void> {
+		if (!modelSelection) return
+		if (messages.length < COMPACTION_MIN_MESSAGES) return
+
+		const { overridesOfModel } = this._settingsService.state
+		const { contextWindow } = getModelCapabilities(modelSelection.providerName, modelSelection.modelName, overridesOfModel)
+		if (!contextWindow || contextWindow <= 0) return
+
+		// Estimate the size of what we'd send right now. Prefer the real provider-reported prompt
+		// size from the last completed turn (accurate; already reflects any prior compaction); fall
+		// back to a char estimate of the already-compacted view when no usage has been recorded yet.
+		const recordedPromptTokens = this._latestUsageByThread.get(threadId)?.promptTokens
+		const estTokens = (typeof recordedPromptTokens === 'number' && recordedPromptTokens > 0)
+			? recordedPromptTokens
+			: this._estimatePromptTokens(this._buildCompactedChatMessages(threadId, messages))
+		if (estTokens < contextWindow * COMPACTION_TRIGGER_FRACTION) return
+
+		const existing = this.state.allThreads[threadId]?.compaction
+		const firstUserIdx = messages.findIndex(m => m.role === 'user')
+		if (firstUserIdx < 0) return
+		const startIdx = existing ? existing.throughMessageIdx : firstUserIdx + 1
+
+		// Don't re-summarize until enough new messages have accrued since the last compaction.
+		if (existing && messages.length - existing.summarizedMessageCount < COMPACTION_MIN_NEW_MESSAGES) return
+
+		// Choose a boundary: keep the most recent messages (~target fraction of the window) verbatim,
+		// snapped forward to the next user message so the kept tail never starts with an orphaned
+		// tool_result. (Boundary math lives in a pure, unit-tested helper.)
+		const targetTailChars = contextWindow * COMPACTION_TARGET_FRACTION * COMPACTION_CHARS_PER_TOKEN
+		const boundary = selectCompactionBoundary({
+			messages: messages.map(m => ({ sendChars: this._messageSendChars(m), isUserBoundary: m.role === 'user' })),
+			startIdx,
+			targetTailChars,
+			minRange: COMPACTION_MIN_NEW_MESSAGES,
+		})
+		if (boundary === null) return
+
+		const toSummarize = messages.slice(startIdx, boundary)
+		let summary = await this._summarizeForCompaction(modelSelection, existing?.summaryText, toSummarize)
+		if (!summary) {
+			// A4: retry once — a transient LLM error shouldn't immediately drop us to lossy truncation.
+			summary = await this._summarizeForCompaction(modelSelection, existing?.summaryText, toSummarize)
+		}
+		if (!summary) {
+			// Both attempts failed. Deterministic truncation still guarantees a fit, but it trims detail
+			// rather than summarizing — surface it once (per thread) so the loss isn't silent.
+			if (!this._compactionFallbackNotified.has(threadId)) {
+				this._compactionFallbackNotified.add(threadId)
+				this._notificationService.info('Orbit couldn\'t summarize earlier messages to fit the context window (model error). Falling back to trimming older detail — some context may be lost.')
+			}
+			return
+		}
+		// A summary succeeded — allow the notice to fire again if a future attempt fails.
+		this._compactionFallbackNotified.delete(threadId)
+
+		// Re-validate: the thread may have changed while the summary was generating.
+		const latest = this.state.allThreads[threadId]?.messages
+		if (!latest || latest.length < boundary || latest[boundary]?.role !== 'user') return
+
+		// Persist the full pre-compaction detail to a workspace file so the agent can re-read it.
+		const historyPath = await this._appendCompactionHistory(threadId, toSummarize, existing?.historyPath)
+
+		this._setThreadCompaction(threadId, {
+			summaryText: summary,
+			throughMessageIdx: boundary,
+			summarizedMessageCount: boundary,
+			historyPath,
+		})
+	}
+
+	/** Append the given (about-to-be-summarized) messages to the thread's history file under
+	 * `.orbit/history/` and return its workspace-relative path. Best-effort: returns the existing
+	 * path (or undefined) on any failure so compaction still proceeds. */
+	private async _appendCompactionHistory(threadId: string, messages: ChatMessage[], existingPath: string | undefined): Promise<string | undefined> {
+		try {
+			const folder = this._workspaceContextService.getWorkspace().folders[0]
+			if (!folder) return existingPath
+			const relPath = `.orbit/history/thread-${threadId}.md`
+			const fileUri = URI.joinPath(folder.uri, '.orbit', 'history', `thread-${threadId}.md`)
+			const header = `\n\n---\n## Compacted ${new Date().toISOString()}\n\n`
+			const body = this._transcriptForSummarization(messages)
+			let prior = ''
+			try {
+				const existing = await this._fileService.readFile(fileUri)
+				prior = existing.value.toString()
+			} catch { /* file doesn't exist yet */ }
+			await this._fileService.writeFile(fileUri, VSBuffer.fromString(prior + header + body))
+			return relPath
+		} catch (e) {
+			console.error('[chatThreadService] Failed to write compaction history file:', getErrorMessage(e))
+			return existingPath
+		}
+	}
+
+	/** Persist compaction state onto the thread (or clear it). Mirrors the other per-thread setters. */
+	private _setThreadCompaction(threadId: string, compaction: ThreadCompaction | undefined): void {
+		const thread = this.state.allThreads[threadId]
+		if (!thread) return
+		let updated: ThreadType
+		if (compaction === undefined) {
+			if (thread.compaction === undefined) return
+			const { compaction: _drop, ...rest } = thread
+			updated = { ...rest }
+		} else {
+			updated = { ...thread, compaction }
+		}
+		const newThreads = { ...this.state.allThreads, [threadId]: updated }
+		this._storeAllThreads(newThreads)
+		this._setState({ allThreads: newThreads })
 	}
 
 	private _clearSubAgentConversationsForThread(threadId: string): void {
@@ -1157,10 +1581,10 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 	}
 
 	private _resumeParentAfterBackgroundCompletion(threadId: string): void {
-		// Phase 1.10 (C10) fix: capture a snapshot of pending/completed state and the
-		// current turn sequence before doing any mutation. If between the snapshot
-		// and the resume call, the user submitted a new message (which would have
-		// bumped the turn sequence), drop the resume to avoid double-resumption.
+		// Phase 1.10 (C10) fix: only resume when nothing else is in flight. The guards below
+		// (no pending tasks, not already streaming, thread still exists) prevent double-resumption;
+		// the fresh turnSequence taken just before dispatch (via _nextTurnSequence) then makes any
+		// concurrently-started newer turn win the StaleTurnError race inside _runChatAgent.
 		const completedResults = this._completedBackgroundResults.get(threadId);
 		if (!completedResults || completedResults.length === 0) return;
 		if (this._pendingBackgroundTasks.get(threadId)?.size) return;
@@ -1170,7 +1594,6 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 			return;
 		}
 
-		const snapshotVersion = this._turnSequenceOfThread[threadId] ?? 0;
 		this._completedBackgroundResults.delete(threadId);
 		const resultSummaries = completedResults.map(r => {
 			const status = r.result.status === 'completed' ? 'completed' : r.result.status;
@@ -1193,13 +1616,6 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 		};
 		this._addMessageToThread(threadId, userHistoryElt);
 		const turnSequence = this._nextTurnSequence(threadId);
-		// Defensive: ensure the snapshot version is the latest we knew about before
-		// firing. (The fresh _nextTurnSequence already incremented the counter.)
-		if (snapshotVersion > turnSequence - 1) {
-			// Concurrent state change detected between snapshot and resume; drop the resume.
-			console.warn(`[ChatThreadService] Dropping background resume for thread ${threadId}: state changed concurrently (snapshotVersion=${snapshotVersion}, currentTurn=${turnSequence}).`);
-			return;
-		}
 		this._wrapRunAgentToNotify(
 			this._runChatAgent({ threadId, ...this._currentModelSelectionProps(), turnSequence }),
 			threadId,
@@ -1225,15 +1641,17 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 		const messages = this.state.allThreads[threadId]?.messages
 		if (!messages) return false
 
-		// Search backwards for a tool with matching ID (supports parallel execution)
+		// Search backwards for a tool with matching ID (supports parallel execution). Match strictly
+		// by id — a parallel batch may interleave image user-messages between sibling tool results,
+		// so skip over non-tool messages within the batch rather than stopping at the first one. The
+		// assistant message that opened the batch bounds the search.
 		for (let i = messages.length - 1; i >= 0; i--) {
 			const msg = messages[i]
 			if (msg.role === 'tool' && msg.id === tool.id && msg.type !== 'invalid_params') {
 				this._editMessageInThread(threadId, i, tool)
 				return true
 			}
-			// Stop searching after we pass all recent tool messages
-			if (msg.role !== 'tool') break
+			if (msg.role === 'assistant') break
 		}
 		return false
 	}
@@ -1268,8 +1686,9 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 			return
 		}
 
+		const turnSequence = this._nextTurnSequence(threadId)
 		this._wrapRunAgentToNotify(
-			this._runChatAgent({ callThisToolFirst, threadId, ...this._currentModelSelectionProps() })
+			this._runChatAgent({ callThisToolFirst, threadId, ...this._currentModelSelectionProps(), turnSequence })
 			, threadId
 		)
 	}
@@ -1321,8 +1740,9 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 		})
 
 		this._setStreamState(threadId, undefined)
+		const turnSequence = this._nextTurnSequence(threadId)
 		this._wrapRunAgentToNotify(
-			this._runChatAgent({ threadId, ...this._currentModelSelectionProps() }),
+			this._runChatAgent({ threadId, ...this._currentModelSelectionProps(), turnSequence }),
 			threadId,
 		)
 	}
@@ -1354,8 +1774,9 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 		this._setStreamState(threadId, undefined)
 
 		if (opts?.resumeAgent !== false) {
+			const turnSequence = this._nextTurnSequence(threadId)
 			this._wrapRunAgentToNotify(
-				this._runChatAgent({ threadId, ...this._currentModelSelectionProps() }),
+				this._runChatAgent({ threadId, ...this._currentModelSelectionProps(), turnSequence }),
 				threadId,
 			)
 		}
@@ -1373,6 +1794,8 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 		const thread = this.state.allThreads[threadId]
 		if (!thread) return // should never happen
 		this._invalidateActiveTurn(threadId)
+		// explicit stop cancels everything pending, including queued messages
+		this._clearQueuedUserMessages(threadId)
 
 		if (this._pendingLlmStreamStateByThread.has(threadId) || this.streamState[threadId]?.isRunning === 'LLM') {
 			this._applyPendingLlmStreamStateIfAny(threadId)
@@ -1399,20 +1822,42 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 			const content = content_ || this.toolErrMsgs.interrupted
 			this._updateLatestTool(threadId, { role: 'tool', name: toolName, params: toolParams, id, content, rawParams, type: 'rejected', result: null, mcpServerName })
 		}
-		// reject the tool for the user if relevant
+		// reject the tool(s) for the user if relevant. A parallel batch can leave more than one
+		// tool awaiting approval, so resolve every pending tool_request — otherwise leftovers would
+		// linger as placeholders and stall the next turn.
 		else if (this.streamState[threadId]?.isRunning === 'awaiting_user') {
-			const pendingToolRequestId = this.streamState[threadId]?.pendingToolRequestId
-			const pending = thread.messages.find((m): m is ToolMessage<ToolName> & { type: 'tool_request' } =>
-				m.role === 'tool' && m.type === 'tool_request' && m.id === pendingToolRequestId
+			const pendingRequests = thread.messages.filter((m): m is ToolMessage<ToolName> & { type: 'tool_request' } =>
+				m.role === 'tool' && m.type === 'tool_request'
 			)
-			if (pending?.name === 'AskQuestion' && pendingToolRequestId) {
-				this.skipAskQuestion(threadId, pendingToolRequestId, { resumeAgent: false })
-			} else {
-				this.rejectLatestToolRequest(threadId, pendingToolRequestId)
+			for (const pending of pendingRequests) {
+				if (pending.name === 'AskQuestion') {
+					this.skipAskQuestion(threadId, pending.id, { resumeAgent: false })
+				} else {
+					this.rejectLatestToolRequest(threadId, pending.id)
+				}
 			}
 		}
 		else if (this.streamState[threadId]?.isRunning === 'idle') {
 			// do nothing
+		}
+
+		// A2/A3 defensive sweep: regardless of which branch ran above, ensure NO tool_request lingers.
+		// A partially-approved parallel batch can leave pending requests even when the abort happened
+		// while isRunning was 'tool' or 'LLM' (not 'awaiting_user'). A lingering tool_request placeholder
+		// would stall the next turn. This is idempotent — if none remain, the loop is empty.
+		// Deduplicate by tool id so the same request is never skipped/rejected twice in one sweep.
+		const remainingRequests = (this.state.allThreads[threadId]?.messages ?? []).filter(
+			(m): m is ToolMessage<ToolName> & { type: 'tool_request' } => m.role === 'tool' && m.type === 'tool_request'
+		)
+		const seen = new Set<string>()
+		for (const pending of remainingRequests) {
+			if (seen.has(pending.id)) continue
+			seen.add(pending.id)
+			if (pending.name === 'AskQuestion') {
+				this.skipAskQuestion(threadId, pending.id, { resumeAgent: false })
+			} else {
+				this.rejectLatestToolRequest(threadId, pending.id)
+			}
 		}
 
 		// interrupt any effects
@@ -1476,13 +1921,15 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 				unvalidatedToolParams: RawToolParamsObj;
 				validatedParams: ToolCallParams<ToolName>;
 				executionContext?: { modelSelection: ModelSelection | null; modelSelectionOptions: ModelSelectionOptions | undefined; turnSequence?: number };
+				deferImageMessages?: boolean;
 			}
 			| {
 				preapproved: false;
 				unvalidatedToolParams: RawToolParamsObj;
 				executionContext?: { modelSelection: ModelSelection | null; modelSelectionOptions: ModelSelectionOptions | undefined; turnSequence?: number };
+				deferImageMessages?: boolean;
 			},
-	): Promise<{ awaitingUserApproval?: boolean, interrupted?: boolean }> => {
+	): Promise<{ awaitingUserApproval?: boolean, interrupted?: boolean, imageMessages?: ChatMessage[] }> => {
 
 		// compute these below
 		let toolParams: ToolCallParams<ToolName>
@@ -1555,7 +2002,19 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 				return { awaitingUserApproval: true }
 			}
 
-		// 2. if tool requires approval, break from the loop, awaiting approval
+		// 1b. Workspace-confinement guard: any path tool (incl. Read/Grep/Glob, which have no
+			// approval type) that targets a location outside the workspace or a credential-like path
+			// requires explicit approval — even if auto-approve is on. Prevents silent exfiltration of
+			// secrets (e.g. ~/.ssh/id_rsa) to the model.
+			if (builtinToolName && !opts.preapproved) {
+				const pathReason = this._pathAccessApprovalReason(this._pathToolUris(builtinToolName, toolParams))
+				if (pathReason) {
+					this._updateLatestTool(threadId, { role: 'tool', type: 'tool_request', content: `(Awaiting user permission: ${pathReason})`, result: null, name: effectiveToolName, params: toolParams, id: toolId, rawParams: opts.unvalidatedToolParams, mcpServerName: effectiveMcpServerName })
+					return { awaitingUserApproval: true }
+				}
+			}
+
+			// 2. if tool requires approval, break from the loop, awaiting approval
 		const approvalType = builtinToolName ? approvalTypeOfBuiltinToolName[builtinToolName] : 'MCP tools'
 		// The built-in browser MCP server (`orbit-ide-browser`) never prompts for
 		// approval: opening and driving the integrated browser is a first-class product
@@ -1635,19 +2094,28 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 				toolResult = await result
 			}
 			else if (mcpTool) {
-				// Use the MCP tool we found at the start
-				resolveInterruptor(() => { })
+				// Use the MCP tool we found at the start.
+				// Bridge cancellation: a user interrupt and the timeout both cancel the token, which the
+				// MCP channel turns into an AbortSignal so the in-flight call is actually aborted.
+				const mcpCts = new CancellationTokenSource()
+				resolveInterruptor(() => { mcpCts.cancel() })
 
 				const mcpTimeoutMs = this._settingsService.state.globalSettings.mcpToolTimeoutMs ?? 60_000
-				toolResult = (await withTimeout(
-					this._mcpService.callMCPTool({
-						serverName: mcpTool.mcpServerName ?? 'unknown_mcp_server',
-						toolName: effectiveToolName,
-						params: toolParams
-					}),
-					mcpTimeoutMs,
-					effectiveToolName,
-				)).result
+				const mcpTimer = setTimeout(() => mcpCts.cancel(), mcpTimeoutMs)
+				try {
+					toolResult = (await withTimeout(
+						this._mcpService.callMCPTool({
+							serverName: mcpTool.mcpServerName ?? 'unknown_mcp_server',
+							toolName: effectiveToolName,
+							params: toolParams
+						}, mcpCts.token),
+						mcpTimeoutMs,
+						effectiveToolName,
+					)).result
+				} finally {
+					clearTimeout(mcpTimer)
+					mcpCts.dispose(true)
+				}
 			}
 			else {
 				// Tool is neither builtin nor MCP - this is an unknown tool
@@ -1702,12 +2170,16 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 		// 5. add to history and keep going
 		this._updateLatestTool(threadId, { role: 'tool', type: 'success', params: toolParams, result: toolResult, name: effectiveToolName, content: toolResultStr, id: toolId, rawParams: opts.unvalidatedToolParams, mcpServerName: effectiveMcpServerName })
 
-		// Vision models: deliver Read image bytes as a user multimodal message (after the tool result).
+		// Vision models: deliver image bytes as a user multimodal message (after the tool result).
+		// During a parallel batch these are buffered (deferImageMessages) and appended by the caller
+		// only after the whole batch settles, so they can't interleave between sibling tool results
+		// (which would split the tool block and leave placeholders un-swapped).
+		const imageUserMessages: ChatMessage[] = []
 		if (builtinToolName === 'Read' && toolResult && typeof toolResult === 'object' && 'kind' in toolResult && (toolResult as BuiltinToolResultType['Read']).kind === 'image') {
 			const imageResult = toolResult as Extract<BuiltinToolResultType['Read'], { kind: 'image' }>
 			const readParams = toolParams as BuiltinToolCallParams['Read']
 			const dataUri = `data:${imageResult.mime};base64,${imageResult.base64}`
-			this._addMessageToThread(threadId, {
+			imageUserMessages.push({
 				role: 'user',
 				content: '',
 				displayContent: `(Image: ${readParams.uri.fsPath})`,
@@ -1725,7 +2197,7 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 			if (mcpImage.image?.data) {
 				const mime = mcpImage.image.mimeType || 'image/png'
 				const dataUri = `data:${mime};base64,${mcpImage.image.data}`
-				this._addMessageToThread(threadId, {
+				imageUserMessages.push({
 					role: 'user',
 					content: mcpImage.text?.trim() ? mcpImage.text : '',
 					displayContent: `(Image: ${effectiveToolName})`,
@@ -1734,6 +2206,9 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 					state: { stagingSelections: [], isBeingEdited: false },
 				})
 			}
+		}
+		if (imageUserMessages.length > 0 && !opts.deferImageMessages) {
+			for (const msg of imageUserMessages) this._addMessageToThread(threadId, msg)
 		}
 
 		if (isBackgroundTaskTool && (toolResult as any)?.status !== 'background_launched') {
@@ -1761,7 +2236,7 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 			}
 		}
 
-		return {}
+		return opts.deferImageMessages && imageUserMessages.length > 0 ? { imageMessages: imageUserMessages } : {}
 	};
 
 
@@ -1826,11 +2301,44 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 			shouldSendAnotherMessage = false
 			isRunningWhenEnd = undefined
 			pendingToolRequestId = undefined
+
+			// Serialize multi-tool approval: a prior (parallel) batch may have left more than one
+			// approval-gated tool awaiting the user. Each approval resumes the loop here; pause again
+			// on the earliest still-pending request instead of sending a premature LLM message with
+			// unresolved tool_requests (which would be forwarded as placeholder text). Bounded to the
+			// current tool batch — walk back to the assistant message that opened it, skipping any
+			// interleaved image user-messages.
+			{
+				const msgs = this.state.allThreads[threadId]?.messages ?? []
+				let earliestPendingId: string | undefined
+				for (let i = msgs.length - 1; i >= 0; i--) {
+					const msg = msgs[i]
+					if (msg.role === 'assistant') break
+					if (msg.role === 'tool' && msg.type === 'tool_request') earliestPendingId = msg.id
+				}
+				if (earliestPendingId) {
+					isRunningWhenEnd = 'awaiting_user'
+					pendingToolRequestId = earliestPendingId
+					break
+				}
+			}
+
+			// Stop a runaway agent: once the loop has sent this many turns, end gracefully with a
+			// notice instead of looping forever.
+			if (nMessagesSent >= MAX_AGENT_LOOP_ITERATIONS) {
+				this._addMessageToThread(threadId, { role: 'assistant', displayContent: `Reached the maximum number of tool-use iterations (${MAX_AGENT_LOOP_ITERATIONS}). Send a message to continue.`, reasoning: '', anthropicReasoning: null })
+				break
+			}
+
 			nMessagesSent += 1
 
 			this._setStreamState(threadId, { isRunning: 'idle', interrupt: idleInterruptor })
 
-			const chatMessages = this.state.allThreads[threadId]?.messages ?? []
+			const allThreadMessages = this.state.allThreads[threadId]?.messages ?? []
+			// Cursor-style compaction: if the prompt is nearing the context window, summarize older
+			// turns first, then send [task + summary + recent turns] instead of the full transcript.
+			await this._maybeCompactThread(threadId, modelSelection, allThreadMessages)
+			const chatMessages = this._buildCompactedChatMessages(threadId, this.state.allThreads[threadId]?.messages ?? allThreadMessages)
 			const { messages, separateSystemMessage } = await this._convertToLLMMessagesService.prepareLLMChatMessages({
 				chatMessages,
 				modelSelection,
@@ -1851,7 +2359,7 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 				nAttempts += 1
 
 				type ResTypes =
-					| { type: 'llmDone', toolCall?: RawToolCallObj, toolCalls?: RawToolCallObj[], info: { fullText: string, fullReasoning: string, anthropicReasoning: AnthropicReasoning[] | null } }
+					| { type: 'llmDone', toolCall?: RawToolCallObj, toolCalls?: RawToolCallObj[], info: { fullText: string, fullReasoning: string, anthropicReasoning: AnthropicReasoning[] | null }, usage?: LLMUsage }
 					| { type: 'llmError', error?: { message: string; fullError: Error | null; } }
 					| { type: 'llmAborted' }
 
@@ -1879,8 +2387,8 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 						// It was adding "Reading file" placeholders during streaming that would stick around.
 						// These are now added only when tools are actually about to execute (see lines ~950-973)
 					},
-					onFinalMessage: async ({ fullText, fullReasoning, toolCall, toolCalls, anthropicReasoning, }) => {
-						resMessageIsDonePromise({ type: 'llmDone', toolCall, toolCalls, info: { fullText, fullReasoning, anthropicReasoning } }) // resolve with tool calls
+					onFinalMessage: async ({ fullText, fullReasoning, toolCall, toolCalls, anthropicReasoning, usage }) => {
+						resMessageIsDonePromise({ type: 'llmDone', toolCall, toolCalls, info: { fullText, fullReasoning, anthropicReasoning }, usage }) // resolve with tool calls
 					},
 					onError: async (error) => {
 						resMessageIsDonePromise({ type: 'llmError', error: error })
@@ -1894,8 +2402,11 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 
 				// mark as streaming
 				if (!llmCancelToken) {
+					// Hard failure to even start the send — return so we don't fall through to the
+					// "task complete" sound/notification on what is actually an error.
 					this._setStreamState(threadId, { isRunning: undefined, error: { message: 'There was an unexpected error when sending your chat message.', fullError: null } })
-					break
+					this._pauseQueue(threadId) // Q2: keep any queued messages; don't drain into a broken turn
+					return
 				}
 
 				this._setStreamState(threadId, { isRunning: 'LLM', llmInfo: { displayContentSoFar: '', reasoningSoFar: '', toolCallSoFar: null, toolCallsSoFar: null }, interrupt: Promise.resolve(() => this._llmMessageService.abort(llmCancelToken)) })
@@ -1916,10 +2427,11 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 				// llm res error
 				else if (llmRes.type === 'llmError') {
 					// error, should retry
-					if (nAttempts < CHAT_RETRIES) {
+					if (nAttempts < CHAT_RETRIES && this._isRetryableLLMError(llmRes.error)) {
 						shouldRetryLLM = true
 						this._setStreamState(threadId, { isRunning: 'idle', interrupt: idleInterruptor })
-						await timeout(RETRY_DELAY)
+						// Exponential backoff, honoring a provider-supplied Retry-After when present.
+						await timeout(this._retryAfterMsFromError(llmRes.error) ?? RETRY_DELAY * Math.pow(2, nAttempts - 1))
 						if (interruptedWhenIdle) {
 							this._setStreamState(threadId, undefined)
 							return
@@ -1943,12 +2455,16 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 						}
 
 						this._setStreamState(threadId, { isRunning: undefined, error })
+						this._pauseQueue(threadId) // Q2: keep any queued messages; don't drain into a broken turn
 						return
 					}
 				}
 
 				// llm res success
-				const { toolCall, toolCalls, info } = llmRes
+				const { toolCall, toolCalls, info, usage } = llmRes
+
+					// Record real provider-reported token usage for this turn (context-window mgmt + UI).
+					this._recordThreadUsage(threadId, usage)
 
 				this._addMessageToThread(threadId, { role: 'assistant', displayContent: info.fullText, reasoning: info.fullReasoning, anthropicReasoning: info.anthropicReasoning })
 
@@ -2087,7 +2603,8 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 							this._addMessagesToThreadBatch(threadId, placeholderTools)
 						}
 
-						// Execute all tools in parallel
+						// Execute all tools in parallel. Buffer any vision image-messages so they're
+						// appended once, after the whole batch settles (see below).
 						const results = await Promise.all(parallelTools.map(async (tool) => {
 							// Check if it's an MCP tool first (by name match), then fall back to builtin
 							const mcpTool = mcpToolByName.get(tool.name)
@@ -2095,6 +2612,7 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 								preapproved: false,
 								unvalidatedToolParams: tool.rawParams,
 								executionContext: { modelSelection, modelSelectionOptions, turnSequence },
+								deferImageMessages: true,
 							})
 						}))
 
@@ -2109,6 +2627,13 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 								isRunningWhenEnd = 'awaiting_user'
 								if (!pendingToolRequestId) pendingToolRequestId = parallelTools[idx]?.id
 							}
+						}
+
+						// Append buffered vision image-messages after the batch settled, so they land
+						// after every tool result instead of interleaving between sibling tools.
+						const bufferedImageMessages = results.flatMap(r => r.imageMessages ?? [])
+						if (bufferedImageMessages.length > 0) {
+							this._addMessagesToThreadBatch(threadId, bufferedImageMessages)
 						}
 					}
 
@@ -2167,11 +2692,20 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 		// capture number of messages sent
 		this._metricsService.capture('Agent Loop Done', { nMessagesSent, chatMode })
 
-		// Play completion sound if enabled (fire and forget)
-		this._playAgentCompletionSound();
+		// Only signal "completed" on a true terminal end — NOT when the loop paused to wait for
+		// the user to approve a tool. Otherwise we'd tell the user the task finished while it's
+		// actually blocked on their input.
+		if (isRunningWhenEnd !== 'awaiting_user') {
+			// Drain the next queued user message, if any — the turn isn't really "done" then,
+			// so skip the completion sound/notification.
+			if (this._drainNextQueuedUserMessage(threadId)) return
 
-		// Show completion notification if enabled
-		this._showAgentCompletionNotification();
+			// Play completion sound if enabled (fire and forget)
+			this._playAgentCompletionSound();
+
+			// Show completion notification if enabled
+			this._showAgentCompletionNotification();
+		}
 	}
 
 
@@ -2598,9 +3132,121 @@ We only need to do it for files that were edited since `from`, ie files between 
 	}
 
 
+	getQueuedUserMessages(threadId: string): readonly QueuedUserMessage[] {
+		return this._queuedUserMessagesByThread.get(threadId) ?? []
+	}
+
+	removeQueuedUserMessage(threadId: string, idx: number): void {
+		const queue = this._queuedUserMessagesByThread.get(threadId)
+		if (!queue || idx < 0 || idx >= queue.length) return
+		queue.splice(idx, 1)
+		if (queue.length === 0) { this._queuedUserMessagesByThread.delete(threadId); this._queuePausedByThread.delete(threadId) }
+		this._onDidChangeQueuedMessages.fire({ threadId })
+	}
+
+	private _clearQueuedUserMessages(threadId: string): void {
+		const had = this._queuedUserMessagesByThread.has(threadId) || this._queuePausedByThread.has(threadId)
+		this._queuedUserMessagesByThread.delete(threadId)
+		this._queuePausedByThread.delete(threadId)
+		if (had) this._onDidChangeQueuedMessages.fire({ threadId })
+	}
+
+	/** Public: clear the queue WITHOUT aborting the current run (distinct from Stop, which aborts + clears). */
+	clearQueuedUserMessages(threadId: string): void {
+		this._clearQueuedUserMessages(threadId)
+	}
+
+	getIsQueuePaused(threadId: string): boolean {
+		return this._queuePausedByThread.has(threadId) && (this._queuedUserMessagesByThread.get(threadId)?.length ?? 0) > 0
+	}
+
+	/** Pause the queue if it has messages (keep them, stop auto-draining). No-op on an empty queue. */
+	private _pauseQueue(threadId: string): void {
+		const queue = this._queuedUserMessagesByThread.get(threadId)
+		if (!queue || queue.length === 0) return
+		if (this._queuePausedByThread.has(threadId)) return
+		this._queuePausedByThread.add(threadId)
+		this._metricsService.capture('Message Queue Paused', { depth: queue.length }) // Q14
+		this._onDidChangeQueuedMessages.fire({ threadId })
+	}
+
+	resumeQueuedUserMessages(threadId: string): void {
+		if (!this._queuePausedByThread.has(threadId)) return
+		this._queuePausedByThread.delete(threadId)
+		this._onDidChangeQueuedMessages.fire({ threadId })
+		// Only drain if the thread is idle; if a run is somehow active, the terminal-end drain will pick it up.
+		const runningKind = this.streamState[threadId]?.isRunning
+		if (runningKind === 'LLM' || runningKind === 'tool' || runningKind === 'awaiting_user') return
+		this._drainNextQueuedUserMessage(threadId)
+	}
+
+	/** Called at a run's terminal end. Sends the next queued message, if any. Returns true if one was sent. */
+	private _drainNextQueuedUserMessage(threadId: string): boolean {
+		// Never auto-drain a paused queue — the user must explicitly resume.
+		if (this._queuePausedByThread.has(threadId)) return false
+		const queue = this._queuedUserMessagesByThread.get(threadId)
+		if (!queue || queue.length === 0) return false
+		const next = queue.shift()!
+		if (queue.length === 0) this._queuedUserMessagesByThread.delete(threadId)
+		this._metricsService.capture('Message Queue Drained', { remaining: queue.length }) // Q14
+		this._onDidChangeQueuedMessages.fire({ threadId })
+		// fire-and-forget: this starts a fresh run (streamState is no longer running at this point)
+		this.addUserMessageAndStreamResponse({ ...next, threadId }).catch(e => {
+			console.error('[chatThreadService] failed to send queued message:', getErrorMessage(e))
+			// Q3: don't strand the rest of the queue or lose this message. Put it back at the front
+			// and pause so the user can resume, rather than letting the drain chain die silently.
+			const q = this._queuedUserMessagesByThread.get(threadId) ?? []
+			q.unshift(next)
+			this._queuedUserMessagesByThread.set(threadId, q)
+			this._pauseQueue(threadId)
+		})
+		return true
+	}
+
 	async addUserMessageAndStreamResponse({ userMessage, llmInstructions, _chatSelections, _images, threadId }: { userMessage: string, llmInstructions?: string, _chatSelections?: StagingSelectionItem[], _images?: string[], threadId: string }) {
 		const thread = this.state.allThreads[threadId];
 		if (!thread) return
+
+		// Cursor-style queueing: while the agent is actively working (LLM/tool/idle), a new user
+		// message queues instead of aborting the run. 'awaiting_user' (blocked on tool approval /
+		// question) keeps the legacy interrupt behavior — the run is paused, so queueing would
+		// deadlock: nothing would ever drain the queue.
+		// Also queue (rather than run ahead) when a PAUSED queue exists, so a new send can't jump the
+		// FIFO order in front of messages waiting on a resume.
+		const runningKind = this.streamState[threadId]?.isRunning
+		const isActivelyRunning = runningKind === 'LLM' || runningKind === 'tool' || runningKind === 'idle'
+		const hasPausedQueue = this.getIsQueuePaused(threadId)
+		if (isActivelyRunning || hasPausedQueue) {
+			// Q7: reject empty/whitespace-only sends that carry no attachments.
+			const hasContent = userMessage.trim().length > 0 || (_chatSelections?.length ?? 0) > 0 || (_images?.length ?? 0) > 0
+			if (!hasContent) return
+			const queue = this._queuedUserMessagesByThread.get(threadId) ?? []
+			// Q7: cap depth so runaway Enter presses can't grow the queue unbounded.
+			if (queue.length >= MAX_QUEUED_USER_MESSAGES) {
+				this._notificationService.info(`Message queue is full (max ${MAX_QUEUED_USER_MESSAGES}). Wait for the agent to catch up before queueing more.`)
+				return
+			}
+			// Q7: collapse an immediate exact-duplicate of the tail (double-Enter).
+			const tail = queue[queue.length - 1]
+			if (tail && tail.userMessage === userMessage && tail.llmInstructions === llmInstructions
+				&& (tail._chatSelections?.length ?? 0) === (_chatSelections?.length ?? 0)
+				&& (tail._images?.length ?? 0) === (_images?.length ?? 0)) {
+				return
+			}
+			// Deep-copy the attachment snapshots so later staging edits (which replace the array
+			// reference on the thread) can never mutate an already-queued entry's context.
+			const queuedEntry: QueuedUserMessage = {
+				userMessage,
+				llmInstructions,
+				_chatSelections: _chatSelections ? _chatSelections.map(s => ({ ...s })) : undefined,
+				_images: _images ? [..._images] : undefined,
+			}
+			queue.push(queuedEntry)
+			this._queuedUserMessagesByThread.set(threadId, queue)
+			this._metricsService.capture('Message Queued', { depth: queue.length, whileRunning: isActivelyRunning }) // Q14
+			this._onDidChangeQueuedMessages.fire({ threadId })
+			return
+		}
 
 		// if there's a current checkpoint, delete all messages after it
 		if (thread.state.currCheckpointIdx !== null) {
@@ -2634,6 +3280,10 @@ We only need to do it for files that were edited since `from`, ie files between 
 		if (thread.messages?.[messageIdx]?.role !== 'user') {
 			throw new Error(`Error: editing a message with role !=='user'`)
 		}
+
+		// Editing rewrites history from messageIdx onward — any compaction summary built over the
+		// old transcript is now stale. Drop it; it will be rebuilt on the next high-fill turn.
+		this._setThreadCompaction(threadId, undefined)
 
 		// get prev and curr selections before clearing the message
 		const currSelns = thread.messages[messageIdx].state.stagingSelections || [] // staging selections for the edited message
@@ -3022,6 +3672,16 @@ We only need to do it for files that were edited since `from`, ie files between 
 		this._clearToolProgressOverlay(threadId);
 		this._clearLlmStreamThrottle(threadId);
 		this._planBuildStateByThread.delete(threadId);
+		this._latestUsageByThread.delete(threadId);
+		this._queuedUserMessagesByThread.delete(threadId); // Q6: don't leak the queue for a deleted thread
+		this._queuePausedByThread.delete(threadId);
+
+		// Clean up the compaction history file for this thread
+		const folder = this._workspaceContextService.getWorkspace().folders[0];
+		if (folder) {
+			const historyFile = URI.joinPath(folder.uri, '.orbit', 'history', `thread-${threadId}.md`);
+			void this._fileService.del(historyFile).catch(() => { /* best-effort */ });
+		}
 
 		// delete the thread
 		const newThreads = { ...currentThreads };

@@ -22,6 +22,7 @@ interface VoidChatAreaProps {
 	onAbort: () => void;
 	isStreaming: boolean;
 	isDisabled?: boolean;
+	hasMessageToSubmit?: boolean;
 	divRef?: React.RefObject<HTMLDivElement | null>;
 
 	// UI customization
@@ -60,6 +61,7 @@ export const VoidChatArea: React.FC<VoidChatAreaProps> = ({
 	divRef,
 	isStreaming = false,
 	isDisabled = false,
+	hasMessageToSubmit = false,
 	className = '',
 	showModelDropdown = true,
 	showSelections = false,
@@ -155,16 +157,22 @@ export const VoidChatArea: React.FC<VoidChatAreaProps> = ({
 					/>
 					</div>
 				)}
-			<div className="flex items-center gap-2 ml-auto">
+			<div className="flex items-center gap-1.5 ml-auto">
 				{imageButton}
 					{isStreaming && loadingIcon}
 					{isStreaming ? (
-						<ButtonStop onClick={onAbort} />
+						<>
+							<ButtonStop onClick={onAbort} />
+							{hasMessageToSubmit && <ButtonSubmit
+								onClick={onSubmit}
+								disabled={isDisabled}
+								tooltip='Send message — adds it to the queue'
+							/>}
+						</>
 					) : (
 						<ButtonSubmit
 							onClick={onSubmit}
 							disabled={isDisabled}
-							className="bg-void-fg-1 text-void-bg-3 disabled:text-void-fg-4/50"
 						/>
 					)}
 				</div>

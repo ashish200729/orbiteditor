@@ -102,6 +102,12 @@ export interface ICommonNativeHostService {
 	invalidateWindow(options?: INativeHostOptions): Promise<void>;
 
 	/**
+	 * Reveal an auxiliary window that was opened with `deferShow`, then force a
+	 * compositor repaint so content paints on first open.
+	 */
+	showAuxiliaryWindow(options?: INativeHostOptions): Promise<void>;
+
+	/**
 	 * Only supported on Windows and macOS. Updates the window controls to match the title bar size.
 	 *
 	 * @param options `backgroundColor` and `foregroundColor` are only supported on Windows

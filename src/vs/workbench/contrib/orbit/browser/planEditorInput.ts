@@ -15,6 +15,7 @@ import { isEqual } from '../../../../base/common/resources.js';
 import { Emitter } from '../../../../base/common/event.js';
 import { IDisposable } from '../../../../base/common/lifecycle.js';
 import { VOID_PLAN_EDITOR_ID } from './planEditorConstants.js';
+import { planFileLock } from '../common/planFileLock.js';
 
 /**
  * Formats an arbitrary error from a plan-file load into a display string.
@@ -44,6 +45,10 @@ export class PlanEditorInput extends EditorInput {
 	private _selfWriteSerial: number = 0;
 	private _lastSelfWriteHash: string = '';
 	private _lastSelfWriteAt: number = 0;
+	/** Whether the most recent self-write recorded a content hash. When it did, the hash is
+	 * authoritative and the timestamp window is NOT used — otherwise a genuine external edit
+	 * landing within the window would be silently dropped. */
+	private _lastSelfWriteHadContent: boolean = false;
 	private static readonly SELF_WRITE_IGNORE_MS = 1500;
 
 	// Public for PlanTodoSyncService to call when it writes the plan file.
@@ -55,6 +60,7 @@ export class PlanEditorInput extends EditorInput {
 	notifySelfWrite(content?: string): void {
 		this._selfWriteSerial += 1;
 		this._lastSelfWriteAt = Date.now();
+		this._lastSelfWriteHadContent = content !== undefined;
 		if (content !== undefined) {
 			this._lastSelfWriteHash = this._hash(content);
 		}
@@ -95,17 +101,11 @@ export class PlanEditorInput extends EditorInput {
 				return;
 			}
 
-			// Phase 1.5 (C4) fix: ignore self-writes. Two complementary signals:
-			//   1. Timestamp-based ignore window: anything within SELF_WRITE_IGNORE_MS
-			//      of a recorded self-write is treated as our own write. This handles
-			//      the planTodoSyncService writes (which go through notifySelfWrite()).
-			//   2. Content-hash check: when our own save() runs, we know the exact
-			//      content we wrote; if the on-disk content matches our hash, it's
-			//      a self-write regardless of timing.
-			if (Date.now() - this._lastSelfWriteAt < PlanEditorInput.SELF_WRITE_IGNORE_MS) {
-				return;
-			}
-
+			// Phase 1.5 (C4) fix: ignore self-writes. The content hash is authoritative:
+			// when the last self-write recorded its content, only a hash match counts as
+			// a self-write — the timestamp window is just a fallback for callers that
+			// couldn't provide the written content. (Checking the window first would drop
+			// genuine external edits that land within it.)
 			let onDiskContent: string | undefined;
 			try {
 				const content = await this.fileService.readFile(this._resource);
@@ -114,8 +114,12 @@ export class PlanEditorInput extends EditorInput {
 				// File deleted or unreadable - leave handling to existing logic
 				return;
 			}
-			if (onDiskContent !== undefined && this._hash(onDiskContent) === this._lastSelfWriteHash) {
-				// This is our own save() content; nothing to do.
+			if (this._lastSelfWriteHash && this._hash(onDiskContent) === this._lastSelfWriteHash) {
+				// This is our own written content; nothing to do.
+				return;
+			}
+			if (!this._lastSelfWriteHadContent && Date.now() - this._lastSelfWriteAt < PlanEditorInput.SELF_WRITE_IGNORE_MS) {
+				// Hashless self-write (caller couldn't provide content) — fall back to the window.
 				return;
 			}
 
@@ -229,16 +233,21 @@ export class PlanEditorInput extends EditorInput {
 	override async save(group: GroupIdentifier, options?: ISaveOptions): Promise<EditorInput | IUntypedEditorInput | undefined> {
 		try {
 			const content = this._currentContent;
-			await this.fileService.writeFile(
+			// Serialize with plan tool/sync writes (they all take planFileLock) so a manual editor save
+			// can't interleave with and clobber a concurrent tool write. Atomic write = no truncation
+			// on crash mid-write.
+			await planFileLock.withLock(this._resource.fsPath, () => this.fileService.writeFile(
 				this._resource,
-				VSBuffer.fromString(content)
-			);
+				VSBuffer.fromString(content),
+				{ atomic: { postfix: '.orbittmp' } }
+			));
 			// Phase 1.5 (C4) fix: record the self-write hash + timestamp so the
 			// file-watcher's follow-up event for our own write is recognized and
 			// ignored.
 			this._selfWriteSerial += 1;
 			this._lastSelfWriteHash = this._hash(content);
 			this._lastSelfWriteAt = Date.now();
+			this._lastSelfWriteHadContent = true;
 			this._isDirty = false;
 			this._hasExternalConflict = false;
 			this._onDidChangeDirty.fire();
@@ -299,6 +308,7 @@ export class PlanEditorInput extends EditorInput {
 	override dispose(): void {
 		this._fileWatcher?.dispose();
 		this._onDidChangeExternalContent.dispose();
+		this._onDidDetectExternalConflict.dispose();
 		super.dispose();
 	}
 }

@@ -10,6 +10,10 @@ interface Props {
 	children: ReactNode;
 	fallback?: ReactNode;
 	onDismiss?: () => void;
+	/** When any value here changes while errored, the boundary resets and re-renders its children.
+	 * Without this a transient render error (e.g. mid-stream malformed tool data) latches forever
+	 * even after the underlying content becomes valid again. */
+	resetKeys?: ReadonlyArray<unknown>;
 }
 
 interface State {
@@ -41,6 +45,17 @@ class ErrorBoundary extends Component<Props, State> {
 			error,
 			errorInfo
 		});
+	}
+
+	componentDidUpdate(prevProps: Props): void {
+		if (!this.state.hasError) return;
+		const prev = prevProps.resetKeys;
+		const next = this.props.resetKeys;
+		const changed = (prev?.length ?? 0) !== (next?.length ?? 0)
+			|| !!next?.some((k, i) => !Object.is(k, prev?.[i]));
+		if (changed) {
+			this.setState({ hasError: false, error: null, errorInfo: null });
+		}
 	}
 
 	render(): ReactNode {

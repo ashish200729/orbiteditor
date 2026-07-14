@@ -126,6 +126,9 @@ export class AuxiliaryWindowsMainService extends Disposable implements IAuxiliar
 				case 'window-native-titlebar':
 					overrides.forceNativeTitlebar = true;
 					break;
+				case 'window-defer-show':
+					overrides.deferShow = true;
+					break;
 			}
 		}
 

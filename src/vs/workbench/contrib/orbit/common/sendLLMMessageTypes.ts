@@ -114,8 +114,20 @@ export type RawToolCallObj = {
 
 export type AnthropicReasoning = ({ type: 'thinking'; thinking: any; signature: string; } | { type: 'redacted_thinking', data: any })
 
+/** Real token usage reported by a provider for a single completion. All fields optional
+ * because providers report different subsets; consumers must tolerate missing values and
+ * never assume this reflects the full request (some providers omit usage entirely). */
+export type LLMUsage = {
+	promptTokens?: number;
+	completionTokens?: number;
+	totalTokens?: number;
+	/** Anthropic prompt-cache read/write token counts, when available. */
+	cacheReadTokens?: number;
+	cacheWriteTokens?: number;
+}
+
 export type OnText = (p: { fullText: string; fullReasoning: string; toolCall?: RawToolCallObj; toolCalls?: RawToolCallObj[] }) => void
-export type OnFinalMessage = (p: { fullText: string; fullReasoning: string; toolCall?: RawToolCallObj; toolCalls?: RawToolCallObj[]; anthropicReasoning: AnthropicReasoning[] | null }) => void // id is tool_use_id
+export type OnFinalMessage = (p: { fullText: string; fullReasoning: string; toolCall?: RawToolCallObj; toolCalls?: RawToolCallObj[]; anthropicReasoning: AnthropicReasoning[] | null; usage?: LLMUsage }) => void // id is tool_use_id
 export type OnError = (p: { message: string; fullError: Error | null }) => void
 export type OnAbort = () => void
 export type AbortRef = { current: (() => void) | null }

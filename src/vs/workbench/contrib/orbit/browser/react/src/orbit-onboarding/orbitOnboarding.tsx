@@ -4,12 +4,14 @@
  *--------------------------------------------------------------------------------------*/
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useAccessor, useIsDark, useSettingsState } from '../util/services.js';
+import { useAccessor, useIsDark, useSettingsState, useOpenAiCodexAuthState, useOrbitProviderAuthState } from '../util/services.js';
 import { Check, ChevronRight } from 'lucide-react';
 import { ColorScheme } from '../../../../../../../platform/theme/common/theme.js';
 import { ConfigurationTarget } from '../../../../../../../platform/configuration/common/configuration.js';
 import ErrorBoundary from '../sidebar-tsx/ErrorBoundary.js';
 import { isLinux } from '../../../../../../../base/common/platform.js';
+import { VOID_OPENAI_CODEX_SIGN_IN_ACTION_ID, VOID_ORBIT_PROVIDER_SIGN_IN_ACTION_ID } from '../../../actionIDs.js';
+import { VOID_OPEN_SETTINGS_ACTION_ID } from '../../../orbitSettingsPane.js';
 
 const OVERRIDE_VALUE = false
 
@@ -20,6 +22,25 @@ export const VoidOnboarding = () => {
 	const [settingsReady, setSettingsReady] = useState(false)
 	const isOnboardingComplete = voidSettingsState.globalSettings.isOnboardingComplete || OVERRIDE_VALUE
 	const isDark = useIsDark()
+
+	// Track whether the onboarding flow has actually been shown this session. Once
+	// settings are ready we know the real completion state; if onboarding is already
+	// complete at that point (the common returning-user case) we must render NOTHING.
+	//
+	// Rendering the wrapper below with `opacity-0` instead of unmounting created a
+	// full-window `fixed inset-0 z-[99999]` opaque compositor layer that Chromium
+	// promotes and leaves with a stale WHITE backing store on first paint — it covers
+	// the whole workbench until a resize/devtools toggle forces a re-raster (the
+	// reported "blank white screen on launch, fixed by resizing" bug). Unmounting when
+	// onboarding was already complete removes the layer entirely so it can never paint.
+	//
+	// The `opacity-0` fade-out path is kept only for the in-session case: a first-run
+	// user who finishes the flow, where the layer is already composited and simply
+	// animates away.
+	const hasShownOnboardingRef = useRef(false)
+	if (settingsReady && !isOnboardingComplete) {
+		hasShownOnboardingRef.current = true
+	}
 
 	useEffect(() => {
 		let disposed = false
@@ -32,6 +53,12 @@ export const VoidOnboarding = () => {
 	}, [voidSettingsService])
 
 	if (!settingsReady) {
+		return null
+	}
+
+	// Already onboarded before this component ever showed the flow: render no overlay
+	// at all, so no full-window layer is committed to the main workbench compositor.
+	if (isOnboardingComplete && !hasShownOnboardingRef.current) {
 		return null
 	}
 
@@ -299,6 +326,66 @@ const PrimaryActionButton = ({ children, ringSize, ...props }: {
 	</button>
 )
 
+// ─── Provider connection ─────────────────────────────────────────────────────────
+
+const ProviderOptionButton = ({ label, sublabel, connected, onClick }: { label: string, sublabel: string, connected?: boolean, onClick: () => void }) => (
+	<button
+		type="button"
+		onClick={onClick}
+		className="w-full flex items-center justify-between gap-3 px-5 py-3 rounded-lg border border-void-border-2 bg-void-bg-3 hover:bg-void-bg-2 transition-colors text-left"
+	>
+		<div className="flex flex-col">
+			<span className="text-void-fg-1 text-sm font-medium">{label}</span>
+			<span className="text-void-fg-3 text-xs">{sublabel}</span>
+		</div>
+		{connected
+			? <span className="flex items-center gap-1 text-xs text-green-500"><Check className="w-4 h-4" /> Connected</span>
+			: <ChevronRight className="w-4 h-4 text-void-fg-3" />}
+	</button>
+)
+
+const ProviderConnectPage = ({ setPageIndex }: { pageIndex: number; setPageIndex: (index: number) => void }) => {
+	const accessor = useAccessor()
+	const commandService = accessor.get('ICommandService')
+	const orbitAuth = useOrbitProviderAuthState()
+	const codexAuth = useOpenAiCodexAuthState()
+	const anyConnected = orbitAuth.isAuthenticated || codexAuth.isAuthenticated
+
+	return (
+		<div className="flex flex-col items-center gap-6 px-4 w-full max-w-md mx-auto text-center">
+			<FadeIn>
+				<h1 className="text-3xl font-light text-void-fg-1">Connect a model</h1>
+				<p className="text-void-fg-3 text-sm mt-2">Sign in or add an API key so Orbit's agents can run. You can change this anytime in Settings.</p>
+			</FadeIn>
+			<div className="w-full flex flex-col gap-3">
+				<ProviderOptionButton
+					label="Sign in with GitHub"
+					sublabel="Use Orbit's hosted models — no API key needed"
+					connected={orbitAuth.isAuthenticated}
+					onClick={() => { void commandService.executeCommand(VOID_ORBIT_PROVIDER_SIGN_IN_ACTION_ID) }}
+				/>
+				<ProviderOptionButton
+					label="Sign in with ChatGPT"
+					sublabel="Use your ChatGPT Plus or Pro subscription"
+					connected={codexAuth.isAuthenticated}
+					onClick={() => { void commandService.executeCommand(VOID_OPENAI_CODEX_SIGN_IN_ACTION_ID) }}
+				/>
+				<ProviderOptionButton
+					label="Add an API key"
+					sublabel="Anthropic, OpenAI, Gemini, OpenRouter, and more"
+					onClick={() => { void commandService.executeCommand(VOID_OPEN_SETTINGS_ACTION_ID) }}
+				/>
+			</div>
+			<FadeIn delayMs={100}>
+				<PrimaryActionButton onClick={() => setPageIndex(3)}>
+					{anyConnected ? 'Continue' : 'Skip for now'}
+				</PrimaryActionButton>
+			</FadeIn>
+			<PreviousButton onClick={() => setPageIndex(1)} />
+		</div>
+	)
+}
+
 // ─── Main flow ─────────────────────────────────────────────────────────────────
 
 const VoidOnboardingContent = () => {
@@ -316,7 +403,7 @@ const VoidOnboardingContent = () => {
 
 	const completeOnboarding = () => {
 		voidSettingsService.setGlobalSetting('isOnboardingComplete', true)
-		voidMetricsService.capture('Completed Onboarding', { pageCount: 3 })
+		voidMetricsService.capture('Completed Onboarding', { pageCount: 4 })
 	}
 
 	const contentOfIdx: Record<number, React.ReactNode> = {
@@ -346,6 +433,9 @@ const VoidOnboardingContent = () => {
 			<OnboardingPageShell hasMaxWidth={false} content={<ThemeSelectionPage pageIndex={pageIndex} setPageIndex={setPageIndex} />} />
 		),
 		2: (
+			<OnboardingPageShell content={<ProviderConnectPage pageIndex={pageIndex} setPageIndex={setPageIndex} />} />
+		),
+		3: (
 			<OnboardingPageShell
 				content={
 					<div className="flex flex-col items-center gap-8 px-4 text-center">

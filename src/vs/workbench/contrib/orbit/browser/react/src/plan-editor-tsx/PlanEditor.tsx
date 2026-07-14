@@ -43,6 +43,10 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({
 	const resourceRef = useRef(resource);
 	resourceRef.current = resource;
 
+	// Latest content, for the autosave completion check below.
+	const rawContentRef = useRef(rawContent);
+	rawContentRef.current = rawContent;
+
 	// Scroll-fade affordance: tracks scroll position of the preview container so
 	// a pointer-events-none gradient overlay fades in when content overflows — a
 	// direct visual cue for "preview not good visible" on long plans.
@@ -94,9 +98,14 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({
 			if (isSaving) return;
 
 			setIsSaving(true);
-			onSave(rawContent)
+			const savedContent = rawContent;
+			onSave(savedContent)
 				.then(() => {
-					setIsDirty(false);
+					// Only mark clean if nothing changed while the save was in flight —
+					// otherwise the newest edit would be silently dropped from autosave.
+					if (rawContentRef.current === savedContent) {
+						setIsDirty(false);
+					}
 				})
 				.catch((error) => {
 					if (onSaveError) {

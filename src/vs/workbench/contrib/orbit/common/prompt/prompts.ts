@@ -1122,7 +1122,12 @@ Terse command-style prompts produce shallow, generic work.
 export const builtinToolNames = Object.keys(builtinTools) as BuiltinToolName[]
 const toolNamesSet = new Set<string>(builtinToolNames)
 const normalizeToolName = (toolName: string) => toolName.trim().replace(/[\s-]+/g, '_')
-export const resolveBuiltinToolName = (toolName: string): BuiltinToolName | undefined => {
+export const resolveBuiltinToolName = (toolName: string, opts?: { mcpToolNames?: Iterable<string> }): BuiltinToolName | undefined => {
+	// A real MCP tool with this exact name always wins over the "read_file" builtin-Read
+	// special-case below — otherwise any configured MCP server exposing its own `read_file`
+	// tool (a common convention, e.g. the official MCP filesystem server) would have its
+	// calls silently misrouted through Read's param normalization instead of passed through.
+	if (hasMcpToolName(opts?.mcpToolNames, toolName)) return undefined
 	const normalized = normalizeToolName(toolName)
 	const lower = normalized.toLowerCase()
 	if (lower === 'read_file') {
@@ -1132,8 +1137,8 @@ export const resolveBuiltinToolName = (toolName: string): BuiltinToolName | unde
 	if (toolNamesSet.has(normalized)) return normalized as BuiltinToolName
 	return undefined
 }
-export const isABuiltinToolName = (toolName: string): toolName is BuiltinToolName => {
-	return !!resolveBuiltinToolName(toolName)
+export const isABuiltinToolName = (toolName: string, opts?: { mcpToolNames?: Iterable<string> }): toolName is BuiltinToolName => {
+	return !!resolveBuiltinToolName(toolName, opts)
 }
 
 const builtinToolNameSet = new Set<string>(builtinToolNames)
@@ -1541,10 +1546,14 @@ export const augmentChatMessagesWithHarnessContext = <T extends HarnessAugmentab
 	}
 
 	const reminder = chat_modeSystemReminder(chatMode)
-	const timestamp = formatHarnessTimestamp()
+	// Timestamp only on a fresh user turn (user message is the last message). Mid-agent-loop
+	// re-prepares (tool results appended after it) must produce byte-identical content, or the
+	// re-derived timestamp mutates an already-sent message and busts provider prompt caching.
+	const isFreshUserTurn = lastUserIdx === messages.length - 1
+	const timestampPart = isFreshUserTurn ? `<timestamp>${formatHarnessTimestamp()}</timestamp>\n` : ''
 	const wrappedContent = reminder
-		? `<system_reminder>\n${reminder}\n</system_reminder>\n\n<timestamp>${timestamp}</timestamp>\n<user_query>\n${content}\n</user_query>`
-		: `<timestamp>${timestamp}</timestamp>\n<user_query>\n${content}\n</user_query>`
+		? `<system_reminder>\n${reminder}\n</system_reminder>\n\n${timestampPart}<user_query>\n${content}\n</user_query>`
+		: `${timestampPart}<user_query>\n${content}\n</user_query>`
 
 	const newMessages = messages.slice()
 	newMessages[lastUserIdx] = { ...userMsg, content: wrappedContent }

@@ -215,8 +215,11 @@ export function stripChecklistSection(content: string): string {
  * Parses a plan file and extracts metadata and sections
  */
 export function parsePlanFile(content: string): ParsedPlan {
-	const metadata = parseYamlFrontmatter(content);
-	const sections = parseSections(content);
+	// Normalize line endings first: the frontmatter/section regexes are written against `\n`, so a
+	// plan hand-saved with CRLF would otherwise fail to parse (→ "Untitled Plan" / empty sections).
+	const normalized = content.replace(/\r\n?/g, '\n');
+	const metadata = parseYamlFrontmatter(normalized);
+	const sections = parseSections(normalized);
 
 	return {
 		metadata,
@@ -357,10 +360,16 @@ export function updatePlanSection(currentContent: string, sectionName: PlanSecti
  */
 function updateFrontmatterTimestamp(content: string): string {
 	const newTimestamp = new Date().toISOString();
-	return content.replace(
-		/^(---\n[\s\S]*?)updated:\s*[^\n]*(\n[\s\S]*?---)/,
-		`$1updated: ${newTimestamp}$2`
-	);
+	const re = /^(---\n[\s\S]*?)updated:\s*[^\n]*(\n[\s\S]*?---)/;
+	if (re.test(content)) {
+		return content.replace(re, `$1updated: ${newTimestamp}$2`);
+	}
+	// No `updated:` field present — insert one after the opening fence so the timestamp actually
+	// updates instead of silently no-op'ing on a hand-edited plan that dropped the field.
+	if (/^---\n/.test(content)) {
+		return content.replace(/^---\n/, `---\nupdated: ${newTimestamp}\n`);
+	}
+	return content; // no frontmatter at all
 }
 
 /**
@@ -465,11 +474,16 @@ export function markTodoComplete(currentContent: string, itemIndex: number): { c
 
 	const lines = currentContent.split('\n');
 
-	// Detect format by checking lines
-	const checkboxRegex = /^- \[\s\] (.*)$/;
-	const numberedRegex = /^(\d+)\.\s+\[(PENDING|IN_PROGRESS)\]\s+(.+)$/;
+	// `itemIndex` is the position shown to the model in the rendered checklist, which numbers ALL
+	// items 1..N regardless of state. Count EVERY checklist item (not just incomplete ones) so the
+	// index lines up — otherwise, once earlier items are completed, the count skips them and the
+	// wrong row gets marked. Match any state; the mark-replace below is a no-op on already-done rows.
+	// NOTE: completed rows use the `✓` (✓) marker (numbered) or `[x]` (checkbox), NOT the word
+	// "COMPLETED" — they must be counted too so the rendered index stays aligned.
+	const checkboxRegex = /^- \[( |x|X|-|~|c|C)\] (.*)$/;
+	const numberedRegex = /^(\d+)\.\s+\[(PENDING|IN_PROGRESS|COMPLETED|CANCELLED|✓)\]\s+(.+)$/;
 
-	let uncheckedIndex = 0;
+	let renderedIndex = 0;
 	let targetLineIndex = -1;
 	let completedItem = '';
 	let isNumberedFormat = false;
@@ -480,16 +494,16 @@ export function markTodoComplete(currentContent: string, itemIndex: number): { c
 		const numberedMatch = lines[i].match(numberedRegex);
 
 		if (checkboxMatch) {
-			uncheckedIndex++;
-			if (uncheckedIndex === itemIndex) {
+			renderedIndex++;
+			if (renderedIndex === itemIndex) {
 				targetLineIndex = i;
-				completedItem = checkboxMatch[1];
+				completedItem = checkboxMatch[2];
 				isNumberedFormat = false;
 				break;
 			}
 		} else if (numberedMatch) {
-			uncheckedIndex++;
-			if (uncheckedIndex === itemIndex) {
+			renderedIndex++;
+			if (renderedIndex === itemIndex) {
 				targetLineIndex = i;
 				completedItem = numberedMatch[3];
 				isNumberedFormat = true;
@@ -499,7 +513,7 @@ export function markTodoComplete(currentContent: string, itemIndex: number): { c
 	}
 
 	if (targetLineIndex === -1) {
-		throw new Error(`TODO item #${itemIndex} not found. There are ${uncheckedIndex} unchecked items.`);
+		throw new Error(`TODO item #${itemIndex} not found. There are ${renderedIndex} items in the checklist.`);
 	}
 
 	// Mark the item as complete based on format
@@ -523,10 +537,16 @@ export function markTodoComplete(currentContent: string, itemIndex: number): { c
  * Updates the plan status in the frontmatter
  */
 export function updatePlanStatus(currentContent: string, newStatus: PlanStatus): string {
-	const updatedContent = currentContent.replace(
-		/^(---\n[\s\S]*?)status:\s*[^\n]*(\n[\s\S]*?---)/,
-		`$1status: ${newStatus}$2`
-	);
+	const re = /^(---\n[\s\S]*?)status:\s*[^\n]*(\n[\s\S]*?---)/;
+	let updatedContent: string;
+	if (re.test(currentContent)) {
+		updatedContent = currentContent.replace(re, `$1status: ${newStatus}$2`);
+	} else if (/^---\n/.test(currentContent)) {
+		// Insert a `status:` field if the frontmatter lacks one (else status silently desyncs).
+		updatedContent = currentContent.replace(/^---\n/, `---\nstatus: ${newStatus}\n`);
+	} else {
+		updatedContent = currentContent;
+	}
 	return updateFrontmatterTimestamp(updatedContent);
 }
 

@@ -24,6 +24,7 @@ import { ILifecycleService } from '../../../services/lifecycle/common/lifecycle.
 import { ServicesAccessor } from '../../../../editor/browser/editorExtensions.js';
 import { isMacintosh, isWindows, isLinux } from '../../../../base/common/platform.js';
 import { IChatThreadService } from './chatThreadService.js';
+import { IAgentWindowTerminalStore } from './agentWindowTerminalStore.js';
 import { ipcRenderer } from '../../../../base/parts/sandbox/electron-sandbox/globals.js';
 import { BROWSER_AUTOMATION_IPC_CHANNELS, IBrowserViewService } from '../../../../platform/browserView/common/browserView.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
@@ -74,6 +75,14 @@ export interface IAgentWindowService {
 	 * For `browser`, `resource` is the initial URL.
 	 */
 	requestWorkspacePanel(kind: WorkspacePanelKind, resource?: string): void;
+
+	/**
+	 * Drain panel requests that were fired while nothing was subscribed yet
+	 * (the React workspace mounts asynchronously after the window opens; an
+	 * early MCP `agentOpenTab` would otherwise be silently lost and time out).
+	 * Called once by `AgentWorkspace` right after it subscribes.
+	 */
+	consumePendingWorkspacePanelRequests(): { kind: WorkspacePanelKind; resource?: string }[];
 
 	/**
 	 * Fires when the built-in browser MCP asks to focus an agents-window browser
@@ -233,6 +242,22 @@ export class AgentWindowService extends Disposable implements IAgentWindowServic
 	private auxWindow: IAuxiliaryWindow | undefined;
 	private windowDisposables: DisposableStore | undefined;
 	private mountDisposeFns: Array<() => void> = [];
+	/**
+	 * Set synchronously at the top of {@link open} and cleared when it settles.
+	 * `this.auxWindow` is only assigned AFTER the async native open resolves, so
+	 * without this a second open() call in that window opens a second real OS
+	 * window (immediately disposed, but it still flashes).
+	 */
+	private _openInFlight: Promise<void> | undefined;
+	/**
+	 * Workspace-panel requests fired before the React workspace subscribed
+	 * (it mounts via an async import after the window opens). Drained by
+	 * {@link consumePendingWorkspacePanelRequests}; cleared on window close.
+	 */
+	private _pendingPanelRequests: { kind: WorkspacePanelKind; resource?: string }[] = [];
+	/** >0 while a divider drag is active — pane clamping must not fight the drag. */
+	private _dividerDragActive = 0;
+	private _saveBoundsTimer: ReturnType<typeof setTimeout> | undefined;
 
 	/** Native browser view id → agents workspace tab id. */
 	private readonly _browserViews = new Map<string, string>();
@@ -266,6 +291,7 @@ export class AgentWindowService extends Disposable implements IAgentWindowServic
 		@ILogService private readonly logService: ILogService,
 		@IChatThreadService private readonly chatThreadService: IChatThreadService,
 		@IMainProcessService private readonly mainProcessService: IMainProcessService,
+		@IAgentWindowTerminalStore private readonly terminalStore: IAgentWindowTerminalStore,
 	) {
 		super();
 
@@ -286,7 +312,14 @@ export class AgentWindowService extends Disposable implements IAgentWindowServic
 			clearTimeout(this._pendingOpenTab.timer);
 			const pending = this._pendingOpenTab;
 			this._pendingOpenTab = undefined;
-			pending.resolve(browserViewId);
+			// The window can be torn down between the open request and this
+			// registration; resolving with a browser view whose window is already
+			// gone would hand the caller a dead id. Reject instead.
+			if (this.auxWindow) {
+				pending.resolve(browserViewId);
+			} else {
+				pending.reject(new Error('Agents window closed before browser view registered.'));
+			}
 		}
 		return toDisposable(() => {
 			this._browserViews.delete(browserViewId);
@@ -309,6 +342,21 @@ export class AgentWindowService extends Disposable implements IAgentWindowServic
 			return;
 		}
 
+		// A second open() while the first is still awaiting the native window
+		// (e.g. double-clicking the pill) must not open a second OS window.
+		if (this._openInFlight) {
+			return this._openInFlight;
+		}
+		const run = this._doOpen();
+		this._openInFlight = run.then(() => undefined, () => undefined);
+		try {
+			await run;
+		} finally {
+			this._openInFlight = undefined;
+		}
+	}
+
+	private async _doOpen(): Promise<void> {
 		let aux: IAuxiliaryWindow;
 		try {
 			// Use a custom title bar (nativeTitlebar: false) so we can render our
@@ -326,6 +374,9 @@ export class AgentWindowService extends Disposable implements IAgentWindowServic
 				bounds: this.readBounds(),
 				nativeTitlebar: useNativeTitlebar,
 				disableFullscreen: false,
+				// Open hidden; reveal only after shell + React mount so Chromium never
+				// presents a stale white compositor frame on first paint.
+				deferShow: true,
 			});
 		} catch (err) {
 			this.logService.error('[AgentWindow] failed to open auxiliary window', err);
@@ -377,9 +428,29 @@ export class AgentWindowService extends Disposable implements IAgentWindowServic
 			// letting React create nodes. See memory `orbit-aux-window-react-mount`.
 			this.delegateNodeFactories(aux);
 
-			this.buildShellAndMount(aux, disposables);
+			try { aux.layout(); } catch { /* prime dimensions before shell mount */ }
 
-			disposables.add(aux.onDidLayout(() => this.saveBounds()));
+			await this.buildShellAndMount(aux, disposables);
+
+			// Debounced: onDidLayout fires on every resize tick; a storage write per
+			// tick is wasteful. 500ms after the last layout is plenty.
+			disposables.add(aux.onDidLayout(() => {
+				if (this._saveBoundsTimer !== undefined) {
+					clearTimeout(this._saveBoundsTimer);
+				}
+				this._saveBoundsTimer = setTimeout(() => {
+					this._saveBoundsTimer = undefined;
+					this.saveBounds();
+				}, 500);
+			}));
+			disposables.add(toDisposable(() => {
+				if (this._saveBoundsTimer !== undefined) {
+					clearTimeout(this._saveBoundsTimer);
+					this._saveBoundsTimer = undefined;
+				}
+				// Persist the final bounds at close (the debounce may still be pending).
+				this.saveBounds();
+			}));
 
 			this._onDidChangeState.fire();
 		} catch (err) {
@@ -399,7 +470,7 @@ export class AgentWindowService extends Disposable implements IAgentWindowServic
 
 	// ----- shell + mounts ---------------------------------------------------
 
-	private buildShellAndMount(aux: IAuxiliaryWindow, disposables: DisposableStore): void {
+	private async buildShellAndMount(aux: IAuxiliaryWindow, disposables: DisposableStore): Promise<void> {
 		const container = aux.container;
 		const auxWin = aux.window;
 		const nativeTitlebar = hasNativeTitlebar(this.configurationService, getTitleBarStyle(this.configurationService));
@@ -543,6 +614,8 @@ export class AgentWindowService extends Disposable implements IAgentWindowServic
 		// the sidebar and main panes get real, non-zero height. There is no longer
 		// a separate title band — the per-column headers live inside the body — so
 		// the body fills the whole content area.
+		let lastShellWidth = 0;
+		let lastShellHeight = 0;
 		const sizeShell = (width: number, height: number) => {
 			// A child window can briefly report a zero-sized client area while it is
 			// being created, hidden, or moved between displays. Do not turn that
@@ -551,12 +624,45 @@ export class AgentWindowService extends Disposable implements IAgentWindowServic
 			// another resize happens. Keep the last valid size instead; the next real
 			// layout event will replace it normally.
 			if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
-				return;
+				if (lastShellWidth > 0 && lastShellHeight > 0) {
+					width = lastShellWidth;
+					height = lastShellHeight;
+				} else {
+					return;
+				}
 			}
+			lastShellWidth = width;
+			lastShellHeight = height;
 			shell.style.width = `${width}px`;
 			shell.style.height = `${height}px`;
 			body.style.width = `${width}px`;
 			body.style.height = `${height}px`;
+
+			// Keep the chat column usable: the side panes have fixed pixel widths
+			// and `.agent-window-main` is the flex filler, so persisted widths from
+			// a larger window (up to 460 + 1000) can crush the chat pane to 0 on a
+			// narrower one. Shrink workspace first, then sidebar, down to their
+			// mins; widths grow back toward the persisted values as the window
+			// widens (we never persist the clamped values). Skipped mid-drag so it
+			// can't fight the user's pointer.
+			if (this._dividerDragActive === 0) {
+				const MAIN_MIN = 320;
+				const sidebarCollapsed = shell.classList.contains('sidebar-collapsed');
+				const workspaceCollapsed = shell.classList.contains('workspace-collapsed');
+				let sidebarW = sidebarCollapsed ? 0 : this.readSidebarWidth();
+				let workspaceW = workspaceCollapsed ? 0 : this.readWorkspaceWidth();
+				let over = sidebarW + workspaceW - (width - MAIN_MIN);
+				if (over > 0 && !workspaceCollapsed) {
+					const shrink = Math.min(over, workspaceW - WORKSPACE_MIN);
+					if (shrink > 0) { workspaceW -= shrink; over -= shrink; }
+				}
+				if (over > 0 && !sidebarCollapsed) {
+					const shrink = Math.min(over, sidebarW - SIDEBAR_MIN);
+					if (shrink > 0) { sidebarW -= shrink; over -= shrink; }
+				}
+				if (!sidebarCollapsed) { sidebarPane.style.width = `${sidebarW}px`; }
+				if (!workspaceCollapsed) { workspacePane.style.width = `${workspaceW}px`; }
+			}
 		};
 		disposables.add(aux.onDidLayout(({ width, height }) => sizeShell(width, height)));
 
@@ -566,16 +672,40 @@ export class AgentWindowService extends Disposable implements IAgentWindowServic
 		// which can be delayed on a cold/slow dynamic import or if the OS opens the
 		// window already at its target size (no RESIZE event) — leaving every pane at
 		// 0 height (an all-white "blank" window). Reading the container's own box
-		// gives a correct size immediately.
+		// gives a correct size immediately; fall back to persisted/default bounds when
+		// the container still reports 0 during the first paint.
 		{
 			const rect = container.getBoundingClientRect();
-			const w = rect.width || auxWin.innerWidth || 0;
-			const h = rect.height || auxWin.innerHeight || 0;
+			const fallback = this.readBounds();
+			const w = rect.width || auxWin.innerWidth || fallback.width || DEFAULT_BOUNDS.width || 1100;
+			const h = rect.height || auxWin.innerHeight || fallback.height || DEFAULT_BOUNDS.height || 760;
 			if (w > 0 && h > 0) {
 				sizeShell(w, h);
 			}
 		}
 		try { aux.layout(); } catch { /* best-effort — onDidLayout will correct sizing */ }
+
+		// Some platforms report 0×0 on first paint, then never fire onDidLayout until
+		// the user resizes. Watch the container and apply the first real measurement.
+		if (typeof ResizeObserver === 'function') {
+			let sawNonZero = lastShellWidth > 0 && lastShellHeight > 0;
+			const ro = new ResizeObserver((entries) => {
+				for (const entry of entries) {
+					const { width, height } = entry.contentRect;
+					if (width <= 0 || height <= 0) {
+						continue;
+					}
+					sizeShell(width, height);
+					try { aux.layout(); } catch { /* best-effort */ }
+					if (!sawNonZero) {
+						sawNonZero = true;
+						this.invalidateNativeWindow(aux);
+					}
+				}
+			});
+			ro.observe(container);
+			disposables.add(toDisposable(() => ro.disconnect()));
+		}
 
 		disposables.add(this.registerDividerDrag(aux, divider, sidebarPane, {
 			min: SIDEBAR_MIN,
@@ -603,14 +733,19 @@ export class AgentWindowService extends Disposable implements IAgentWindowServic
 
 		// React portals mount into the pane CONTENT nodes (below each header), not
 		// the column shells — the headers are shell-owned DOM the portals must not
-		// overwrite.
-		this.mountReact(aux, sidebarContent, mainContent, tooltipContainer, workspacePane);
+		// overwrite. Await mount so the first compositor repaint runs after content
+		// is in the tree — repainting before React resolves leaves a stale white frame.
+		await this.mountReact(aux, sidebarContent, mainContent, tooltipContainer, workspacePane);
 
-		// Paint the window chrome (headers, dividers, pane backgrounds) now, before
-		// the async React import resolves — these are cross-document adopted nodes
-		// too and would otherwise show a stale white frame until the post-mount
-		// repaint. See forceShellRepaint.
-		this.forceShellRepaint(aux);
+		this.scheduleContentReadyRepaint(aux, disposables);
+
+		// Safety net: never leave a deferred window hidden if reveal failed.
+		const fallbackReveal = setTimeout(() => {
+			if (this.auxWindow === aux) {
+				this.revealAuxiliaryWindow(aux);
+			}
+		}, 3000);
+		disposables.add(toDisposable(() => clearTimeout(fallbackReveal)));
 	}
 
 	/**
@@ -655,6 +790,12 @@ export class AgentWindowService extends Disposable implements IAgentWindowServic
 
 	private async _doHandleAgentOpenTab(url: string, replyChannel: string): Promise<void> {
 		try {
+			// The window may have closed while this request sat queued behind the
+			// chain — don't re-arm a pending-open slot handleClosed already flushed.
+			if (!this.auxWindow) {
+				ipcRenderer.send(replyChannel, '');
+				return;
+			}
 			const existing = this._browserViews.keys().next().value as string | undefined;
 			if (existing) {
 				const workspaceTabId = this._browserViews.get(existing)!;
@@ -819,13 +960,7 @@ export class AgentWindowService extends Disposable implements IAgentWindowServic
 					return;
 				}
 				this.ensureVoidScopeStyles(aux);
-				// Re-layout after styles are guaranteed present so React components
-				// can recalculate their dimensions.
 				aux.layout();
-				// Now that shell + React content are both in the tree, force a fresh
-				// compositor raster (see forceShellRepaint) to clear any stale white
-				// first-paint left by cross-document node adoption.
-				this.forceShellRepaint(aux);
 			}, 0);
 		} catch (err) {
 			this.logService.error('[AgentWindow] failed to mount React bundles', err);
@@ -894,21 +1029,85 @@ export class AgentWindowService extends Disposable implements IAgentWindowServic
 		// Throttle-proof fallback: `requestAnimationFrame` can be starved while the
 		// child window is still being shown/composited for the first time — exactly
 		// when the white first-paint happens — so the rAF chain above may not run
-		// until the user interacts. Fire the native repaint on plain timers too, so
-		// the window self-heals with no resize/devtools needed. Multiple staggered
-		// hits cover slow cold-start React/style loads.
-		this.invalidateNativeWindow(aux);
-		for (const delay of [120, 400]) {
+		// until the user interacts. Native repaints are scheduled separately via
+		// `scheduleNativeRepaints` once content is ready.
+	}
+
+	/**
+	 * After shell + React portals are mounted, run a coordinated layout + repaint
+	 * pass so the aux window paints on first open without requiring a manual resize.
+	 */
+	private scheduleContentReadyRepaint(aux: IAuxiliaryWindow, disposables: DisposableStore): void {
+		if (this.auxWindow !== aux) {
+			return;
+		}
+
+		this.ensureVoidScopeStyles(aux);
+		try { aux.layout(); } catch { /* best-effort */ }
+
+		try {
+			const win = aux.window;
+			win.dispatchEvent(new win.Event('resize'));
+		} catch {
+			// ignore
+		}
+
+		this.forceShellRepaint(aux);
+		this.revealAuxiliaryWindow(aux);
+		this.scheduleNativeRepaints(aux, disposables);
+
+		// One more repaint once layout reports real dimensions (covers the case where
+		// innerWidth is valid but the container rect was still 0 on the first pass).
+		const layoutRepaint = aux.onDidLayout(({ width, height }) => {
+			if (width > 0 && height > 0) {
+				layoutRepaint.dispose();
+				this.forceShellRepaint(aux);
+				this.revealAuxiliaryWindow(aux);
+			}
+		});
+		disposables.add(layoutRepaint);
+
+		// Late styleInject from the dynamic import can land after the first repaint.
+		const lateStyleTimer = setTimeout(() => {
+			if (this.auxWindow !== aux) {
+				return;
+			}
+			this.ensureVoidScopeStyles(aux);
+			try { aux.layout(); } catch { /* best-effort */ }
+			this.forceShellRepaint(aux);
+			this.revealAuxiliaryWindow(aux);
+		}, 0);
+		disposables.add(toDisposable(() => clearTimeout(lateStyleTimer)));
+	}
+
+	/** Stagger native 1px-resize invalidations to survive slow cold-start compositing. */
+	private scheduleNativeRepaints(aux: IAuxiliaryWindow, disposables: DisposableStore): void {
+		for (const delay of [0, 50, 150, 400, 800, 1500]) {
 			const timer = setTimeout(() => this.invalidateNativeWindow(aux), delay);
-			this.windowDisposables?.add(toDisposable(() => clearTimeout(timer)));
+			disposables.add(toDisposable(() => clearTimeout(timer)));
 		}
 	}
 
 	/**
-	 * Ask the main process to schedule a full native repaint of the aux window
-	 * (`webContents.invalidate()`), clearing the stale white first-paint that
-	 * Chromium leaves for cross-document adopted node subtrees. No bounds change,
-	 * no fullscreen exit, no flicker — the clean equivalent of a manual resize.
+	 * Reveal a deferred auxiliary window and force a native compositor repaint.
+	 */
+	private revealAuxiliaryWindow(aux: IAuxiliaryWindow): void {
+		if (this.auxWindow !== aux) {
+			return;
+		}
+		const targetWindowId = aux.window.vscodeWindowId;
+		if (typeof targetWindowId !== 'number') {
+			return;
+		}
+		this.nativeHostService.showAuxiliaryWindow({ targetWindowId }).catch(err => {
+			this.logService.error('[AgentWindow] showAuxiliaryWindow failed', err);
+		});
+	}
+
+	/**
+	 * Ask the main process to schedule a full native repaint of the aux window,
+	 * clearing the stale white first-paint that Chromium leaves for cross-document
+	 * adopted node subtrees.
 	 */
 	private invalidateNativeWindow(aux: IAuxiliaryWindow): void {
 		if (this.auxWindow !== aux) {
@@ -1011,7 +1210,19 @@ export class AgentWindowService extends Disposable implements IAgentWindowServic
 			this.storageService.store(STORAGE_WORKSPACE_COLLAPSED, false, StorageScope.APPLICATION, StorageTarget.MACHINE);
 			this.auxWindow?.layout();
 		}
-		this._onDidRequestWorkspacePanel.fire({ kind, resource });
+		if (this._onDidRequestWorkspacePanel.hasListeners()) {
+			this._onDidRequestWorkspacePanel.fire({ kind, resource });
+		} else {
+			// The React workspace hasn't subscribed yet (async mount). Queue the
+			// request; AgentWorkspace drains the queue right after subscribing.
+			this._pendingPanelRequests.push({ kind, resource });
+		}
+	}
+
+	consumePendingWorkspacePanelRequests(): { kind: WorkspacePanelKind; resource?: string }[] {
+		const pending = this._pendingPanelRequests;
+		this._pendingPanelRequests = [];
+		return pending;
 	}
 
 	// ----- divider drag -----------------------------------------------------
@@ -1035,7 +1246,7 @@ export class AgentWindowService extends Disposable implements IAgentWindowServic
 
 		const clamp = (n: number) => Math.max(min, Math.min(max, n));
 
-		const onMove = (e: MouseEvent) => {
+		const onMove = (e: PointerEvent) => {
 			if (!dragging) {
 				return;
 			}
@@ -1044,20 +1255,32 @@ export class AgentWindowService extends Disposable implements IAgentWindowServic
 			pane.style.width = `${next}px`;
 			this.updateDividerAriaValue(divider, next, min, max);
 		};
-		const onUp = () => {
+		const endDrag = () => {
 			if (!dragging) {
 				return;
 			}
 			dragging = false;
+			this._dividerDragActive = Math.max(0, this._dividerDragActive - 1);
 			divider.classList.remove('dragging');
 			save(pane.getBoundingClientRect().width);
 		};
 
-		const onDown = (e: MouseEvent) => {
+		const onDown = (e: PointerEvent) => {
+			if (e.button !== 0) {
+				return;
+			}
 			dragging = true;
+			this._dividerDragActive++;
 			startX = e.clientX;
 			startWidth = pane.getBoundingClientRect().width;
 			divider.classList.add('dragging');
+			// Best-effort: capture the pointer for a consistent cursor/hover state while
+			// dragging. Wrapped in try/catch because if this throws or is a no-op in some
+			// Electron/Chromium build, the window-level pointermove/pointerup listeners
+			// below (not element-scoped) still track and end the drag correctly regardless
+			// — unlike depending on capture alone, which would strand the divider in
+			// 'dragging' state if the pointer slips off the thin strip before release.
+			try { divider.setPointerCapture(e.pointerId); } catch { /* ignore */ }
 			e.preventDefault();
 		};
 		const onKeyDown = (e: KeyboardEvent) => {
@@ -1081,17 +1304,28 @@ export class AgentWindowService extends Disposable implements IAgentWindowServic
 			save(next);
 			EventHelper.stop(e, true);
 		};
-		divider.addEventListener('mousedown', onDown);
+		divider.addEventListener('pointerdown', onDown);
+		// pointermove/pointerup are attached at the window level (not the divider) so the
+		// drag keeps tracking and ENDS correctly even if setPointerCapture above throws,
+		// is a no-op, or the pointer simply outruns the thin divider strip — mirroring the
+		// old window-scoped mousemove/mouseup behavior instead of depending on capture.
+		win.addEventListener('pointermove', onMove);
+		win.addEventListener('pointerup', endDrag);
+		win.addEventListener('pointercancel', endDrag);
+		divider.addEventListener('lostpointercapture', endDrag);
 		divider.addEventListener('keydown', onKeyDown);
-		win.addEventListener('mousemove', onMove);
-		win.addEventListener('mouseup', onUp);
+		// Safety net: end the drag if the window deactivates mid-drag (Cmd+Tab).
+		win.addEventListener('blur', endDrag);
 		this.updateDividerAriaValue(divider, opts.read(), min, max);
 
 		store.add(toDisposable(() => {
-			divider.removeEventListener('mousedown', onDown);
+			divider.removeEventListener('pointerdown', onDown);
+			win.removeEventListener('pointermove', onMove);
+			win.removeEventListener('pointerup', endDrag);
+			win.removeEventListener('pointercancel', endDrag);
+			divider.removeEventListener('lostpointercapture', endDrag);
 			divider.removeEventListener('keydown', onKeyDown);
-			win.removeEventListener('mousemove', onMove);
-			win.removeEventListener('mouseup', onUp);
+			win.removeEventListener('blur', endDrag);
 		}));
 		return store;
 	}
@@ -1119,9 +1353,24 @@ export class AgentWindowService extends Disposable implements IAgentWindowServic
 			this._pendingOpenTab = undefined;
 		}
 		this._browserViews.clear();
+		this._pendingPanelRequests = [];
+		this._openTabChain = Promise.resolve();
 
-		for (const dispose of this.mountDisposeFns) {
-			try { dispose(); } catch (err) { this.logService.error('[AgentWindow] mount dispose failed', err); }
+		// React unmount (below) runs every panel's effect cleanup. Without this
+		// flag the TerminalPanel cleanups would treat window teardown like a tab
+		// close — killing each pty (or orphaning it, unreattachably, when it has
+		// children) and dropping its store entry, so terminals never survived a
+		// window close/reopen or a graceful IDE quit. With the flag they detach
+		// and KEEP the entry; resetReattachSession() then allows the next window
+		// open to reattach the still-alive shells.
+		this.terminalStore.setWindowTeardown(true);
+		try {
+			for (const dispose of this.mountDisposeFns) {
+				try { dispose(); } catch (err) { this.logService.error('[AgentWindow] mount dispose failed', err); }
+			}
+		} finally {
+			this.terminalStore.setWindowTeardown(false);
+			this.terminalStore.resetReattachSession();
 		}
 		this.mountDisposeFns = [];
 
@@ -1148,6 +1397,7 @@ export class AgentWindowService extends Disposable implements IAgentWindowServic
 			this.mainProcessService.getChannel('browserView'),
 			{ context: auxId },
 		);
+		const count = this._browserViews.size;
 		for (const id of [...this._browserViews.keys()]) {
 			try {
 				await bv.setVisible(id, false);
@@ -1156,6 +1406,7 @@ export class AgentWindowService extends Disposable implements IAgentWindowServic
 				this.logService.warn(`[AgentWindow] failed to close browser view ${id}`, err);
 			}
 		}
+		this.logService.trace(`[AgentWindow] teardownAuxBrowserViews closed ${count} browser view(s).`);
 	}
 
 	override dispose(): void {

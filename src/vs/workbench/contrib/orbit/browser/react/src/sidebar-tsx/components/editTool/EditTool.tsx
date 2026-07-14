@@ -3,7 +3,7 @@
  *  Licensed under the Apache License, Version 2.0. See LICENSE.txt for more information.
  *--------------------------------------------------------------------------------------------*/
 
-import React from 'react';
+import React, { useMemo } from 'react';
 import { AlertTriangle } from 'lucide-react';
 import { ToolMessage } from '../../../../../../common/chatThreadServiceTypes.js';
 import { ToolName } from '../../../../../../common/toolsServiceTypes.js';
@@ -11,7 +11,7 @@ import { EditToolCardWrapper } from './EditToolCardWrapper.js';
 import { EditToolCardHeader } from './EditToolCardHeader.js';
 import { EditToolCardContent } from './EditToolCardContent.js';
 import { EditToolErrorMessage } from './EditToolErrorMessage.js';
-import { computeDiffStats } from './unifiedDiffUtils.js';
+import { computeDiffStats, estimateDiffStats } from './unifiedDiffUtils.js';
 import { pathStringToUri } from '../../utils/fileUtils.js';
 import { URI } from '../../../../../../../../../base/common/uri.js';
 import { getEditToolDisplayContent, getEditToolPathParam } from './editToolDisplayData.js';
@@ -52,9 +52,17 @@ export const EditTool = React.memo(({
 		}
 	}
 
-	const diffStats = (editToolType === 'strReplace' || editToolType === 'rewrite') && newString !== undefined
-		? computeDiffStats(oldString ?? '', newString)
-		: { additions: 0, deletions: 0 }
+	// The exact LCS diff on every streamed chunk is quadratic across the stream, and it duplicates
+	// the diff UnifiedDiffView computes for the body. While running, show a cheap line-count
+	// estimate; the exact stats are computed once when the tool settles.
+	const diffStats = useMemo(() => {
+		if (!(editToolType === 'strReplace' || editToolType === 'rewrite') || newString === undefined) {
+			return { additions: 0, deletions: 0 }
+		}
+		return isRunning
+			? estimateDiffStats(oldString ?? '', newString)
+			: computeDiffStats(oldString ?? '', newString)
+	}, [editToolType, oldString, newString, isRunning])
 
 	return (
 		<EditToolCardWrapper

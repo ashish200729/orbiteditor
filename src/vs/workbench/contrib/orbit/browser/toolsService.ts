@@ -17,14 +17,18 @@ import { IVoidModelService } from '../common/orbitModelService.js'
 import { IVoidCommandBarService } from './orbitCommandBarService.js'
 
 import { IMarkerService, MarkerSeverity } from '../../../../platform/markers/common/markers.js'
-import { timeout } from '../../../../base/common/async.js'
 import { RawToolParamsObj } from '../common/sendLLMMessageTypes.js'
 import { MAX_FILE_CHARS_PAGE, MIN_NOTIFY_DEBOUNCE_MS } from '../common/prompt/prompts.js'
 import { extractPdfText } from '../common/pdfTextExtract.js'
 import {
+	assertNoParentTraversal,
 	fileExtensionFromUri,
 	formatNumberedFileLines,
 	imageMimeFromExtension,
+	looksLikeBinary,
+	READ_FILE_MAX_BYTES,
+	READ_IMAGE_MAX_BYTES,
+	READ_PDF_MAX_BYTES,
 	READ_IMAGE_EXTENSIONS,
 	sliceFileLines,
 	validateReadToolParams,
@@ -309,6 +313,9 @@ export class ToolsService implements IToolsService {
 			StrReplace: (params: RawToolParamsObj) => {
 				const { path: pathUnknown, old_string: oldStringUnknown, new_string: newStringUnknown, replace_all: replaceAllUnknown } = params
 				const path = pathToURI(pathUnknown)
+				// Mirror the Read tool's traversal guard so a `..` segment can't
+				// steer a write outside the workspace under auto-accept.
+				assertNoParentTraversal(path)
 				const oldString = validateStr('old_string', oldStringUnknown)
 				const newString = validateStr('new_string', newStringUnknown)
 				if (oldString.length === 0) {
@@ -324,6 +331,9 @@ export class ToolsService implements IToolsService {
 			Write: (params: RawToolParamsObj) => {
 				const { path: pathUnknown, contents: contentsUnknown } = params
 				const path = pathToURI(pathUnknown)
+				// Mirror the Read tool's traversal guard so a `..` segment can't
+				// steer a write outside the workspace under auto-accept.
+				assertNoParentTraversal(path)
 				const contents = validateStr('contents', contentsUnknown)
 				return { path, contents }
 			},
@@ -482,6 +492,10 @@ export class ToolsService implements IToolsService {
 				const ext = fileExtensionFromUri(uri)
 
 				if (READ_IMAGE_EXTENSIONS.has(ext)) {
+					const stat = await fileService.stat(uri)
+					if (typeof stat.size === 'number' && stat.size > READ_IMAGE_MAX_BYTES) {
+						throw new Error(`Read: image is too large (${stat.size} bytes, max ${READ_IMAGE_MAX_BYTES}). Resize or crop the image before reading it.`)
+					}
 					const data = await fileService.readFile(uri)
 					const mime = imageMimeFromExtension(ext)
 					if (!mime) {
@@ -498,12 +512,23 @@ export class ToolsService implements IToolsService {
 				}
 
 				if (ext === 'pdf') {
+					const stat = await fileService.stat(uri)
+					if (typeof stat.size === 'number' && stat.size > READ_PDF_MAX_BYTES) {
+						throw new Error(`Read: PDF is too large (${stat.size} bytes, max ${READ_PDF_MAX_BYTES}). Use shell tools to extract the pages you need.`)
+					}
 					const data = await fileService.readFile(uri)
 					const { textContent, totalPages } = await extractPdfText(data.value)
 					return { result: { kind: 'pdf', textContent, totalPages } }
 				}
 
+				const stat = await fileService.stat(uri)
+				if (typeof stat.size === 'number' && stat.size > READ_FILE_MAX_BYTES) {
+					throw new Error(`Read: file is too large (${stat.size} bytes, max ${READ_FILE_MAX_BYTES}). Pass 'offset' and 'limit' to read a slice, or use shell tools (e.g. sed -n, head) for very large files.`)
+				}
 				const data = await fileService.readFile(uri)
+				if (looksLikeBinary(data.value.buffer)) {
+					throw new Error(`Read: file appears to be binary (contains NUL bytes): ${uri.fsPath}. Reading it as text would produce garbage; use shell tools if you need its raw contents.`)
+				}
 				const raw = data.value.toString()
 				if (raw.length === 0) {
 					return { result: { kind: 'text', fileContents: '', totalNumLines: 0, firstLineNumber: 1 } }
@@ -712,7 +737,7 @@ export class ToolsService implements IToolsService {
 			},
 
 			read_lint_errors: async ({ uri }) => {
-				await timeout(1000)
+				await this._waitForLintSettle(uri, 1000)
 				const { lintErrors } = this._getLintErrors(uri)
 				return { result: { lintErrors } }
 			},
@@ -721,6 +746,15 @@ export class ToolsService implements IToolsService {
 
 		StrReplace: async ({ path, oldString, newString, replaceAll }) => {
 			this._acquireMutatingLock('StrReplace');
+			// Release-once guard: the lock is released as soon as the mutation is
+			// durable/dispatched (not held through lint waits or block windows).
+			// Idempotent so the existing catch/finally releases are safe no-ops.
+			let lockReleased = false;
+			const releaseLockOnce = () => {
+				if (lockReleased) return;
+				lockReleased = true;
+				this._releaseMutatingLock();
+			};
 			try {
 				// Plan-mode guard MUST run whenever plan mode is active — gating on
 				// `threadId` left a hole: if no thread was current (e.g. a race or a
@@ -735,7 +769,7 @@ export class ToolsService implements IToolsService {
 					if (decision === 'draft') {
 						const result = this._applyPlanDraftEdit(threadId!, content =>
 							applyStringReplaceToContent(content, oldString, newString, replaceAll));
-						this._releaseMutatingLock();
+						releaseLockOnce();
 						return { result: Promise.resolve(result) };
 					}
 					if (decision === 'blocked') {
@@ -760,13 +794,16 @@ export class ToolsService implements IToolsService {
 					// as a tool error) before we report success. The Read tool reads disk, so
 					// returning early would let the agent re-read stale/unwritten content.
 					await editCodeService.instantlyApplyStrReplace({ uri: path, oldString, newString, replaceAll })
+					// Durable on disk now; release before the lint wait so other mutating
+					// tools aren't blocked for 2s+. The finally below is a no-op fallback.
+					releaseLockOnce();
 
 				const lintErrorsPromise = Promise.resolve().then(async () => {
 					// The mutating lock MUST be released here even if computing lint
 					// errors or syncing the plan throws — otherwise every subsequent
 					// mutating/terminal tool is permanently blocked for the session.
 					try {
-						await timeout(2000)
+						await this._waitForLintSettle(path, 2000)
 						const { lintErrors } = this._getLintErrors(path)
 						const syncThreadId = this._getCurrentThreadId();
 						if (syncThreadId && this._isPlanMode() && isPlanFilePath(path.fsPath, this.chatThreadService.state.allThreads[syncThreadId]?.linkedPlanPath)) {
@@ -774,19 +811,28 @@ export class ToolsService implements IToolsService {
 						}
 						return { lintErrors }
 					} finally {
-						this._releaseMutatingLock();
+						releaseLockOnce();
 					}
 				})
 
 					return { result: lintErrorsPromise }
 				} catch (error) {
-					this._releaseMutatingLock();
+					releaseLockOnce();
 					throw error;
 				}
 			},
 
 		Write: async ({ path, contents }) => {
 			this._acquireMutatingLock('Write');
+			// Release-once guard: the lock is released as soon as the mutation is
+			// durable/dispatched (not held through lint waits or block windows).
+			// Idempotent so the existing catch/finally releases are safe no-ops.
+			let lockReleased = false;
+			const releaseLockOnce = () => {
+				if (lockReleased) return;
+				lockReleased = true;
+				this._releaseMutatingLock();
+			};
 			try {
 				// Plan-mode guard MUST run whenever plan mode is active — see StrReplace
 				// for the rationale. Gating on `threadId` left a hole where a missing
@@ -798,7 +844,7 @@ export class ToolsService implements IToolsService {
 					const decision = resolvePlanModeEditDecision(path.fsPath, !!(draft && !draft.savedPlanPath), linkedPath);
 					if (decision === 'draft') {
 						const result = this._applyPlanDraftEdit(threadId!, () => contents);
-						this._releaseMutatingLock();
+						releaseLockOnce();
 						return { result: Promise.resolve(result) };
 					}
 					if (decision === 'blocked') {
@@ -831,6 +877,9 @@ export class ToolsService implements IToolsService {
 						// Await so the full rewrite is durably saved to disk (and any save failure
 						// surfaces as a tool error) before we report success. The Read tool reads disk.
 						await editCodeService.instantlyWriteFile({ uri: path, contents })
+						// Durable on disk now; release before the lint wait so other mutating
+						// tools aren't blocked for 2s+. The finally below is a no-op fallback.
+						releaseLockOnce();
 					} catch (writeError) {
 						// If we created an empty file but never wrote real contents into it,
 						// don't leave a stray 0-byte file behind.
@@ -844,7 +893,7 @@ export class ToolsService implements IToolsService {
 					// Always release the mutating lock, even if lint computation or plan
 					// sync throws — otherwise all future mutating tools deadlock.
 					try {
-						await timeout(2000)
+						await this._waitForLintSettle(path, 2000)
 						const { lintErrors } = this._getLintErrors(path)
 						const syncThreadId = this._getCurrentThreadId();
 						if (syncThreadId && this._isPlanMode() && isPlanFilePath(path.fsPath, this.chatThreadService.state.allThreads[syncThreadId]?.linkedPlanPath)) {
@@ -852,24 +901,33 @@ export class ToolsService implements IToolsService {
 						}
 						return { lintErrors }
 					} finally {
-						this._releaseMutatingLock();
+						releaseLockOnce();
 					}
 				})
 					return { result: lintErrorsPromise }
 				} catch (error) {
-					this._releaseMutatingLock();
+					releaseLockOnce();
 					throw error;
 				}
 			},
 			// ---
 		Shell: async (params) => {
 			this._acquireMutatingLock('Shell');
+			// Release-once guard: the lock is released as soon as the mutation is
+			// durable/dispatched (not held through lint waits or block windows).
+			// Idempotent so the existing catch/finally releases are safe no-ops.
+			let lockReleased = false;
+			const releaseLockOnce = () => {
+				if (lockReleased) return;
+				lockReleased = true;
+				this._releaseMutatingLock();
+			};
 			try {
 				// Defense in depth: Shell is excluded from planModeToolNames, but a
 				// runtime guard ensures a stray shell call (e.g. from a sub-agent or
 				// a tool-list race) can never mutate system state in plan mode.
 				if (this._isPlanMode()) {
-					this._releaseMutatingLock();
+					releaseLockOnce();
 					throw new Error('Plan mode does not allow running shell commands. Switch to Agent mode to execute.');
 				}
 				const threadId = this.currentShellThreadId;
@@ -907,12 +965,12 @@ export class ToolsService implements IToolsService {
 					const interrupt = () => { this.terminalToolService.interruptShell(shellId); };
 
 					if (params.blockUntilMs === 0) {
-						const resPromise = this.terminalToolService.runShell(shellId, command, { blockUntilMs: 0, workingDirectory })
+						const resPromise = this.terminalToolService.runShell(shellId, command, { blockUntilMs: 0, workingDirectory, onDispatched: releaseLockOnce })
 							.then(() => {
-								this._releaseMutatingLock();
+								releaseLockOnce();
 							})
 							.catch((error) => {
-								this._releaseMutatingLock();
+								releaseLockOnce();
 								throw error;
 							});
 						void resPromise;
@@ -922,11 +980,11 @@ export class ToolsService implements IToolsService {
 						};
 					}
 
-					const resPromise = this.terminalToolService.runShell(shellId, command, { blockUntilMs: params.blockUntilMs, workingDirectory })
+					const resPromise = this.terminalToolService.runShell(shellId, command, { blockUntilMs: params.blockUntilMs, workingDirectory, onDispatched: releaseLockOnce })
 						.then((runRes) => {
 							notifyDisposables.forEach(d => d.dispose());
 							const durationMs = Date.now() - startedAt;
-							this._releaseMutatingLock();
+							releaseLockOnce();
 							if (runRes.kind === 'done') {
 								return {
 									kind: 'done' as const,
@@ -953,43 +1011,55 @@ export class ToolsService implements IToolsService {
 							};
 						})
 						.catch((error) => {
-							this._releaseMutatingLock();
+							releaseLockOnce();
 							throw error;
 						});
 
 					return { result: resPromise, interruptTool: interrupt };
 				} catch (error) {
-					this._releaseMutatingLock();
+					releaseLockOnce();
 					throw error;
 				}
 			},
 		AwaitShell: async (params) => {
 			this._acquireMutatingLock('AwaitShell');
+			// Release-once guard: the lock is released as soon as the mutation is
+			// durable/dispatched (not held through lint waits or block windows).
+			// Idempotent so the existing catch/finally releases are safe no-ops.
+			let lockReleased = false;
+			const releaseLockOnce = () => {
+				if (lockReleased) return;
+				lockReleased = true;
+				this._releaseMutatingLock();
+			};
 			try {
 				// Defense in depth: AwaitShell is excluded from planModeToolNames.
 				if (this._isPlanMode()) {
-					this._releaseMutatingLock();
+					releaseLockOnce();
 					throw new Error('Plan mode does not allow awaiting shell commands. Switch to Agent mode to execute.');
 				}
 				if (params.shellId && !this.terminalToolService.shellExists(params.shellId)) {
-					this._releaseMutatingLock();
+					releaseLockOnce();
 					return { result: { kind: 'notfound' as const, error: `Shell with id "${params.shellId}" does not exist.`, runningForMs: 0 } };
 				}
 
+					// AwaitShell only observes an existing shell; it never mutates. Release
+					// the lock before the wait so file edits aren't blocked meanwhile.
+					releaseLockOnce();
 					const resPromise = this.terminalToolService.awaitShell(params.shellId, {
 						blockUntilMs: params.blockUntilMs,
 						pattern: params.pattern,
 					}).then((awaitRes) => {
-						this._releaseMutatingLock();
+						releaseLockOnce();
 						return awaitRes;
 					}).catch((error) => {
-						this._releaseMutatingLock();
+						releaseLockOnce();
 						throw error;
 					});
 
 					return { result: resPromise };
 				} catch (error) {
-					this._releaseMutatingLock();
+					releaseLockOnce();
 					throw error;
 				}
 			},
@@ -1400,6 +1470,12 @@ export class ToolsService implements IToolsService {
 
 
 	private _acquireMutatingLock(toolName: string): void {
+		// 'normal' (Chat) mode is read-only. Mutating tools aren't advertised to the model there,
+		// but a hallucinated call would otherwise validate and execute — enforce at run time too
+		// (plan mode has its own bespoke guards that redirect edits into the plan draft).
+		if (this.voidSettingsService.state.globalSettings.chatMode === 'normal') {
+			throw new Error(`${toolName} is not available in Chat mode (read-only). Ask the user to switch to Agent mode to make changes.`);
+		}
 		if (this._mutatingToolInProgress) {
 			throw new Error(`Cannot run ${toolName} while another mutating/terminal tool (${this._currentMutatingTool}) is in progress. Mutating and terminal tools must run sequentially and alone. Please wait for the current operation to complete.`);
 		}
@@ -1410,6 +1486,33 @@ export class ToolsService implements IToolsService {
 	private _releaseMutatingLock(): void {
 		this._mutatingToolInProgress = false;
 		this._currentMutatingTool = null;
+	}
+
+	/**
+	 * C3: wait for linter diagnostics to settle after an edit, instead of a fixed sleep. Resolves a short
+	 * `settleMs` after the last marker change for `uri` (so incremental linters finish), and never waits
+	 * longer than `maxMs` (the old fixed ceiling) — so this is always ≤ the previous latency, usually less.
+	 */
+	private _waitForLintSettle(uri: URI, maxMs: number, settleMs = 250): Promise<void> {
+		return new Promise<void>(resolve => {
+			const key = uri.toString()
+			let finished = false
+			let settleTimer: ReturnType<typeof setTimeout> | null = null
+			const finish = () => {
+				if (finished) return
+				finished = true
+				listener.dispose()
+				if (settleTimer) clearTimeout(settleTimer)
+				clearTimeout(hardCap)
+				resolve()
+			}
+			const listener = this.markerService.onMarkerChanged(uris => {
+				if (!uris.some(u => u.toString() === key)) return
+				if (settleTimer) clearTimeout(settleTimer)
+				settleTimer = setTimeout(finish, settleMs)
+			})
+			const hardCap = setTimeout(finish, maxMs)
+		})
 	}
 
 	private _getLintErrors(uri: URI): { lintErrors: LintErrorItem[] | null } {

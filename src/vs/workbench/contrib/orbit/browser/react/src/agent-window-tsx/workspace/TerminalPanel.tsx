@@ -22,6 +22,27 @@ import type { WorkspacePanelProps } from './workspaceTypes.js';
  * lets the terminal backend pick the default — typically the user's home or the
  * workspace root).
  */
+/**
+ * Whether the terminal may take focus right now. Reattaching/activating a
+ * terminal must not yank the caret out of an input the user is typing in
+ * (e.g. the chat composer when the window reopens with surviving terminals).
+ */
+const canStealFocus = (host: HTMLElement): boolean => {
+	try {
+		const doc = getConnectedDocument(host);
+		const active = doc.activeElement as HTMLElement | null;
+		if (!active || active === doc.body) {
+			return true;
+		}
+		if (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.isContentEditable) {
+			return false;
+		}
+		return true;
+	} catch {
+		return true;
+	}
+};
+
 const resolveCwd = (
 	historyService: { getLastActiveWorkspaceRoot: (scheme?: string) => URI | undefined },
 	workspaceContextService: { getWorkspace: () => { folders: { uri: URI }[] } },
@@ -41,6 +62,7 @@ export const TerminalPanel = ({ tab, isActive, setTitle }: WorkspacePanelProps) 
 	const workspaceContextService = accessor.get('IWorkspaceContextService');
 	const historyService = accessor.get('IHistoryService');
 	const terminalStore = accessor.get('IAgentWindowTerminalStore');
+	const notificationService = accessor.get('INotificationService');
 
 	const hostRef = React.useRef<HTMLDivElement | null>(null);
 	const termHostRef = React.useRef<HTMLDivElement | null>(null);
@@ -187,16 +209,22 @@ export const TerminalPanel = ({ tab, isActive, setTitle }: WorkspacePanelProps) 
 				// created — we're resuming after an `await`, and the user may have
 				// already switched to a different tab by now.
 				instance.setVisible(isActiveRef.current);
-				if (isActiveRef.current) {
+				if (isActiveRef.current && canStealFocus(host)) {
 					instance.focus();
 				}
 
 				// Resize observer from the CONNECTED (pop-out) window.
 				const win = getConnectedWindow(termHost) as Window & typeof globalThis;
 				if (typeof win.ResizeObserver === 'function') {
-					ro = new win.ResizeObserver(() => layoutNow());
-					ro.observe(termHost);
-					ro.observe(host);
+					// Best-effort: constructing/observing from a foreign (pop-out) window
+					// can throw if the host document has already disconnected. A failure
+					// here must not fall through to the outer catch and blank an otherwise
+					// working terminal via setError — the terminal just won't auto-resize.
+					try {
+						ro = new win.ResizeObserver(() => layoutNow());
+						ro.observe(termHost);
+						ro.observe(host);
+					} catch { /* ignore */ }
 				}
 			} catch (e: unknown) {
 				if (!disposed) {
@@ -215,7 +243,17 @@ export const TerminalPanel = ({ tab, isActive, setTitle }: WorkspacePanelProps) 
 
 			const inst = instanceRef.current;
 			instanceRef.current = null;
-			if (inst) {
+			if (terminalStore.windowTeardownActive) {
+				// The whole agents window is closing — this is NOT a tab close.
+				// Detach the surface and the process but keep the pty AND the
+				// persisted store entry alive so reopening the window (or the
+				// next IDE launch) reattaches this shell exactly as it was.
+				if (inst) {
+					try { inst.detachFromElement(); } catch { /* ignore */ }
+					try { inst.detachProcessAndDispose(TerminalExitReason.User); } catch { /* ignore */ }
+				}
+				handleRef.current = null; // deliberately NOT disposed — entry must persist
+			} else if (inst) {
 				// Kill-confirm consistent with the IDE's `terminal.integrated.confirmOnKill`
 				// setting. We only treat it as "needs confirming" when the shell has
 				// child processes (closing a bare prompt shell is never surprising).
@@ -234,9 +272,22 @@ export const TerminalPanel = ({ tab, isActive, setTitle }: WorkspacePanelProps) 
 				const needsConfirm = (confirmOnKill === 'always' || confirmOnKill === 'panel') && inst.hasChildProcesses;
 				if (needsConfirm) {
 					try { inst.detachFromElement(); } catch { /* ignore */ }
-					try { inst.detachProcessAndDispose(TerminalExitReason.User); } catch { /* ignore */ }
+					// detachProcessAndDispose is async; the sync try/catch can't catch a
+					// rejected promise, so attach a .catch to avoid an unhandled rejection
+					// if the detach fails (e.g. the pty host is already gone). Dropping the
+					// store entry immediately (below) is intentional — see the comment above.
+					try { void inst.detachProcessAndDispose(TerminalExitReason.User).catch(() => { /* ignore */ }); } catch { /* ignore */ }
 					handleRef.current?.dispose();
 					handleRef.current = null;
+					// The shell (and whatever is running in it) was deliberately kept
+					// alive — but it is no longer reachable from any tab. Silent
+					// orphaning looked like a hang ("my build kept running"); say so.
+					// Sanitize the terminal title to prevent command: link injection
+					// via VS Code's parseLinkedText in notification rendering.
+					const sanitizedTitle = (inst.title || 'Terminal').replace(/[[\]()]/g, '');
+					notificationService.info(
+						`Terminal "${sanitizedTitle}" was closed while a process was running. The process was left running in the background.`,
+					);
 				} else {
 					try {
 						inst.detachFromElement();
@@ -276,7 +327,9 @@ export const TerminalPanel = ({ tab, isActive, setTitle }: WorkspacePanelProps) 
 					inst.layout({ width: rect.width, height: rect.height });
 				}
 			}
-			inst.focus();
+			if (host && canStealFocus(host)) {
+				inst.focus();
+			}
 		}
 	}, [isActive]);
 

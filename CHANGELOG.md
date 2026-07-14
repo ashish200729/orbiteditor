@@ -2,6 +2,51 @@
 
 All notable changes to Orbit Editor are documented here.
 
+## 0.2.0
+
+### 🧵 Send while the agent is working
+
+You can now type and send follow-up messages while the agent is still running, Cursor-style — they queue up and are sent in order once the current turn finishes. Each queued message snapshots its attachments and selection at the moment you hit send (not whatever's selected later), a failed turn pauses the queue instead of losing it, and queued messages now survive an app reload as "paused" rather than vanishing.
+
+### 🧠 Automatic context compaction for long threads
+
+When a long-running thread gets close to the model's context limit, Orbit now automatically summarizes older turns via a dedicated LLM call and keeps going instead of hitting a hard wall. The summarization boundary always snaps to a user-message so a tool call and its result are never split apart.
+
+### ⚡ Smoother scrolling on long streaming responses
+
+Chat markdown and inline diffs were re-computing from scratch on every streamed chunk, which made very long responses and large diffs get progressively jankier as they grew. Completed markdown blocks and diffs are now memoized/computed once instead of on every chunk, so long agent turns and big diffs stay smooth to scroll through.
+
+### 🪟 Agents window polish
+
+- Dialogs, menus, and the command palette opened from the standalone Agents window now correctly resolve to that window instead of raising the main IDE window behind it.
+- The Files panel keeps its expand state and exclude-list cache correct across renames instead of drifting stale.
+- Further fixes to the white-flash that could briefly appear when opening the Agents window.
+
+### 🔒 Security & reliability fixes
+
+- Fixed an IPv6 gap in the agent's browser-tool SSRF guard that could let it reach cloud-metadata addresses (e.g. AWS's IPv6 metadata endpoint) even though the IPv4 equivalent was already blocked.
+- Fixed a git "discard changes" bug where one file failing partway through a multi-file discard could leave earlier files already reverted with no indication of which ones.
+- Fixed MCP tool routing so a configured MCP server's own tool literally named `read_file` is no longer misrouted through the built-in Read tool's parameter handling.
+- Fixed a race where a truncated terminal command's "full output" file path could be handed to the agent before the file had actually finished writing.
+- Widened the environment variables passed to MCP servers so proxy settings, custom CA bundles, and common language-runtime variables (PYTHONPATH, GOPATH, NVM, etc.) are no longer silently stripped.
+- Long-thinking / extended-reasoning models get a longer stream idle-timeout so they're no longer aborted mid-turn during a long silent thinking phase.
+- Fixed a bookkeeping bug where two genuinely parallel, identical Gemini tool calls (both missing an id) could collapse into a single call.
+- Hardened the Agents-window pane-divider drag so a fast drag that slips off the thin divider strip can no longer get stuck.
+- Workspace-trust is now checked before project-scoped skills and sub-agents are loaded.
+- Plan and skill documents now save via atomic write + lock so a crash or race can no longer leave a corrupted or partially-written file.
+
+### macOS install
+
+- **Recommended (no Gatekeeper warning):**
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/ashish200729/orbiteditor/main/install.sh | bash
+  ```
+- **Or download the `.dmg`** from the release, drag Orbit to Applications, then run once:
+  ```bash
+  xattr -cr /Applications/Orbit.app
+  ```
+  (Orbit isn't notarized by Apple yet, so a browser-downloaded `.dmg` shows a one-time "unverified developer" prompt; the command above clears it.)
+
 ## 0.1.4
 
 ### 🪟 The Agents window — a full workspace, popped out

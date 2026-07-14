@@ -5,7 +5,7 @@
 
 import React, { useEffect, useMemo, useRef } from 'react';
 import { URI } from '../../../../../../../../../base/common/uri.js';
-import { computeUnifiedDiffLines, UnifiedDiffLine } from './unifiedDiffUtils.js';
+import { computeStreamingDiffLines, computeUnifiedDiffLines, UnifiedDiffLine } from './unifiedDiffUtils.js';
 import { EDIT_TOOL_MIN_VIEWPORT_PX } from './editToolSizing.js';
 import { editToolStrings } from './editToolStrings.js';
 
@@ -69,7 +69,15 @@ export const UnifiedDiffView = ({
 	/** When the edit has finished but produced no diff, show "No changes" instead of a perpetual "Preparing preview…". */
 	isComplete?: boolean;
 }) => {
-	const diffLines = useMemo(() => computeUnifiedDiffLines(oldString, newString), [oldString, newString]);
+	// While streaming (isComplete === false) the LCS diff would re-run on every chunk over the
+	// whole growing string — quadratic across the stream. Render the cheap removed/added shape
+	// instead; the exact diff is computed once when the edit completes.
+	const diffLines = useMemo(
+		() => isComplete === false
+			? computeStreamingDiffLines(oldString, newString)
+			: computeUnifiedDiffLines(oldString, newString),
+		[oldString, newString, isComplete],
+	);
 	const hasDiffContent = diffLines.length > 0;
 
 	const innerRef = useRef<HTMLDivElement | null>(null);

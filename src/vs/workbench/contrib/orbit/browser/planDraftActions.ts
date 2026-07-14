@@ -110,7 +110,7 @@ export async function savePlanDraftToWorkspace(deps: {
 		if (!planUri) {
 			throw new Error('Failed to determine a plan file path.');
 		}
-		await deps.fileService.writeFile(planUri, VSBuffer.fromString(content));
+		await deps.fileService.writeFile(planUri, VSBuffer.fromString(content), { atomic: { postfix: '.orbittmp' } });
 	});
 
 	if (!planUri) {
@@ -169,7 +169,7 @@ export async function buildPlanFromThread(deps: {
 			const currentContent = await deps.fileService.readFile(planUri);
 			const statusUpdated = syncPlanStatus(currentContent.value.toString());
 			if (statusUpdated !== currentContent.value.toString()) {
-				await deps.fileService.writeFile(planUri, VSBuffer.fromString(statusUpdated));
+				await deps.fileService.writeFile(planUri, VSBuffer.fromString(statusUpdated), { atomic: { postfix: '.orbittmp' } });
 			}
 		});
 	} catch (error) {
@@ -177,6 +177,9 @@ export async function buildPlanFromThread(deps: {
 	}
 
 	const { displayContent, llmContent } = buildPlanImplementationMessage(deps.planTitle, deps.overview, deps.todos);
+
+	// Build must start immediately — interrupt any in-flight run rather than queueing behind it.
+	await deps.chatThreadService.abortRunning(deps.threadId);
 
 	await deps.chatThreadService.addUserMessageAndStreamResponse({
 		userMessage: displayContent,

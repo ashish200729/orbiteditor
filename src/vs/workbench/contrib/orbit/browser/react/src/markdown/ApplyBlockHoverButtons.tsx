@@ -80,16 +80,18 @@ export const CopyButton = ({ codeStr, toolTipName }: { codeStr: string | (() => 
 
 	useEffect(() => {
 		if (copyButtonText === CopyButtonText.Idle) return
-		setTimeout(() => {
+		const id = setTimeout(() => {
 			setCopyButtonText(CopyButtonText.Idle)
 		}, COPY_FEEDBACK_TIMEOUT)
+		return () => clearTimeout(id) // avoid setState after unmount
 	}, [copyButtonText])
 
 	const onCopy = useCallback(async () => {
-		clipboardService.writeText(typeof codeStr === 'string' ? codeStr : await codeStr())
+		const text = typeof codeStr === 'string' ? codeStr : await codeStr()
+		clipboardService.writeText(text)
 			.then(() => { setCopyButtonText(CopyButtonText.Copied) })
 			.catch(() => { setCopyButtonText(CopyButtonText.Error) })
-		metricsService.capture('Copy Code', { length: codeStr.length }) // capture the length only
+		metricsService.capture('Copy Code', { length: text.length }) // resolved-string length, not fn arity
 	}, [metricsService, clipboardService, codeStr, setCopyButtonText])
 
 	return <IconShell1

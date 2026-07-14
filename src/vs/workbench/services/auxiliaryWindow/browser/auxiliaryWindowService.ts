@@ -48,6 +48,13 @@ export interface IAuxiliaryWindowOpenOptions {
 
 	readonly nativeTitlebar?: boolean;
 	readonly disableFullscreen?: boolean;
+
+	/**
+	 * When true, the native BrowserWindow is created hidden (`show: false`) and
+	 * must be revealed via `INativeHostService.showAuxiliaryWindow` once content
+	 * is ready. Used by the Agents window to avoid a stale white compositor frame.
+	 */
+	readonly deferShow?: boolean;
 }
 
 export interface IAuxiliaryWindowService {
@@ -293,6 +300,11 @@ export class BrowserAuxiliaryWindowService extends Disposable implements IAuxili
 		};
 		this.telemetryService.publicLog2<AuxiliaryWindowOpenEvent, AuxiliaryWindowClassification>('auxiliaryWindowOpen', { bounds: !!options?.bounds });
 
+		// Prime layout dimensions once on open. `onDidLayout` otherwise only fires
+		// after a `resize` event — if the OS opens the window already at its target
+		// size, no resize happens and consumers never get a first measurement.
+		auxiliaryWindow.layout();
+
 		return auxiliaryWindow;
 	}
 
@@ -339,6 +351,7 @@ export class BrowserAuxiliaryWindowService extends Disposable implements IAuxili
 			// non-standard properties
 			options?.nativeTitlebar ? 'window-native-titlebar=yes' : undefined,
 			options?.disableFullscreen ? 'window-disable-fullscreen=yes' : undefined,
+			options?.deferShow ? 'window-defer-show=yes' : undefined,
 			options?.mode === AuxiliaryWindowMode.Maximized ? 'window-maximized=yes' : undefined,
 			options?.mode === AuxiliaryWindowMode.Fullscreen ? 'window-fullscreen=yes' : undefined
 		]);
@@ -503,10 +516,19 @@ export class BrowserAuxiliaryWindowService extends Disposable implements IAuxili
 	private applyHTML(auxiliaryWindow: CodeWindow, disposables: DisposableStore): HTMLElement {
 		mark('code/auxiliaryWindow/willApplyHTML');
 
-		// Create workbench container and apply classes
+		// Guarantee the flex/% height chain resolves to the window viewport.
+		auxiliaryWindow.document.documentElement.style.height = '100%';
+		auxiliaryWindow.document.body.style.height = '100%';
+		auxiliaryWindow.document.body.style.margin = '0';
+		auxiliaryWindow.document.body.style.overflow = 'hidden';
+
+		// Create workbench container and apply classes. Use absolute inset so the
+		// container always fills the viewport even when `position:relative` + `top/
+		// right/bottom/left:0` does not stretch the element.
 		const container = $('div', { role: 'application' });
-		position(container, 0, 0, 0, 0, 'relative');
+		position(container, 0, 0, 0, 0, 'absolute');
 		container.style.display = 'flex';
+		container.style.width = '100%';
 		container.style.height = '100%';
 		container.style.flexDirection = 'column';
 		auxiliaryWindow.document.body.append(container);

@@ -33,3 +33,42 @@ export const usePromise = <T,>(promise: Promise<T>): T | undefined => {
 	}, [promise])
 	return val
 }
+
+
+/**
+ * Downscale/re-encode an image data URL before it enters thread state. Full-res
+ * screenshots otherwise get stored as base64 in thread state + storage and re-sent
+ * on every LLM request. Caps the largest dimension and re-encodes to JPEG. Images
+ * already within bounds are returned unchanged (preserves PNG transparency). Never
+ * rejects — falls back to the original data URL on any failure.
+ */
+export const downscaleImageDataUrl = (
+	dataUrl: string,
+	maxDim = 1568,
+	quality = 0.8,
+): Promise<string> => {
+	return new Promise<string>((resolve) => {
+		try {
+			const img = new Image()
+			img.onload = () => {
+				const w = img.naturalWidth
+				const h = img.naturalHeight
+				if (!w || !h) { resolve(dataUrl); return }
+				const scale = Math.min(1, maxDim / Math.max(w, h))
+				// Already small enough: keep original bytes rather than force a JPEG re-encode.
+				if (scale >= 1) { resolve(dataUrl); return }
+				const canvas = document.createElement('canvas')
+				canvas.width = Math.round(w * scale)
+				canvas.height = Math.round(h * scale)
+				const ctx = canvas.getContext('2d')
+				if (!ctx) { resolve(dataUrl); return }
+				ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
+				resolve(canvas.toDataURL('image/jpeg', quality))
+			}
+			img.onerror = () => resolve(dataUrl)
+			img.src = dataUrl
+		} catch {
+			resolve(dataUrl)
+		}
+	})
+}

@@ -80,15 +80,38 @@ const ProviderSetting = ({ providerName, settingName, subTextMd }: { providerNam
 	const settingsState = useSettingsState()
 	const [showValue, setShowValue] = useState(false)
 
-	const settingValue = settingsState.settingsOfProvider[providerName][settingName] as string
-	if (typeof settingValue !== 'string') {
+	const rawSettingValue = settingsState.settingsOfProvider[providerName][settingName]
+	const settingValue = typeof rawSettingValue === 'string' ? rawSettingValue : ''
+
+	// Hooks must run unconditionally — compute the invalid case as a flag and bail AFTER the hooks
+	// below (the previous early-return-before-useCallback broke the rules of hooks).
+	const isInvalidValue = typeof rawSettingValue !== 'string'
+
+	const handleChangeValue = useCallback((newVal: string) => {
+		// Trim leading/trailing whitespace on API keys/endpoints — a pasted key with a trailing
+		// newline is the single most common cause of confusing "invalid key" auth failures.
+		const cleaned = isPasswordField ? newVal.replace(/^\s+|\s+$/g, '') : newVal
+		voidSettingsService.setSettingOfProvider(providerName, settingName, cleaned)
+	}, [voidSettingsService, providerName, settingName, isPasswordField])
+
+	if (isInvalidValue) {
 		console.log('Error: Provider setting had a non-string value.')
 		return null
 	}
 
-	const handleChangeValue = useCallback((newVal: string) => {
-		voidSettingsService.setSettingOfProvider(providerName, settingName, newVal)
-	}, [voidSettingsService, providerName, settingName])
+	// Warn about interior whitespace (another common paste artifact) without mutating the value.
+	const hasInteriorWhitespace = isPasswordField && /\S\s+\S/.test(settingValue)
+
+	// Custom Headers must be a JSON object — surface bad JSON at save time instead of failing at
+	// request time. Non-blocking hint; the value is still persisted (the runtime guard handles it).
+	const hasInvalidHeadersJson = settingName === 'headersJSON' && settingValue.trim().length > 0 && (() => {
+		try {
+			const parsed = JSON.parse(settingValue)
+			return typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)
+		} catch {
+			return true
+		}
+	})()
 
 	return (
 		<ErrorBoundary>
@@ -116,6 +139,16 @@ const ProviderSetting = ({ providerName, settingName, subTextMd }: { providerNam
 						</button>
 					)}
 				</div>
+				{hasInteriorWhitespace ? (
+					<div className='@@provider-field-hint' style={{ color: 'var(--vscode-editorWarning-foreground, #cca700)' }}>
+						This value contains spaces — double-check it was pasted correctly.
+					</div>
+				) : null}
+				{hasInvalidHeadersJson ? (
+					<div className='@@provider-field-hint' style={{ color: 'var(--vscode-editorError-foreground, #f14c4c)' }}>
+						Custom Headers must be a JSON object, e.g. {`{ "X-Request-Id": "..." }`}
+					</div>
+				) : null}
 				{subTextMd ? (
 					<div className='@@provider-field-hint'>
 						{subTextMd}

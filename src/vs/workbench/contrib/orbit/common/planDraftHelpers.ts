@@ -41,7 +41,10 @@ export function getThreadIdFromPlanDraftUri(uri: URI): string | null {
 
 export function isPlanFilePath(fsPath: string, linkedPlanPath?: string | null): boolean {
 	const normalized = fsPath.replace(/\\/g, '/');
-	if (linkedPlanPath && fsPath === linkedPlanPath) {
+	// Normalize both sides before comparing: on Windows the two paths can carry
+	// mixed separators (backslash vs forward slash), which raw string equality
+	// would treat as different and false-negative the plan-file guard.
+	if (linkedPlanPath && normalized === linkedPlanPath.replace(/\\/g, '/')) {
 		return true;
 	}
 	return /\/\.void\/plans\/[^/]+\.md$/.test(normalized);

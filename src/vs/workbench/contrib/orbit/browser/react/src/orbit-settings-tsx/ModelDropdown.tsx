@@ -30,6 +30,17 @@ const ModelSelectBox = ({ options, featureName, className }: { options: ModelOpt
 	const selection = voidSettingsService.state.modelSelectionOfFeature[featureName]
 	const selectedOption = selection ? voidSettingsService.state._modelOptions.find(v => modelSelectionsEqual(v.selection, selection)) ?? options[0] : options[0]
 
+	// If the stored model no longer exists (the provider's model list changed), the dropdown falls
+	// back to options[0] for display — but the persisted selection stays stale, so the actual model
+	// used silently differs from what's shown. Persist the fallback so displayed === stored.
+	useEffect(() => {
+		if (!selection || options.length === 0) return
+		const stillExists = voidSettingsService.state._modelOptions.some(v => modelSelectionsEqual(v.selection, selection))
+		if (!stillExists) {
+			voidSettingsService.setModelSelectionOfFeature(featureName, options[0].selection)
+		}
+	}, [selection, options, featureName, voidSettingsService])
+
 	const onChangeOption = useCallback((newOption: ModelOption) => {
 		voidSettingsService.setModelSelectionOfFeature(featureName, newOption.selection)
 	}, [voidSettingsService, featureName])

@@ -25,6 +25,7 @@ product.overrides.json
 # Orbit added these:
 .tmp/
 .tmp2/
+/tmp/
 .tool-versions
 src/vs/workbench/contrib/orbit/browser/react/out/**
 src/vs/workbench/contrib/orbit/browser/react/src2/**

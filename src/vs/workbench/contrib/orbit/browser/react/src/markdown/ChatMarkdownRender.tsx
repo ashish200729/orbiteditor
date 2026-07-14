@@ -35,6 +35,21 @@ function isValidUri(s: string): boolean {
 	return s.length > 5 && isAbsolute(s) && !s.includes('//') && !s.includes('/*') // common case that is a false positive is comments like //
 }
 
+// Links in chat come from model/tool output. `marked` no longer strips dangerous schemes, so a
+// `[x](javascript:...)` (or vbscript:/data:text/html/command:) would execute script when opened.
+// Allow only known-safe schemes; scheme-less (relative/anchor) links are safe (no code execution).
+const SAFE_LINK_SCHEMES = new Set(['http:', 'https:', 'mailto:', 'tel:', 'file:', 'vscode:', 'vscode-insiders:', 'vscode-remote:'])
+function isSafeLinkHref(href: string | null | undefined): boolean {
+	if (!href) { return false }
+	// Strip control chars (newline/tab/null tricks like `java\nscript:` or `java\x00script:`)
+	// FIRST, then trim. Trimming first would leave a control char that, once removed, exposes a
+	// new leading space and defeats the `^scheme:` anchor below (`\x01 javascript:` becomes ` javascript:`).
+	const cleaned = href.replace(/[\u0000-\u001F]/g, '').trim()
+	const m = /^([a-zA-Z][a-zA-Z0-9+.-]*):/.exec(cleaned)
+	if (!m) { return true } // no scheme → relative / anchor / protocol-relative — cannot execute script
+	return SAFE_LINK_SCHEMES.has(m[1].toLowerCase() + ':')
+}
+
 // Mermaid diagram renderer
 const MermaidRender = ({ code }: { code: string }) => {
 	const [svg, setSvg] = useState<string>('')
@@ -144,61 +159,11 @@ const MermaidRender = ({ code }: { code: string }) => {
 	)
 }
 
-// renders contiguous string of latex eg $e^{i\pi}$
+// Renders a run of latex, e.g. $e^{i\\pi}$. KaTeX rendering is currently disabled; render the
+// source as neutral inline text (previously it showed as red "error" text, which read as a failure
+// to the user even though nothing was wrong).
 const LatexRender = ({ latex }: { latex: string }) => {
-	return <span className="katex-error text-red-500">{latex}</span>
-	// try {
-	// 	let formula = latex;
-	// 	let displayMode = false;
-
-	// 	// Extract the formula from delimiters
-	// 	if (latex.startsWith('$') && latex.endsWith('$')) {
-	// 		// Check if it's display math $$...$$
-	// 		if (latex.startsWith('$$') && latex.endsWith('$$')) {
-	// 			formula = latex.slice(2, -2);
-	// 			displayMode = true;
-	// 		} else {
-	// 			formula = latex.slice(1, -1);
-	// 		}
-	// 	} else if (latex.startsWith('\\(') && latex.endsWith('\\)')) {
-	// 		formula = latex.slice(2, -2);
-	// 	} else if (latex.startsWith('\\[') && latex.endsWith('\\]')) {
-	// 		formula = latex.slice(2, -2);
-	// 		displayMode = true;
-	// 	}
-
-	// 	// Render LaTeX
-	// 	const html = katex.renderToString(formula, {
-	// 		displayMode: displayMode,
-	// 		throwOnError: false,
-	// 		output: 'html'
-	// 	});
-
-	// 	// Sanitize the HTML output with DOMPurify
-	// 	const sanitizedHtml = dompurify.sanitize(html, {
-	// 		RETURN_TRUSTED_TYPE: true,
-	// 		USE_PROFILES: { html: true, svg: true, mathMl: true }
-	// 	});
-
-	// 	// Add proper styling based on mode
-	// 	const className = displayMode
-	// 		? 'katex-block my-2 text-center'
-	// 		: 'katex-inline';
-
-	// 	// Use the ref approach to avoid dangerouslySetInnerHTML
-	// 	const mathRef = React.useRef<HTMLSpanElement>(null);
-
-	// 	React.useEffect(() => {
-	// 		if (mathRef.current) {
-	// 			mathRef.current.innerHTML = sanitizedHtml as unknown as string;
-	// 		}
-	// 	}, [sanitizedHtml]);
-
-	// 	return <span ref={mathRef} className={className}></span>;
-	// } catch (error) {
-	// 	console.error('KaTeX rendering error:', error);
-	// 	return <span className="katex-error text-red-500">{latex}</span>;
-	// }
+	return <span className="font-mono text-[0.95em] opacity-90">{latex}</span>
 }
 
 const Codespan = ({ text, className, onClick, tooltip, variant = 'code' }: {
@@ -823,6 +788,11 @@ const RenderToken = ({ token, inPTag, codeURI, chatMessageLocation, tokenIdx, ..
 			))
 		) : t.text
 
+		// Model/tool output can contain dangerous link schemes (javascript:, data:text/html, …).
+		// Render only known-safe schemes as clickable links; downgrade anything else to plain text.
+		if (!isSafeLinkHref(t.href)) {
+			return <span title={t.href}>{linkContent}</span>
+		}
 		return (
 			<a
 				// Phase 2.18 (H25) fix: add rel="noopener noreferrer" and target="_blank"
@@ -843,6 +813,13 @@ const RenderToken = ({ token, inPTag, codeURI, chatMessageLocation, tokenIdx, ..
 	}
 
 	if (t.type === 'image') {
+		// Only render images from safe schemes (http/https/file/vscode or data:image). A model can
+		// otherwise emit `![x](javascript:...)`-style or other dangerous src values; unsafe ones fall
+		// back to the alt text.
+		const isSafeImg = /^data:image\//i.test((t.href ?? '').trim()) || isSafeLinkHref(t.href)
+		if (!isSafeImg) {
+			return <span title={t.href}>{t.text || t.href}</span>
+		}
 		return <img
 			src={t.href}
 			alt={t.text}
@@ -947,13 +924,35 @@ const RenderToken = ({ token, inPTag, codeURI, chatMessageLocation, tokenIdx, ..
 }
 
 
+// Streaming performance: during token streaming the parent re-lexes the growing string on every
+// chunk, producing a fresh token array each time. Without memoization React re-renders EVERY block
+// (hundreds of DOM nodes diffed per token = O(n²) jank). marked gives each block token a stable
+// `.raw` source string, so a block that has already "closed" has identical `raw` across renders —
+// we skip re-rendering it and only the last, still-streaming block updates.
+const MemoRenderToken = React.memo(
+	RenderToken,
+	(prev, next) => {
+		const pRaw = typeof prev.token === 'object' ? prev.token.raw : prev.token
+		const nRaw = typeof next.token === 'object' ? next.token.raw : next.token
+		return (
+			pRaw === nRaw &&
+			prev.inPTag === next.inPTag &&
+			prev.tokenIdx === next.tokenIdx &&
+			prev.codeURI === next.codeURI &&
+			prev.chatMessageLocation === next.chatMessageLocation &&
+			prev.isApplyEnabled === next.isApplyEnabled &&
+			prev.isLinkDetectionEnabled === next.isLinkDetectionEnabled
+		)
+	},
+)
+
 export const ChatMarkdownRender = ({ string, inPTag = false, chatMessageLocation, ...options }: { string: string, inPTag?: boolean, codeURI?: URI, chatMessageLocation: ChatMessageLocation | undefined } & RenderTokenOptions) => {
 	const normalizedString = useMemo(() => string.replaceAll('\n•', '\n\n•'), [string])
 	const tokens = useMemo(() => marked.lexer(normalizedString), [normalizedString]); // https://marked.js.org/using_pro#renderer
 	return (
 		<>
 			{tokens.map((token, index) => (
-				<RenderToken key={index} token={token} inPTag={inPTag} chatMessageLocation={chatMessageLocation} tokenIdx={index + ''} {...options} />
+				<MemoRenderToken key={index} token={token} inPTag={inPTag} chatMessageLocation={chatMessageLocation} tokenIdx={index + ''} {...options} />
 			))}
 		</>
 	)

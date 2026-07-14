@@ -121,7 +121,7 @@ export const sendLLMMessage = async ({
 		const { fullText, fullReasoning, toolCall } = params
 		if (_didAbort) return
 		_flushPendingText() // deliver any buffered streaming frame before the final message
-		captureLLMEvent(`${loggingName} - Received Full Message`, { messageLength: fullText.length, reasoningLength: fullReasoning?.length, duration: new Date().getMilliseconds() - submit_time.getMilliseconds(), toolCallName: toolCall?.name })
+		captureLLMEvent(`${loggingName} - Received Full Message`, { messageLength: fullText.length, reasoningLength: fullReasoning?.length, duration: Date.now() - submit_time.getTime(), toolCallName: toolCall?.name })
 		onFinalMessage_(params)
 	}
 

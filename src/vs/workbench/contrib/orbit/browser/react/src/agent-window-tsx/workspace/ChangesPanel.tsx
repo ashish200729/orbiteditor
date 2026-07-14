@@ -28,7 +28,8 @@ const splitPath = (p: string): { name: string; dir: string } => {
 };
 
 interface Badge { letter: string; kind: string; label: string }
-const badgeFor = (f: GitFileChange): Badge => {
+/** Shared with ChangesTree so the diff-list badge and tree badge can't disagree. */
+export const badgeFor = (f: GitFileChange): Badge => {
 	if (f.conflicted) { return { letter: '!', kind: 'conflict', label: 'Conflict' }; }
 	if (f.untracked) { return { letter: 'U', kind: 'untracked', label: 'Untracked' }; }
 	const c = f.staged && !f.unstaged ? f.index : f.worktree !== ' ' && f.worktree !== '.' ? f.worktree : f.index;
@@ -123,7 +124,7 @@ const useGitStatus = () => {
 
 type CommitAction = 'branch-commit' | 'branch-commit-push' | 'commit-push' | 'commit' | 'commit-pr';
 
-export const ChangesPanel = ({ openInWorkspace }: WorkspacePanelProps) => {
+export const ChangesPanel = ({ openInWorkspace, isActive }: WorkspacePanelProps) => {
 	const accessor = useAccessor();
 	const notificationService = accessor.get('INotificationService');
 	const openerService = accessor.get('IOpenerService');
@@ -196,14 +197,35 @@ export const ChangesPanel = ({ openInWorkspace }: WorkspacePanelProps) => {
 	}, [overflowOpen, commitMenuOpen, branchMenuOpen, doc]);
 
 	/* ------- keyboard: ⌘F find, ⌘R refresh ------- */
+	// Panels stay MOUNTED (display:none) while another tab is active — gate on
+	// isActive or this hidden panel would hijack ⌘F/⌘R from the Editor/Files/
+	// Browser tab the user is actually looking at.
+	const isActiveRef = React.useRef(isActive);
+	isActiveRef.current = isActive;
 	React.useEffect(() => {
 		const onKey = (e: KeyboardEvent) => {
+			if (!isActiveRef.current) { return; }
 			if ((e.metaKey || e.ctrlKey) && e.key === 'f') { e.preventDefault(); setFindOpen(true); }
 			if ((e.metaKey || e.ctrlKey) && e.key === 'r') { e.preventDefault(); manualRefresh(); }
 		};
 		doc.addEventListener('keydown', onKey);
 		return () => doc.removeEventListener('keydown', onKey);
 	}, [doc, manualRefresh]);
+
+	/* ------- prune per-file caches when a file leaves the change set ------- */
+	React.useEffect(() => {
+		const current = new Set(files.map(f => f.path));
+		setStatsByFile(prev => {
+			const staleKeys = Object.keys(prev).filter(k => !current.has(k));
+			if (staleKeys.length === 0) { return prev; }
+			const next = { ...prev };
+			for (const k of staleKeys) { delete next[k]; }
+			return next;
+		});
+		for (const k of Object.keys(sectionRefs.current)) {
+			if (!current.has(k)) { delete sectionRefs.current[k]; }
+		}
+	}, [files]);
 
 	/* ------- actions ------- */
 	const toggleFile = (path: string) => setCollapsedFiles(prev => {
@@ -288,19 +310,24 @@ export const ChangesPanel = ({ openInWorkspace }: WorkspacePanelProps) => {
 			if (!msg) { return; }
 			setMessage('');
 
+			let createdBranch: string | null = null;
 			if (action === 'branch-commit' || action === 'branch-commit-push') {
 				const name = await promptBranch();
 				if (!name) { return; }
 				const b = await gitService.createBranch(root, name, true);
 				if (!b.ok) { notifyResult('Create branch', false, b.error); return; }
+				createdBranch = name;
 			}
+			// A later failure leaves the user silently switched onto the new
+			// branch — say so, so the state isn't a surprise.
+			const branchNote = createdBranch ? ` Note: branch "${createdBranch}" was created and checked out.` : '';
 			// Commit staged; if nothing staged, stage everything first (commit-all).
 			if (!files.some(f => f.staged)) {
 				const s = await gitService.stageAll(root);
-				if (!s.ok) { notifyResult('Stage all', false, s.error); return; }
+				if (!s.ok) { notifyResult('Stage all', false, `${s.error ?? 'unknown error'}.${branchNote}`); return; }
 			}
 			const c = await gitService.commit(root, msg);
-			if (!c.ok) { notifyResult('Commit', false, c.error); return; }
+			if (!c.ok) { notifyResult('Commit', false, `${c.error ?? 'unknown error'}.${branchNote}`); return; }
 
 			if (action === 'commit-push' || action === 'branch-commit-push') {
 				const needsUpstream = !status?.upstream || action !== 'commit-push';
@@ -333,13 +360,17 @@ export const ChangesPanel = ({ openInWorkspace }: WorkspacePanelProps) => {
 	};
 	const checkoutBranch = (name: string) => root && run(`checkout:${name}`, async () => {
 		setBranchMenuOpen(false);
-		notifyResult('Checkout', (await gitService.checkoutBranch(root, name)).ok);
+		const res = await gitService.checkoutBranch(root, name);
+		// Pass git's own message through — a dirty-tree conflict as "unknown
+		// error" gives the user nothing to act on.
+		notifyResult('Checkout', res.ok, res.error);
 	});
 	const createBranchFromMenu = () => root && run('newbranch', async () => {
 		setBranchMenuOpen(false);
 		const name = await promptBranch();
 		if (!name) { return; }
-		notifyResult('Create branch', (await gitService.createBranch(root, name, true)).ok);
+		const res = await gitService.createBranch(root, name, true);
+		notifyResult('Create branch', res.ok, res.error);
 	});
 
 	const scrollToFile = (path: string) => {
@@ -523,7 +554,9 @@ export const ChangesPanel = ({ openInWorkspace }: WorkspacePanelProps) => {
 
 				{treeVisible && count > 0 && (
 					<aside className="agent-git-tree-pane" aria-label="Changed files">
-						<ChangesTree files={files} root={root} activePath={activePath} onSelect={scrollToFile} />
+						{/* Mirror the find filter — clicking a tree entry whose section is
+						    filtered out of the diff list would silently no-op. */}
+						<ChangesTree files={visibleFiles} root={root} activePath={activePath} onSelect={scrollToFile} />
 					</aside>
 				)}
 			</div>

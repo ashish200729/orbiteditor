@@ -183,6 +183,17 @@ export const endsWithAnyPrefixOf = (str: string, anyPrefix: string) => {
 	return null
 }
 
+// indexOf `needle`, but only matching when it begins at the start of a line (start of
+// string, or right after a '\n'). Prevents mis-detecting a marker that happens to appear
+// mid-line inside block content. (DIVIDER_/FINAL below are already newline-anchored on the left.)
+const indexOfAtLineStart = (str: string, needle: string, from: number): number => {
+	let at = str.indexOf(needle, from)
+	while (at > 0 && str.charAt(at - 1) !== '\n') {
+		at = str.indexOf(needle, at + 1)
+	}
+	return at
+}
+
 // guarantees if you keep adding text, array length will strictly grow and state will progress without going back
 export const extractSearchReplaceBlocks = (str: string) => {
 
@@ -194,7 +205,7 @@ export const extractSearchReplaceBlocks = (str: string) => {
 
 	let i = 0 // search i and beyond (this is done by plain index, not by line number. much simpler this way)
 	while (true) {
-		let origStart = str.indexOf(ORIGINAL_, i)
+		let origStart = indexOfAtLineStart(str, ORIGINAL_, i)
 		if (origStart === -1) { return blocks }
 		origStart += ORIGINAL_.length
 		i = origStart

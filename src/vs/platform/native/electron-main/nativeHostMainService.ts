@@ -318,40 +318,82 @@ export class NativeHostMainService extends Disposable implements INativeHostMain
 	}
 
 	async invalidateWindow(windowId: number | undefined, options?: INativeHostOptions): Promise<void> {
-		const window = this.windowById(options?.targetWindowId, windowId);
-		const win = window?.win;
-		if (!win) {
+		const win = await this.resolveBrowserWindow(windowId, options);
+		if (win) {
+			this.nudgeBrowserWindowCompositor(win);
+		}
+	}
+
+	async showAuxiliaryWindow(windowId: number | undefined, options?: INativeHostOptions): Promise<void> {
+		const win = await this.resolveBrowserWindow(windowId, options, 40, 50);
+		if (!win || win.isDestroyed()) {
 			return;
 		}
 		try {
-			// Chromium leaves a stale WHITE first-paint for cross-document adopted
-			// node subtrees (the Agents auxiliary window): layout is correct and the
-			// window is interactive, but the compositor never re-rasters until some
-			// native invalidation dirties it — which is why a manual window resize (or
-			// opening devtools) fixes it. `webContents.invalidate()` is a no-op for
-			// on-screen windows (offscreen-rendering only in Electron), so we replicate
-			// the resize the user would do by hand: grow the window by 1px for one tick,
-			// then restore it. That forces a full native re-raster with no lasting size
-			// change and a sub-pixel, single-frame visual delta.
-			//
-			// Skip when fullscreen (setBounds would exit fullscreen) or minimized
-			// (nothing is composited to re-raster, and it can un-minimize).
+			if (!win.isVisible()) {
+				win.show();
+			}
+			// Let the first show() commit before we nudge bounds — otherwise the
+			// compositor can still present the pre-content white backing store.
+			await new Promise<void>(resolve => setTimeout(resolve, 32));
+			if (!win.isDestroyed()) {
+				this.nudgeBrowserWindowCompositor(win);
+			}
+			// A second nudge one frame later covers slow React/style commits.
+			setTimeout(() => {
+				if (!win.isDestroyed()) {
+					this.nudgeBrowserWindowCompositor(win);
+				}
+			}, 100);
+		} catch {
+			// Best-effort
+		}
+	}
+
+	/**
+	 * Resolve a native BrowserWindow for the target renderer window id. Auxiliary
+	 * windows can briefly exist in the renderer before the main process has
+	 * claimed the matching BrowserWindow — retry so repaint hints don't no-op.
+	 */
+	private async resolveBrowserWindow(windowId: number | undefined, options?: INativeHostOptions, maxAttempts = 1, delayMs = 0): Promise<BrowserWindow | undefined> {
+		for (let attempt = 0; attempt < maxAttempts; attempt++) {
+			const window = this.windowById(options?.targetWindowId, windowId);
+			const win = window?.win;
+			if (win && !win.isDestroyed()) {
+				return win;
+			}
+			if (attempt + 1 < maxAttempts && delayMs > 0) {
+				await new Promise<void>(resolve => setTimeout(resolve, delayMs));
+			}
+		}
+		return undefined;
+	}
+
+	/** Replicate a manual window resize to force Chromium to re-raster the root layer. */
+	private nudgeBrowserWindowCompositor(win: BrowserWindow): void {
+		try {
 			if (win.isDestroyed() || win.isMinimized() || win.isFullScreen()) {
 				return;
 			}
 			const bounds = win.getBounds();
-			win.setBounds({ ...bounds, height: bounds.height + 1 });
+			// Use a 2px nudge — 1px can be coalesced away on Retina macOS scales.
+			win.setBounds({ ...bounds, width: bounds.width + 2, height: bounds.height + 2 });
+			try {
+				win.webContents.invalidate();
+			} catch {
+				// Best-effort
+			}
 			setTimeout(() => {
 				try {
 					if (!win.isDestroyed() && !win.isFullScreen() && !win.isMinimized()) {
 						win.setBounds(bounds);
 					}
 				} catch {
-					// ignore — restore is best-effort
+					// ignore
 				}
-			}, 0);
+			}, 16);
 		} catch {
-			// Best-effort: never let a repaint hint throw.
+			// Best-effort
 		}
 	}
 

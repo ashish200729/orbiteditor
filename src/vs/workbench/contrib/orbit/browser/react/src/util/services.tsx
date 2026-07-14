@@ -47,7 +47,7 @@ import { IGitHubAuthService, GitHubAuthState } from '../../../../common/githubAu
 import { IOrbitProviderAuthService, OrbitProviderAuthState } from '../../../../common/orbitProviderAuthService.js'
 import type { OrbitUsageStats } from '../../../../common/orbitUsageTypes.js'
 import { URI } from '../../../../../../../base/common/uri.js'
-import { IChatThreadService, IsRunningType, ThreadsState, ThreadStreamState } from '../../../chatThreadService.js'
+import { IChatThreadService, IsRunningType, QueuedUserMessage, ThreadsState, ThreadStreamState } from '../../../chatThreadService.js'
 import { ITerminalToolService } from '../../../terminalToolService.js'
 import { IAgentWindowTerminalStore } from '../../../agentWindowTerminalStore.js'
 import { IAgentWindowService } from '../../../agentWindowService.js'
@@ -506,6 +506,36 @@ export const useSubAgentConversation = (toolId: string, threadId: string) => {
 		return () => { chatThreadsStreamStateListeners.delete(listener) }
 	}, [threadId])
 	return chatThreadService.getSubAgentConversation(toolId)
+}
+
+/** Messages queued while the agent runs (Cursor-style); drained FIFO as each run ends. */
+export const useQueuedUserMessages = (threadId: string) => {
+	const accessor = useAccessor()
+	const chatThreadService = accessor.get('IChatThreadService')
+	const [queued, setQueued] = useState<readonly QueuedUserMessage[]>(() => chatThreadService.getQueuedUserMessages(threadId))
+	useEffect(() => {
+		setQueued(chatThreadService.getQueuedUserMessages(threadId))
+		const d = chatThreadService.onDidChangeQueuedMessages(({ threadId: threadId_ }) => {
+			if (threadId_ === threadId) setQueued(chatThreadService.getQueuedUserMessages(threadId))
+		})
+		return () => d.dispose()
+	}, [chatThreadService, threadId])
+	return queued
+}
+
+/** True when the thread's queue is paused after a run error / failed drain (messages kept, not sent). */
+export const useIsQueuePaused = (threadId: string) => {
+	const accessor = useAccessor()
+	const chatThreadService = accessor.get('IChatThreadService')
+	const [paused, setPaused] = useState<boolean>(() => chatThreadService.getIsQueuePaused(threadId))
+	useEffect(() => {
+		setPaused(chatThreadService.getIsQueuePaused(threadId))
+		const d = chatThreadService.onDidChangeQueuedMessages(({ threadId: threadId_ }) => {
+			if (threadId_ === threadId) setPaused(chatThreadService.getIsQueuePaused(threadId))
+		})
+		return () => d.dispose()
+	}, [chatThreadService, threadId])
+	return paused
 }
 
 export const useFullChatThreadsStreamState = () => {

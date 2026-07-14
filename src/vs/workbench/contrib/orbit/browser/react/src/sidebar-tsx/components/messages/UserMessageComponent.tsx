@@ -9,7 +9,7 @@ import { ChatMessage, StagingSelectionItem, TodoItem } from '../../../../../../c
 import { parseSlashTokenNames } from '../../../../../../common/slashCommands/slashTokens.js';
 import { TodoMessageAttachment } from '../toolResults/todo/TodoMessageAttachment.js';
 import { useAccessor } from '../../../util/services.js';
-import { focusInConnectedWindow } from '../../../util/helpers.js';
+import { focusInConnectedWindow, downscaleImageDataUrl } from '../../../util/helpers.js';
 import { VoidInputBox2, TextAreaFns } from '../../../util/inputs.js';
 import { SlashTokenContent } from '../../../util/slashMenu/SlashTokenContent.js';
 import { VoidChatArea } from '../chat/orbitChatArea.js';
@@ -20,6 +20,15 @@ import { Checkpoint } from '../chatComponents/Checkpoint.js';
 import { ChatScrollActions } from '../../utils/scrollUtils.js';
 
 type ChatBubbleMode = 'display' | 'edit'
+
+/** An image staged in edit mode. `id` is a stable React key (index keys reuse the wrong
+ * DOM node on delete, and identical data-URLs would collide if keyed by content). */
+type EditImage = { id: string; url: string }
+let _editImageSeq = 0
+const nextEditImageId = (): string => {
+	const c = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto
+	return c?.randomUUID?.() ?? `img-${Date.now()}-${(_editImageSeq++).toString(36)}`
+}
 
 export const UserMessageComponent = React.memo(({ chatMessage, messageIdx, isCheckpointGhost, currCheckpointIdx, checkpointBeforeIdx, isFirstUserMessage, threadId, scrollActions, threadTodos, isAgentRunning }: {
 	chatMessage: ChatMessage & { role: 'user' };
@@ -71,7 +80,7 @@ export const UserMessageComponent = React.memo(({ chatMessage, messageIdx, isChe
 	const [isDisabled, setIsDisabled] = useState(false)
 	const [textAreaRefState, setTextAreaRef] = useState<HTMLTextAreaElement | null>(null)
 	const textAreaFnsRef = useRef<TextAreaFns | null>(null)
-	const [editImages, setEditImages] = useState<string[]>([])
+	const [editImages, setEditImages] = useState<EditImage[]>([])
 	// Text truncation state
 	const [isExpanded, setIsExpanded] = useState(false)
 	const [shouldTruncate, setShouldTruncate] = useState(false)
@@ -93,7 +102,7 @@ export const UserMessageComponent = React.memo(({ chatMessage, messageIdx, isChe
 			)
 
 			// Initialize images for edit mode
-			setEditImages(chatMessage.images || [])
+			setEditImages((chatMessage.images || []).map(url => ({ id: nextEditImageId(), url })))
 
 			// Re-stage slash tokens that were injected when this message was originally sent.
 			const present = new Set(parseSlashTokenNames(chatMessage.displayContent || ''))
@@ -118,7 +127,10 @@ export const UserMessageComponent = React.memo(({ chatMessage, messageIdx, isChe
 			_mustInitialize.current = false
 		}
 
-	}, [chatMessage, mode, _justEnabledEdit, textAreaRefState, textAreaFnsRef.current, _justEnabledEdit.current, _mustInitialize.current])
+		// Ref `.current` values are intentionally excluded: mutating a ref doesn't
+		// re-render, so listing them as deps is misleading and does nothing.
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [chatMessage, mode, textAreaRefState])
 
 	// Determine if truncation is needed based on content length and line breaks
 	useEffect(() => {
@@ -171,7 +183,8 @@ export const UserMessageComponent = React.memo(({ chatMessage, messageIdx, isChe
 				const reader = new FileReader()
 				reader.onload = (event) => {
 					const dataUrl = event.target?.result as string
-					resolve(dataUrl)
+					// Downscale before it enters thread state/storage and every request.
+					downscaleImageDataUrl(dataUrl).then(resolve)
 				}
 				reader.onerror = reject
 				reader.readAsDataURL(file)
@@ -179,17 +192,21 @@ export const UserMessageComponent = React.memo(({ chatMessage, messageIdx, isChe
 			imagePromises.push(promise)
 		}
 
-		Promise.all(imagePromises).then((dataUrls) => {
-			setEditImages(prev => [...prev, ...dataUrls])
-		}).catch((error) => {
-			console.error('Error reading image files:', error)
+		// allSettled, not all: one unreadable file must not discard the images that read fine.
+		Promise.allSettled(imagePromises).then((results) => {
+			const ok = results
+				.filter((r): r is PromiseFulfilledResult<string> => r.status === 'fulfilled')
+				.map(r => r.value)
+			if (ok.length > 0) setEditImages(prev => [...prev, ...ok.map(url => ({ id: nextEditImageId(), url }))])
+			const failed = results.filter(r => r.status === 'rejected')
+			if (failed.length > 0) console.error('Error reading image files:', failed.map(r => (r as PromiseRejectedResult).reason))
 		})
 
 		e.target.value = ''
 	}, [])
 
-	const removeEditImage = useCallback((index: number) => {
-		setEditImages(prev => prev.filter((_, i) => i !== index))
+	const removeEditImage = useCallback((id: string) => {
+		setEditImages(prev => prev.filter(im => im.id !== id))
 	}, [])
 
 	const onEditChangeText = useCallback((text: string) => {
@@ -350,16 +367,16 @@ export const UserMessageComponent = React.memo(({ chatMessage, messageIdx, isChe
 			<div className='flex flex-col gap-1 mt-1'>
 				{editImages.length > 0 && (
 					<div className='flex flex-wrap gap-1.5'>
-						{editImages.map((imageUrl, index) => (
-							<div key={index} className='relative'>
+						{editImages.map((im, index) => (
+							<div key={im.id} className='relative'>
 								<img
-									src={imageUrl}
+									src={im.url}
 									alt={`Edit ${index + 1}`}
 									className='w-12 h-12 object-cover rounded border border-void-border-3 shadow-sm'
 								/>
 								<button
 									type='button'
-									onClick={() => removeEditImage(index)}
+									onClick={() => removeEditImage(im.id)}
 									className='absolute -top-1 -right-1 bg-void-bg-3 rounded-full p-0.5 hover:brightness-125 cursor-pointer shadow-sm'
 								>
 									<IconX size={12} className='stroke-[2]' />
@@ -424,7 +441,13 @@ export const UserMessageComponent = React.memo(({ chatMessage, messageIdx, isChe
 					: mode === 'display' ? 'p-2 flex flex-col bg-vscode-input-bg text-void-fg-1 overflow-x-auto cursor-pointer border border-void-border-2 shadow-sm' : ''
 				}
         `}
-			onClick={() => { if (mode === 'display') { onOpenEdit() } }}
+			onClick={() => {
+				if (mode !== 'display') return
+				// Don't hijack a text selection — copying your own message text requires
+				// finishing a selection inside the bubble without entering edit mode.
+				if (connectedDocument.getSelection()?.toString()) return
+				onOpenEdit()
+			}}
 		>
 			{chatbubbleContents}
 		</div>

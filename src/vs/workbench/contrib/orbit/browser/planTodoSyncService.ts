@@ -135,7 +135,7 @@ export class PlanTodoSyncService extends Disposable implements IPlanTodoSyncServ
 					this.lastSyncedTodos.set(threadId, currentTodosJson);
 					return; // nothing actually changed
 				}
-				await this.fileService.writeFile(planUri, VSBuffer.fromString(updatedContent));
+				await this.fileService.writeFile(planUri, VSBuffer.fromString(updatedContent), { atomic: { postfix: '.orbittmp' } });
 				// Update last synced state only after a successful write
 				this.lastSyncedTodos.set(threadId, currentTodosJson);
 				// Notify subscribers (e.g. PlanEditorInput) that we just wrote the plan

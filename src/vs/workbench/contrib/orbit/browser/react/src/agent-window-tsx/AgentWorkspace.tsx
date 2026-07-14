@@ -124,6 +124,10 @@ const AgentWorkspaceInner = () => {
 	}
 	const addBtnRef = React.useRef<HTMLButtonElement | null>(null);
 	const addMenuRef = React.useRef<HTMLDivElement | null>(null);
+	const tabsListRef = React.useRef<HTMLDivElement | null>(null);
+	const sideExplorerRef = React.useRef<HTMLElement | null>(null);
+	// Tab ids with a close currently in flight (dialog open / save pending).
+	const closingTabsRef = React.useRef<Set<string>>(new Set());
 
 	const toggleExplorer = React.useCallback(() => {
 		setExplorerVisible(v => {
@@ -173,12 +177,29 @@ const AgentWorkspaceInner = () => {
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, []);
 
-	const openPanel = React.useCallback((kind: PanelKind, resource?: string) => {
+	const openPanel = React.useCallback((kind: PanelKind, resource?: string, opts?: { reuseExisting?: boolean }) => {
 		setAddMenuOpen(false);
 		const meta = panelMetaFor(kind);
+		// Mint the id OUTSIDE the updater — updaters must stay pure (StrictMode /
+		// concurrent React may re-invoke them), and `++idCounter` inside produced a
+		// different id per invocation. A deduped open wastes one id; ids only need
+		// to be unique, not dense.
+		const newId = `ws-${kind}-${++idCounter.current}`;
 		setTabs(prev => {
 			if (!meta.allowMultiple) {
 				const existing = prev.find(t => t.kind === kind);
+				if (existing) {
+					setActiveId(existing.id);
+					return prev;
+				}
+			}
+
+			// External "show me a browser" requests focus an existing browser tab
+			// instead of stacking another. Decided INSIDE the updater so two
+			// requests landing in the same tick can't both see "no browser yet"
+			// (the old check read tabsRef, which is stale within a batch).
+			if (kind === 'browser' && opts?.reuseExisting) {
+				const existing = prev.find(t => t.kind === 'browser');
 				if (existing) {
 					setActiveId(existing.id);
 					return prev;
@@ -214,11 +235,10 @@ const AgentWorkspaceInner = () => {
 				}
 			}
 
-			const id = `ws-${kind}-${++idCounter.current}`;
 			const title = resource ? basename(resource) : meta.label;
-			setActiveId(id);
+			setActiveId(newId);
 			return [...prev, {
-				id,
+				id: newId,
 				kind,
 				title,
 				resource: resource ? normalizeFileResource(resource) : resource,
@@ -232,16 +252,19 @@ const AgentWorkspaceInner = () => {
 	// rather than stacking another (the composer button is a "show me a browser"
 	// affordance, not "open N browsers").
 	React.useEffect(() => {
-		const sub = agentWindowService.onDidRequestWorkspacePanel(({ kind, resource }) => {
-			if (kind === 'browser') {
-				const existing = tabsRef.current.find(t => t.kind === 'browser');
-				if (existing) {
-					setActiveId(existing.id);
-					return;
-				}
-			}
-			openPanel(kind as PanelKind, resource);
-		});
+		const handleRequest = ({ kind, resource }: { kind: string; resource?: string }) => {
+			// Browser: focus an existing tab rather than stacking another. The
+			// dedup happens inside openPanel's setTabs updater so concurrent
+			// requests in one tick can't both create a tab.
+			openPanel(kind as PanelKind, resource, { reuseExisting: kind === 'browser' });
+		};
+		const sub = agentWindowService.onDidRequestWorkspacePanel(handleRequest);
+		// Drain requests that fired before this component mounted (e.g. an MCP
+		// browser_navigate arriving while the window was still building) — they
+		// were emitted into a listener-less emitter and would otherwise be lost.
+		for (const pending of agentWindowService.consumePendingWorkspacePanelRequests()) {
+			handleRequest(pending);
+		}
 		return () => sub.dispose();
 	}, [agentWindowService, openPanel]);
 
@@ -262,81 +285,142 @@ const AgentWorkspaceInner = () => {
 	const retargetFileResource = React.useCallback((from: URI, to: URI) => {
 		const fromKey = normalizeFileResource(from.toString());
 		const toKey = normalizeFileResource(to.toString());
-		setTabs(prev => prev.map(t => {
-			if (t.kind !== 'files' || !t.resource) {
-				return t;
+		setTabs(prev => {
+			const mapped = prev.map(t => {
+				if (t.kind !== 'files' || !t.resource) {
+					return t;
+				}
+				if (normalizeFileResource(t.resource) !== fromKey) {
+					return t;
+				}
+				return {
+					...t,
+					resource: toKey,
+					title: basename(to.toString()),
+				};
+			});
+			// The rename may have made two tabs point at the same file (a tab for
+			// `to` was already open) — collapse them onto the first occurrence so
+			// openPanel's dedup invariant (one tab per resource) holds.
+			const firstIdByKey = new Map<string, string>();
+			const deduped: typeof mapped = [];
+			for (const t of mapped) {
+				if (t.kind === 'files' && t.resource) {
+					const key = normalizeFileResource(t.resource);
+					const keptId = firstIdByKey.get(key);
+					if (keptId !== undefined) {
+						// Dropping a duplicate: if it was active, hand focus to the kept tab.
+						setActiveId(cur => (cur === t.id ? keptId : cur));
+						continue;
+					}
+					firstIdByKey.set(key, t.id);
+				}
+				deduped.push(t);
 			}
-			if (normalizeFileResource(t.resource) !== fromKey) {
-				return t;
-			}
-			return {
-				...t,
-				resource: toKey,
-				title: basename(to.toString()),
-			};
-		}));
+			return deduped.length === prev.length ? mapped : deduped;
+		});
 	}, []);
 
 	const closeTab = React.useCallback(async (id: string) => {
-		const tab = tabsRef.current.find(t => t.id === id);
-		if (tab?.kind === 'files' && tab.resource) {
-			try {
+		// Guard against re-entrancy: a double-click on the × fires closeTab twice;
+		// without this both calls see the tab as present and stack two identical
+		// save dialogs.
+		if (closingTabsRef.current.has(id)) {
+			return;
+		}
+		closingTabsRef.current.add(id);
+		try {
+			const tab = tabsRef.current.find(t => t.id === id);
+			if (!tab) {
+				return;
+			}
+			if (tab.kind === 'files' && tab.resource) {
 				const uri = tryParseUri(tab.resource);
 				// Prefer the panel's own handle (correct for both a tracked file AND
 				// an ephemeral fallback model) over `textFileService.isDirty`, which
 				// only ever knows about the former.
 				const handle = fileHandlesRef.current.get(id);
-				const dirty = handle ? handle.isDirty() : (uri ? textFileService.isDirty(uri) : false);
+				let dirty = false;
+				try {
+					dirty = handle ? handle.isDirty() : (uri ? textFileService.isDirty(uri) : false);
+				} catch {
+					// If the dirty check itself fails, don't trap the user — close.
+					dirty = false;
+				}
 				if (uri && dirty) {
 					let action: 'save' | 'discard' | 'cancel' = 'cancel';
-					await dialogService.prompt({
-						type: 'warning',
-						message: `Do you want to save the changes you made to ${tab.title}?`,
-						detail: 'Your changes will be lost if you don\'t save them.',
-						buttons: [
-							{
-								label: 'Save',
-								run: () => { action = 'save'; },
+					let promptFailed = false;
+					try {
+						await dialogService.prompt({
+							type: 'warning',
+							message: `Do you want to save the changes you made to ${tab.title}?`,
+							detail: 'Your changes will be lost if you don\'t save them.',
+							buttons: [
+								{
+									label: 'Save',
+									run: () => { action = 'save'; },
+								},
+								{
+									label: 'Don\'t Save',
+									run: () => { action = 'discard'; },
+								},
+							],
+							cancelButton: {
+								label: 'Cancel',
+								run: () => { action = 'cancel'; },
 							},
-							{
-								label: 'Don\'t Save',
-								run: () => { action = 'discard'; },
-							},
-						],
-						cancelButton: {
-							label: 'Cancel',
-							run: () => { action = 'cancel'; },
-						},
-					});
-					if (action === 'cancel') {
-						return;
+						});
+					} catch {
+						// Dialog infrastructure failure — preserve the old behavior of
+						// not trapping the user (close without saving).
+						promptFailed = true;
 					}
-					if (action === 'save') {
-						if (handle) { await handle.save(); } else { await textFileService.save(uri); }
-					} else if (action === 'discard') {
-						if (handle) { await handle.discard(); } else { await textFileService.revert(uri, { force: true }); }
+					if (!promptFailed) {
+						if (action === 'cancel') {
+							return;
+						}
+						if (action === 'save') {
+							try {
+								if (handle) { await handle.save(); } else { await textFileService.save(uri); }
+							} catch { /* verified via the dirty re-check below */ }
+							// The panel's save reports failure by staying dirty (its doSave
+							// catches internally and shows a banner) — treating that as
+							// success here silently discarded the buffer. Abort the close
+							// and leave the tab (and its error banner) visible instead.
+							let stillDirty = false;
+							try {
+								stillDirty = handle ? handle.isDirty() : textFileService.isDirty(uri);
+							} catch { stillDirty = false; }
+							if (stillDirty) {
+								return;
+							}
+						} else if (action === 'discard') {
+							try {
+								if (handle) { await handle.discard(); } else { await textFileService.revert(uri, { force: true }); }
+							} catch { /* user chose to drop the edits — close regardless */ }
+						}
 					}
 				}
-			} catch {
-				// If dirty check/save fails, still allow close — don't trap the user.
 			}
-		}
 
-		setTabs(prev => {
-			const idx = prev.findIndex(t => t.id === id);
-			if (idx === -1) {
-				return prev;
-			}
-			const next = prev.filter(t => t.id !== id);
-			setActiveId(cur => {
-				if (cur !== id) {
-					return cur;
+			setTabs(prev => {
+				const idx = prev.findIndex(t => t.id === id);
+				if (idx === -1) {
+					return prev;
 				}
-				const fallback = next[idx] ?? next[idx - 1] ?? next[next.length - 1] ?? null;
-				return fallback ? fallback.id : null;
+				const next = prev.filter(t => t.id !== id);
+				setActiveId(cur => {
+					if (cur !== id) {
+						return cur;
+					}
+					const fallback = next[idx] ?? next[idx - 1] ?? next[next.length - 1] ?? null;
+					return fallback ? fallback.id : null;
+				});
+				return next;
 			});
-			return next;
-		});
+		} finally {
+			closingTabsRef.current.delete(id);
+		}
 	}, [textFileService, dialogService]);
 
 	const setTitle = React.useCallback((id: string, title: string) => {
@@ -394,6 +478,40 @@ const AgentWorkspaceInner = () => {
 		openPanel('files', uri.toString());
 	}, [openPanel]);
 
+	// The CSS-hidden side explorer keeps focusable children in the tab order and
+	// `aria-hidden` alone is an a11y violation for them — `inert` removes the
+	// whole subtree from focus/interaction while hidden.
+	React.useEffect(() => {
+		const el = sideExplorerRef.current;
+		if (el) {
+			(el as HTMLElement & { inert: boolean }).inert = !showSideExplorer;
+		}
+	}, [showSideExplorer, hasFileTab]);
+
+	// Roving-tabindex keyboard support for the tab strip (ARIA tabs pattern):
+	// Left/Right cycle, Home/End jump; selection follows focus.
+	const onTabListKeyDown = (e: React.KeyboardEvent) => {
+		const list = tabsRef.current;
+		if (!list.length) {
+			return;
+		}
+		const idx = list.findIndex(t => t.id === activeId);
+		let nextIdx: number;
+		switch (e.key) {
+			case 'ArrowRight': nextIdx = idx < 0 ? 0 : (idx + 1) % list.length; break;
+			case 'ArrowLeft': nextIdx = idx < 0 ? 0 : (idx - 1 + list.length) % list.length; break;
+			case 'Home': nextIdx = 0; break;
+			case 'End': nextIdx = list.length - 1; break;
+			default: return;
+		}
+		e.preventDefault();
+		const next = list[nextIdx];
+		setActiveId(next.id);
+		tabsListRef.current
+			?.querySelector<HTMLElement>(`[data-tab-id="${next.id}"]`)
+			?.focus();
+	};
+
 	const isTabDirty = (tab: WorkspaceTab): boolean => {
 		if (tab.kind !== 'files' || !tab.resource) {
 			return false;
@@ -413,7 +531,7 @@ const AgentWorkspaceInner = () => {
 	return (
 		<div className="agent-workspace">
 			<div className="agent-workspace-tabbar">
-				<div className="agent-workspace-tabs" role="tablist">
+				<div className="agent-workspace-tabs" role="tablist" ref={tabsListRef} onKeyDown={onTabListKeyDown}>
 					{tabs.map(tab => {
 						const isActive = tab.id === activeId;
 						const meta = panelMetaFor(tab.kind);
@@ -425,8 +543,17 @@ const AgentWorkspaceInner = () => {
 								key={tab.id}
 								role="tab"
 								aria-selected={isActive}
+								tabIndex={isActive ? 0 : -1}
+								data-tab-id={tab.id}
 								className={`agent-workspace-tab${isActive ? ' active' : ''}${dirty ? ' dirty' : ''}`}
 								onClick={() => setActiveId(tab.id)}
+								onAuxClick={(e) => {
+									// Middle-click closes, matching IDE tab strips.
+									if (e.button === 1) {
+										e.preventDefault();
+										void closeTab(tab.id);
+									}
+								}}
 								title={tab.resource || tab.title}
 							>
 								{fileUri ? (
@@ -538,6 +665,7 @@ const AgentWorkspaceInner = () => {
 				    Terminal/Browser switches and explorer toggles. Hide with CSS when inactive. */}
 				{hasFileTab && (
 					<aside
+						ref={sideExplorerRef}
 						className={`agent-workspace-side-explorer${showSideExplorer ? '' : ' hidden'}`}
 						aria-label="File explorer"
 						aria-hidden={!showSideExplorer}

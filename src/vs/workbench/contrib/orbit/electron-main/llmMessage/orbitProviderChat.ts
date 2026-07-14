@@ -13,7 +13,7 @@ import { getOrbitLlmMainServices } from './orbitLlmMainServices.js'
 import { generateUuid } from '../../../../../base/common/uuid.js'
 import { availableTools, InternalToolInfo } from '../../common/prompt/prompts.js'
 import type { ChatMode } from '../../common/orbitSettingsTypes.js'
-import type { RawToolCallObj, ToolPolicy } from '../../common/sendLLMMessageTypes.js'
+import type { LLMUsage, RawToolCallObj, ToolPolicy } from '../../common/sendLLMMessageTypes.js'
 import { parsePartialToolParams } from './parsePartialToolParams.js'
 
 const toOpenAICompatibleTool = (toolInfo: InternalToolInfo): OpenAI.Chat.Completions.ChatCompletionTool => ({
@@ -37,11 +37,15 @@ const openAITools = (chatMode: ChatMode | null, mcpTools: InternalToolInfo[] | u
 	return tools
 }
 
-const rawToolCallObjOfParamsStr = (name: string, toolParamsStr: string, id: string): RawToolCallObj | null => {
+const rawToolCallObjOfParamsStr = (name: string, toolParamsStr: string, id: string, mcpToolNames?: Iterable<string>): RawToolCallObj | null => {
 	if (!name) {
 		return null;
 	}
-	const { rawParams, doneParams, isDone } = parsePartialToolParams(toolParamsStr);
+	// Pass the tool name so param normalization (snake_case aliasing) only applies to
+	// built-in tools — MCP tools with camelCase schemas must receive params verbatim.
+	// mcpToolNames takes precedence over the "read_file"-means-Read builtin synonym, so a
+	// real MCP tool literally named read_file is never misrouted through Read's normalization.
+	const { rawParams, doneParams, isDone } = parsePartialToolParams(toolParamsStr, name, mcpToolNames);
 	return { id, name, rawParams, doneParams, isDone };
 }
 
@@ -61,6 +65,8 @@ export const sendOrbitProviderChat = async (params: SendChatParams_Internal) => 
 		mcpTools,
 		toolPolicy,
 	} = params
+	// So a real MCP tool named e.g. `read_file` isn't misrouted through builtin-Read param normalization.
+	const mcpToolNames = mcpTools?.map(t => t.name)
 
 	const {
 		modelName,
@@ -204,12 +210,13 @@ export const sendOrbitProviderChat = async (params: SendChatParams_Internal) => 
 	let buffer = ''
 	let fullTextSoFar = ''
 	let fullReasoningSoFar = ''
+	let usageSoFar: LLMUsage | undefined
 	const toolsByIndex = new Map<number, { name: string; id: string; paramsStr: string }>()
 	const allTools: { name: string; id: string; paramsStr: string }[] = []
 
 	const emitUpdate = () => {
 		const toolCalls = allTools
-			.map((tool) => rawToolCallObjOfParamsStr(tool.name, tool.paramsStr, tool.id))
+			.map((tool) => rawToolCallObjOfParamsStr(tool.name, tool.paramsStr, tool.id, mcpToolNames))
 			.filter((tc): tc is RawToolCallObj => tc !== null)
 		onText_({
 			fullText: fullTextSoFar,
@@ -260,6 +267,14 @@ export const sendOrbitProviderChat = async (params: SendChatParams_Internal) => 
 				} catch {
 					continue
 				}
+				if (chunk.usage) {
+					usageSoFar = {
+						promptTokens: chunk.usage.prompt_tokens,
+						completionTokens: chunk.usage.completion_tokens,
+						totalTokens: chunk.usage.total_tokens,
+						cacheReadTokens: chunk.usage.prompt_tokens_details?.cached_tokens,
+					}
+				}
 				const delta = chunk.choices?.[0]?.delta
 				if (!delta) {
 					continue
@@ -291,7 +306,7 @@ export const sendOrbitProviderChat = async (params: SendChatParams_Internal) => 
 		}
 
 		const allToolCalls = allTools
-			.map((tool) => rawToolCallObjOfParamsStr(tool.name, tool.paramsStr, tool.id))
+			.map((tool) => rawToolCallObjOfParamsStr(tool.name, tool.paramsStr, tool.id, mcpToolNames))
 			.filter((tc): tc is RawToolCallObj => tc !== null)
 
 		if (!fullTextSoFar && !fullReasoningSoFar && allToolCalls.length === 0) {
@@ -302,6 +317,7 @@ export const sendOrbitProviderChat = async (params: SendChatParams_Internal) => 
 			fullText: fullTextSoFar,
 			fullReasoning: fullReasoningSoFar,
 			anthropicReasoning: null,
+			usage: usageSoFar,
 			toolCall: allToolCalls[0],
 			toolCalls: allToolCalls.length ? allToolCalls : undefined,
 		})

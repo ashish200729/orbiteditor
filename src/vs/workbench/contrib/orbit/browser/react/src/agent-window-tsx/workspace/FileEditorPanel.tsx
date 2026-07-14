@@ -162,6 +162,10 @@ export const FileEditorPanel = ({
 	const menuBtnRef = React.useRef<HTMLButtonElement | null>(null);
 	const modelRefHandle = React.useRef<IReference<IResolvedTextEditorModel> | null>(null);
 	const ephemeralModelRef = React.useRef<ITextModel | null>(null);
+	// Disk state (etag/mtime) captured when the ephemeral fallback model was
+	// read, so saving it can detect an external modification instead of
+	// silently overwriting it (tracked models get this from ITextFileService).
+	const ephemeralStatRef = React.useRef<{ etag: string; mtime: number } | null>(null);
 	const loadGenRef = React.useRef(0);
 	const prevUriKeyRef = React.useRef<string | null>(null);
 	// Per-resource view state so back/forward and tab switches restore scroll+cursor.
@@ -187,6 +191,7 @@ export const FileEditorPanel = ({
 			try { ephemeralModelRef.current.dispose(); } catch { /* ignore */ }
 			ephemeralModelRef.current = null;
 		}
+		ephemeralStatRef.current = null;
 	}, []);
 
 	// Point the live editor at `m`, preserving/restoring per-resource view state.
@@ -201,7 +206,20 @@ export const FileEditorPanel = ({
 		}
 		const outgoing = editor.getModel();
 		if (outgoing && currentModelUriRef.current) {
-			try { viewStatesRef.current.set(currentModelUriRef.current, editor.saveViewState()); } catch { /* ignore */ }
+			try {
+				const states = viewStatesRef.current;
+				// Re-insert to refresh Map insertion order, then evict the oldest
+				// beyond a small cap — view states are large and were otherwise
+				// retained for every file ever opened (and forever for renamed ones).
+				states.delete(currentModelUriRef.current);
+				states.set(currentModelUriRef.current, editor.saveViewState());
+				const MAX_VIEW_STATES = 50;
+				while (states.size > MAX_VIEW_STATES) {
+					const oldest = states.keys().next().value as string | undefined;
+					if (oldest === undefined) { break; }
+					states.delete(oldest);
+				}
+			} catch { /* ignore */ }
 		}
 		editor.setModel(m);
 		currentModelUriRef.current = m.uri.toString();
@@ -254,6 +272,11 @@ export const FileEditorPanel = ({
 		prevUriKeyRef.current = uri ? uri.toString() : null;
 
 		if (!uri) {
+			// Detach Monaco BEFORE disposing the reference (same invariant as
+			// finishError below) — otherwise the editor keeps a disposed model
+			// bound and the next layout()/saveViewState() runs against it.
+			editorRef.current?.setModel(null);
+			currentModelUriRef.current = null;
 			releaseModel();
 			setModel(null);
 			setDirty(false);
@@ -335,6 +358,7 @@ export const FileEditorPanel = ({
 						applyModelToEditor(ephemeral);
 						releaseModel();
 						ephemeralModelRef.current = ephemeral;
+						ephemeralStatRef.current = { etag: content.etag, mtime: content.mtime };
 						setModel(ephemeral);
 						setDirty(false);
 						setReadOnly(false);
@@ -418,7 +442,15 @@ export const FileEditorPanel = ({
 		}
 		try {
 			if (ephemeralModelRef.current === model) {
-				await fileService.writeFile(uri, VSBuffer.fromString(model.getValue()));
+				// Pass the etag/mtime captured at read time so an external rewrite
+				// since then fails with FILE_MODIFIED_SINCE instead of being
+				// silently clobbered.
+				const stat = await fileService.writeFile(
+					uri,
+					VSBuffer.fromString(model.getValue()),
+					ephemeralStatRef.current ?? undefined,
+				);
+				ephemeralStatRef.current = { etag: stat.etag, mtime: stat.mtime };
 				setDirty(false);
 				setError(null);
 				return;
@@ -431,6 +463,12 @@ export const FileEditorPanel = ({
 				setError(null);
 			}
 		} catch (e: unknown) {
+			if (e instanceof FileOperationError && e.fileOperationResult === FileOperationResult.FILE_MODIFIED_SINCE) {
+				setError('Save failed: the file changed on disk since it was opened. Use "Discard Changes" to reload it, or save again to overwrite.');
+				// Let a deliberate second ⌘S overwrite (user has seen the warning).
+				ephemeralStatRef.current = null;
+				return;
+			}
 			setError(String((e as Error)?.message ?? e));
 		}
 	}, [uri, model, textFileService, fileService]);
@@ -449,6 +487,7 @@ export const FileEditorPanel = ({
 			if (ephemeralModelRef.current === model) {
 				const content = await fileService.readFile(uri);
 				model.setValue(content.value.toString());
+				ephemeralStatRef.current = { etag: content.etag, mtime: content.mtime };
 				setDirty(false);
 				setError(null);
 				return;
@@ -564,6 +603,9 @@ export const FileEditorPanel = ({
 				setError(`Failed to create editor: ${String((e as Error)?.message ?? e)}`);
 				host.remove();
 				monacoHostRef.current = null;
+				// Dispose the store so the scoped child instantiation service (added
+				// above) doesn't leak when widget creation throws.
+				try { store.dispose(); } catch { /* ignore */ }
 				editorStoreRef.current = null;
 				return;
 			}
@@ -708,12 +750,12 @@ export const FileEditorPanel = ({
 
 	const goBack = () => {
 		if (canBack && onNavigateFile) {
-			onNavigateFile(parseResource(openFileResources[fileIndex - 1]));
+			try { onNavigateFile(parseResource(openFileResources[fileIndex - 1])); } catch { /* malformed entry — ignore */ }
 		}
 	};
 	const goForward = () => {
 		if (canForward && onNavigateFile) {
-			onNavigateFile(parseResource(openFileResources[fileIndex + 1]));
+			try { onNavigateFile(parseResource(openFileResources[fileIndex + 1])); } catch { /* malformed entry — ignore */ }
 		}
 	};
 

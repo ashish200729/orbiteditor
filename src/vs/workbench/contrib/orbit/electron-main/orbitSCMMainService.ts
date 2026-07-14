@@ -6,7 +6,21 @@
 import { promisify } from 'util'
 import { execFile as _execFile } from 'child_process'
 import { readFile } from 'fs/promises'
-import { join } from 'path'
+import { resolve, relative, isAbsolute, sep } from 'path'
+
+/**
+ * Resolve `file` (arriving raw over IPC) against `root` and verify it stays inside `root`.
+ * Prevents path traversal (`../../etc/passwd`) turning the diff panel into an arbitrary file-read
+ * primitive. Returns the absolute path; throws if it escapes the repository root.
+ */
+function resolveInsideRoot(root: string, file: string): string {
+	const abs = resolve(root, file)
+	const rel = relative(root, abs)
+	if (rel === '' || rel.startsWith('..' + sep) || rel === '..' || isAbsolute(rel)) {
+		throw new Error(`Refusing to access path outside repository: ${file}`)
+	}
+	return abs
+}
 import {
 	GitCommandResult,
 	GitCommitOptions,
@@ -261,7 +275,9 @@ export class VoidSCMService implements IVoidSCMService {
 		const ws = options.ignoreWhitespace ? ['-w'] : []
 		if (options.untracked) {
 			// Untracked files have no index/HEAD version — diff against /dev/null.
-			const r = await runGit(root, ['diff', '--no-color', `--unified=${context}`, ...ws, '--no-index', '--', '/dev/null', options.file])
+			// `--no-index` bypasses git's repo-membership check, so validate containment ourselves.
+			const abs = resolveInsideRoot(root, options.file)
+			const r = await runGit(root, ['diff', '--no-color', `--unified=${context}`, ...ws, '--no-index', '--', '/dev/null', abs])
 			// exit 1 = differences found (expected); >1 = error
 			return r.stdout
 		}
@@ -278,7 +294,7 @@ export class VoidSCMService implements IVoidSCMService {
 			return r.code === 0 ? r.stdout : ''
 		}
 		try {
-			return await readFile(join(root, file), 'utf8')
+			return await readFile(resolveInsideRoot(root, file), 'utf8')
 		} catch {
 			return ''
 		}
@@ -337,12 +353,28 @@ export class VoidSCMService implements IVoidSCMService {
 	async discard(root: string, files: string[], untrackedFiles: string[]): Promise<GitCommandResult> {
 		let last: RunResult = { code: 0, stdout: '', stderr: '' }
 		if (files.length > 0) {
-			// Unstage first (so staged-only discards clear the index too), then restore
-			// worktree from HEAD. `checkout HEAD --` (rather than bare `checkout --`)
-			// also resolves unmerged/conflicted paths instead of erroring on them.
+			// Unstage first (non-destructive/reversible) — needed so the HEAD-membership
+			// check below and the mutating batches after it see accurate tracked state.
 			await runGit(root, ['reset', '-q', 'HEAD', '--', ...files])
-			last = await runGit(root, ['checkout', 'HEAD', '--', ...files])
-			if (last.code !== 0) { return toResult(last) }
+			// Split into tracked-in-HEAD vs newly-added *before* mutating anything, so a
+			// staged-new file (no HEAD blob) can't make a single `checkout HEAD --` call
+			// fail for every other file. Each category is then reverted as one batch
+			// instead of file-by-file, so a mid-batch failure can't leave some files
+			// already irreversibly reverted while others silently weren't attempted.
+			const trackedFiles: string[] = []
+			const newFiles: string[] = []
+			for (const file of files) {
+				const inHead = (await runGit(root, ['cat-file', '-e', `HEAD:${file}`])).code === 0
+				if (inHead) { trackedFiles.push(file) } else { newFiles.push(file) }
+			}
+			if (trackedFiles.length > 0) {
+				last = await runGit(root, ['checkout', 'HEAD', '--', ...trackedFiles])
+				if (last.code !== 0) { return toResult(last) }
+			}
+			if (newFiles.length > 0) {
+				last = await runGit(root, ['clean', '-fdq', '--', ...newFiles])
+				if (last.code !== 0) { return toResult(last) }
+			}
 		}
 		if (untrackedFiles.length > 0) {
 			last = await runGit(root, ['clean', '-fdq', '--', ...untrackedFiles])
@@ -351,6 +383,13 @@ export class VoidSCMService implements IVoidSCMService {
 	}
 
 	async applyPatch(root: string, patch: string, opts: { cached?: boolean; reverse?: boolean }): Promise<GitCommandResult> {
+		// Cap the patch fed to `git apply` on stdin so a runaway/hostile patch can't
+		// pin memory in the main process (the whole string is buffered here and again
+		// in the child's stdin pipe).
+		const MAX_PATCH_BYTES = 50 * 1024 * 1024
+		if (Buffer.byteLength(patch, 'utf8') > MAX_PATCH_BYTES) {
+			return { ok: false, stdout: '', error: 'Patch exceeds the maximum size (50MB).' }
+		}
 		const args = ['apply', '--whitespace=nowarn']
 		if (opts.cached) { args.push('--cached') }
 		if (opts.reverse) { args.push('--reverse') }

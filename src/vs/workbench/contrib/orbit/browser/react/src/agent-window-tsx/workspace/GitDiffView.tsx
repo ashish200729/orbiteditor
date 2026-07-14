@@ -66,6 +66,7 @@ export const GitDiffView = ({
 	const [parsed, setParsed] = React.useState<ParsedDiff | null>(null);
 	const [fileLines, setFileLines] = React.useState<string[] | null>(null);
 	const [loading, setLoading] = React.useState(true);
+	const [tooLarge, setTooLarge] = React.useState(false);
 	const [error, setError] = React.useState<string | null>(null);
 	const [reveals, setReveals] = React.useState<Record<string, BandReveal>>({});
 	const [busyHunk, setBusyHunk] = React.useState<number | null>(null);
@@ -107,19 +108,41 @@ export const GitDiffView = ({
 		let cancelled = false;
 		setLoading(true);
 		setError(null);
-		setReveals({});
 		(async () => {
 			try {
 				const diff = await gitService.getDiff(root, { file, staged, untracked, contextLines: 3, ignoreWhitespace });
 				if (cancelled) { return; }
+				// The backend returns the diff unbounded; a huge generated/untracked
+				// file would render one DOM row per line and freeze the window.
+				if (diff.length > 5_000_000) {
+					setParsed(null);
+					setFileLines(null);
+					setTooLarge(true);
+					return;
+				}
 				const p = parseUnifiedDiff(diff);
+				if (p.hunks.reduce((acc, h) => acc + h.rows.length, 0) > 20_000) {
+					setParsed(null);
+					setFileLines(null);
+					setTooLarge(true);
+					return;
+				}
+				setTooLarge(false);
 				setParsed(p);
+				// Reset band expansion only once the NEW diff is in (line numbers
+				// shifted) — resetting up-front collapsed the still-visible old diff.
+				setReveals({});
 				const st = diffStats(p);
 				onStatsRef.current?.(st.added, st.removed);
 				if (!p.isBinary) {
 					const content = await gitService.getFileContent(root, file, staged);
 					if (!cancelled) {
-						setFileLines(content.length ? content.split('\n') : []);
+						const lines = content.length ? content.split('\n') : [];
+						// A trailing newline yields a phantom '' element; keeping it
+						// inflates every trailing "N unmodified lines" band by one and
+						// renders a spurious blank line at EOF when expanded.
+						if (lines.length && lines[lines.length - 1] === '') { lines.pop(); }
+						setFileLines(lines);
 					}
 				} else {
 					setFileLines(null);
@@ -173,6 +196,10 @@ export const GitDiffView = ({
 				notificationService.error(`${action[0].toUpperCase()}${action.slice(1)} hunk failed: ${res.error ?? 'git apply rejected the change'}`);
 			}
 			onChanged();
+		} catch (e: any) {
+			// A thrown error (IPC/channel failure) would otherwise be an unhandled
+			// rejection — the click would silently do nothing.
+			notificationService.error(`${action[0].toUpperCase()}${action.slice(1)} hunk failed: ${String(e?.message ?? e)}`);
 		} finally {
 			setBusyHunk(null);
 		}
@@ -180,9 +207,14 @@ export const GitDiffView = ({
 
 	return (
 		<div className={`agent-git-diff${layout === 'split' ? ' split' : ''}${wordWrap ? ' wrap' : ''}`} ref={hostRef}>
-			{!visible || loading ? (
+			{/* While a REFRESH is in flight keep showing the previous diff — the
+			    SCM watcher fires on every agent edit, and blanking every visible
+			    section to "Loading diff…" per event made the whole panel flicker. */}
+			{!visible || (loading && !parsed && !tooLarge && !error) ? (
 				<div className="agent-git-diff-status">Loading diff…</div>
-			) : error ? (
+			) : tooLarge ? (
+				<div className="agent-git-diff-status">Diff too large to display.</div>
+			) : error && !parsed ? (
 				<div className="agent-git-diff-status error">{error}</div>
 			) : !parsed || parsed.isEmpty ? (
 				<div className="agent-git-diff-status">No changes to display.</div>

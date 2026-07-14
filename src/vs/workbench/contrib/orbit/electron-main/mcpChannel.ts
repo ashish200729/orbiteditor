@@ -8,6 +8,7 @@
 // to be connected to the main process and node dependencies
 
 import { IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
+import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
@@ -45,6 +46,38 @@ type ClientInfo = {
 
 type InfoOfClientId = {
 	[clientId: string]: ClientInfo
+}
+
+// Environment variables an MCP subprocess legitimately needs to launch and behave correctly,
+// without leaking the host's secrets (proxy creds, cloud tokens, API keys live in other vars).
+const MCP_ENV_ALLOWLIST = [
+	'PATH', 'HOME', 'USER', 'LOGNAME', 'SHELL', 'LANG', 'LANGUAGE', 'TERM', 'TZ', 'PWD',
+	'TMPDIR', 'TEMP', 'TMP', 'XDG_RUNTIME_DIR', 'XDG_DATA_HOME', 'XDG_CONFIG_HOME',
+	// Windows essentials
+	'SystemRoot', 'SystemDrive', 'WINDIR', 'PATHEXT', 'ComSpec', 'APPDATA', 'LOCALAPPDATA',
+	'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'PROCESSOR_ARCHITECTURE', 'NUMBER_OF_PROCESSORS',
+	// Network proxy / TLS trust — many stdio servers (npm/pip/curl-based) need these to
+	// reach the network at all from behind a corporate proxy or custom CA bundle.
+	'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'ALL_PROXY',
+	'http_proxy', 'https_proxy', 'no_proxy', 'all_proxy',
+	'NODE_EXTRA_CA_CERTS', 'SSL_CERT_FILE', 'SSL_CERT_DIR', 'REQUESTS_CA_BUNDLE', 'CURL_CA_BUNDLE',
+	// Language-runtime env that existing server configs commonly rely on being inherited.
+	'NODE_OPTIONS', 'NVM_BIN', 'NVM_DIR', 'VIRTUAL_ENV', 'PYTHONPATH', 'PYENV_ROOT', 'CONDA_PREFIX',
+	'GOPATH', 'GOROOT', 'CARGO_HOME', 'RUSTUP_HOME', 'JAVA_HOME', 'GEM_HOME', 'BUNDLE_PATH',
+];
+
+function buildMinimalMcpEnv(serverEnv: Record<string, string> | undefined): Record<string, string> {
+	const env: Record<string, string> = {};
+	for (const key of MCP_ENV_ALLOWLIST) {
+		const v = process.env[key];
+		if (typeof v === 'string') { env[key] = v; }
+	}
+	// Preserve all LC_* locale vars.
+	for (const key of Object.keys(process.env)) {
+		if (key.startsWith('LC_') && typeof process.env[key] === 'string') { env[key] = process.env[key] as string; }
+	}
+	// The server's declared env wins (explicitly configured by the user for this server).
+	return { ...env, ...(serverEnv ?? {}) };
 }
 
 export class MCPChannel implements IServerChannel {
@@ -141,7 +174,7 @@ export class MCPChannel implements IServerChannel {
 	}
 
 	// browser uses this to call (see this.channel.call() in mcpConfigService.ts for all usages)
-	async call(_: unknown, command: string, params: any): Promise<any> {
+	async call(_: unknown, command: string, params: any, cancellationToken?: CancellationToken): Promise<any> {
 		try {
 			if (command === 'refreshMCPServers') {
 				await this._refreshMCPServers(params)
@@ -154,7 +187,7 @@ export class MCPChannel implements IServerChannel {
 			}
 		else if (command === 'callTool') {
 			const p: MCPToolCallParams = params
-			const response = await this._safeCallTool(p.serverName, p.toolName, p.params)
+			const response = await this._safeCallTool(p.serverName, p.toolName, p.params, cancellationToken)
 			return response
 		}
 		else if (command === 'emitBuiltinServers') {
@@ -275,14 +308,13 @@ export class MCPChannel implements IServerChannel {
 				}
 			}
 		} else if (server.command) {
-			// console.log('ENV DATA: ', server.env)
+			// Pass a MINIMAL environment plus the server's own env, rather than the full host
+			// environment. Forwarding all of process.env leaks proxy credentials, cloud tokens and
+			// API keys to arbitrary third-party MCP subprocesses.
 			transport = new StdioClientTransport({
 				command: server.command,
 				args: server.args,
-				env: {
-					...process.env,
-					...server.env
-				} as Record<string, string>,
+				env: buildMinimalMcpEnv(server.env),
 			});
 
 			await client.connect(transport)
@@ -404,7 +436,7 @@ export class MCPChannel implements IServerChannel {
 
 	// tool call functions
 
-	private async _callTool(serverName: string, toolName: string, params: any): Promise<RawMCPToolCall> {
+	private async _callTool(serverName: string, toolName: string, params: any, token?: CancellationToken): Promise<RawMCPToolCall> {
 		// Built-in servers (e.g. orbit-ide-browser) are routed directly to their
 		// in-process implementation — they don't have an SDK client. Checking
 		// the builtin registry FIRST avoids Cursor's dual-registry "No server
@@ -427,11 +459,22 @@ export class MCPChannel implements IServerChannel {
 		const { _client: client } = server
 		if (!client) throw new Error(`Client for server ${serverName} not found`)
 
+		// Bridge the VSCode CancellationToken to an AbortSignal so a caller timeout/cancel actually
+		// aborts the in-flight MCP request instead of leaving it running server-side.
+		const abortController = new AbortController()
+		const tokenListener = token?.onCancellationRequested(() => abortController.abort())
+		if (token?.isCancellationRequested) abortController.abort()
+
 		// Call the tool with the provided parameters
-		const response = await client.callTool({
-			name: removeMCPToolNamePrefix(toolName),
-			arguments: params
-		}, this._looseCallToolResultSchema as unknown as typeof CallToolResultSchema)
+		let response
+		try {
+			response = await client.callTool({
+				name: removeMCPToolNamePrefix(toolName),
+				arguments: params
+			}, this._looseCallToolResultSchema as unknown as typeof CallToolResultSchema, { signal: abortController.signal })
+		} finally {
+			tokenListener?.dispose()
+		}
 		const result = response as Partial<CallToolResult> & { toolResult?: unknown }
 		const { content } = result
 		const contentItems = Array.isArray(content) ? content : []
@@ -530,9 +573,9 @@ export class MCPChannel implements IServerChannel {
 	}
 
 	// tool call error wrapper
-	private async _safeCallTool(serverName: string, toolName: string, params: any): Promise<RawMCPToolCall> {
+	private async _safeCallTool(serverName: string, toolName: string, params: any, token?: CancellationToken): Promise<RawMCPToolCall> {
 		try {
-			const response = await this._callTool(serverName, toolName, params)
+			const response = await this._callTool(serverName, toolName, params, token)
 			return response
 		} catch (err) {
 

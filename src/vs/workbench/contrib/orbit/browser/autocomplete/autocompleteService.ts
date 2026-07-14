@@ -4,6 +4,7 @@
  *--------------------------------------------------------------------------------------*/
 
 import { Disposable } from '../../../../../base/common/lifecycle.js';
+import { CancellationToken } from '../../../../../base/common/cancellation.js';
 import { ILanguageFeaturesService } from '../../../../../editor/common/services/languageFeatures.js';
 import { createDecorator } from '../../../../../platform/instantiation/common/instantiation.js';
 import { ITextModel } from '../../../../../editor/common/model.js';
@@ -20,6 +21,7 @@ import { ILLMMessageService } from '../../common/sendLLMMessageService.js';
 import { IVoidSettingsService } from '../../common/orbitSettingsService.js';
 import { FeatureName } from '../../common/orbitSettingsTypes.js';
 import { IConvertToLLMMessageService } from '../convertToLLMMessageService.js';
+import { IContextGatheringService } from '../contextGatheringService.js';
 import { LRUCache } from './cache/lruCache.js';
 import { createPrefixHash } from './cache/completionCache.js';
 import { processStartAndEndSpaces, removeAllWhitespace, getPrefixAndSuffixInfo } from './utils/stringUtils.js';
@@ -69,6 +71,7 @@ export class AutocompleteService extends Disposable implements IAutocompleteServ
 	async _provideInlineCompletionItems(
 		model: ITextModel,
 		position: Position,
+		token?: CancellationToken,
 	): Promise<InlineCompletion[]> {
 		// ✅ FIX: Add error boundary to prevent crashes
 		try {
@@ -116,8 +119,11 @@ export class AutocompleteService extends Disposable implements IAutocompleteServ
 			let autocompletionMatchup: ReturnType<typeof getAutocompletionMatchup> | undefined = undefined
 
 			// Fast-path 1: check for exact prefix match first (common case when user continues typing)
-			for (const [_, autocompletion] of cacheSnapshot) {
+			for (const [id, autocompletion] of cacheSnapshot) {
 				if (autocompletion.prefix === prefix) {
+					// re-validate against the live cache — the snapshot may reference an entry
+					// evicted (and its request aborted) since it was taken
+					if (!this._autocompletionsOfDocument[docUriStr].items.has(id)) continue;
 					cachedAutocompletion = autocompletion;
 					autocompletionMatchup = { startIdx: 0, startLine: 0, startCharacter: 0 };
 					break;
@@ -145,10 +151,12 @@ export class AutocompleteService extends Disposable implements IAutocompleteServ
 
 			// Fallback: if hash index didn't help, do full search (shouldn't happen often)
 			if (!cachedAutocompletion) {
-				for (const [_, autocompletion] of cacheSnapshot) {
+				for (const [id, autocompletion] of cacheSnapshot) {
 					// if the user's change matches with the autocompletion
 					autocompletionMatchup = getAutocompletionMatchup({ prefix, autocompletion })
 					if (autocompletionMatchup !== undefined) {
+						// re-validate against the live cache — skip entries evicted since the snapshot
+						if (!this._autocompletionsOfDocument[docUriStr].items.has(id)) continue;
 						cachedAutocompletion = autocompletion
 						break;
 					}
@@ -185,7 +193,11 @@ export class AutocompleteService extends Disposable implements IAutocompleteServ
 					}
 
 				} else if (cachedAutocompletion.status === 'error') {
-					this._logService.trace('[Autocomplete] Cached completion had error');
+					// An errored entry can never serve a request — drop it so it stops matching
+					// and a fresh completion can be generated for this prefix.
+					this._logService.trace('[Autocomplete] Cached completion had error, evicting');
+					this._removeFromHashIndex(docUriStr, cachedAutocompletion);
+					this._autocompletionsOfDocument[docUriStr].delete(cachedAutocompletion.id);
 				} else {
 					this._logService.trace('[Autocomplete] Cached completion has unknown status');
 				}
@@ -221,6 +233,12 @@ export class AutocompleteService extends Disposable implements IAutocompleteServ
 				return []
 			}
 
+			// the editor may have cancelled this request while we were debouncing (cursor moved,
+			// escape pressed, editor switched) — don't fire an LLM request for a stale position
+			if (token?.isCancellationRequested) {
+				return []
+			}
+
 
 			// if there are too many pending requests, cancel the oldest one
 			let numPending = 0
@@ -240,12 +258,8 @@ export class AutocompleteService extends Disposable implements IAutocompleteServ
 			}
 
 
-			// gather relevant context from the code around the user's selection and definitions
-			// const relevantSnippetsList = await this._contextGatheringService.readCachedSnippets(model, position, 3);
-			// const relevantSnippetsList = this._contextGatheringService.getCachedSnippets();
-			// const relevantSnippets = relevantSnippetsList.map((text) => `${text}`).join('\n-------------------------------\n')
-			// console.log('@@---------------------\n' + relevantSnippets)
-			const relevantContext = ''
+			// D1: gather relevant nearby/definition snippets from the (already-maintained) context cache.
+			const relevantContext = this._buildRelevantContext()
 
 			const cursorOffset = model.getOffsetAt(position);
 
@@ -329,16 +343,33 @@ export class AutocompleteService extends Disposable implements IAutocompleteServ
 						// Skip if only whitespace so far
 						if (!fullText.trim()) return;
 
-						// Critical: Filter out model explanations and instructions immediately
+						// Critical: Filter out model explanations and instructions immediately.
+						// The English phrase list is kept as a (language-specific) supplement, but the primary
+						// signal is now structural + language-agnostic, so non-English explanations and markdown
+						// wrappers are caught too, without over-rejecting legitimate code/string completions.
 						const lowerText = fullText.toLowerCase();
 						const badPhrases = [
 							'here is', 'here\'s', 'the code', 'complete', 'this code',
 							'i can help', 'to complete', 'fill in', '<fill', 'explanation',
 							'this will', 'this should', 'the above'
 						];
+						const firstLine = fullText.trim().split('\n', 1)[0] ?? '';
+						const lowerFirst = firstLine.toLowerCase();
+						// Language-agnostic wrappers: a markdown code fence or an explicit fill marker.
+						const startsWithWrapper = firstLine.startsWith('```') || lowerFirst.startsWith('<fill');
+						const startsWithBadPhrase = badPhrases.some(phrase => lowerText.trim().startsWith(phrase));
+						// Structural: a COMPLETE natural-language sentence — starts capitalized, ends with
+						// sentence punctuation, carries no code punctuation, and is several words long. High
+						// precision (real code/string continuations almost always contain code punctuation or
+						// don't end a sentence), so this rarely false-rejects.
+						const hasCodePunct = /[{}();=<>[\]]/.test(firstLine);
+						const looksLikeSentence = !hasCodePunct
+							&& /[.:?]$/.test(firstLine)
+							&& /^[A-Z]/.test(firstLine)
+							&& firstLine.split(/\s+/).filter(Boolean).length >= 5;
 
 						// If model starts explaining instead of coding, reject immediately
-						if (badPhrases.some(phrase => lowerText.trim().startsWith(phrase))) {
+						if (startsWithWrapper || startsWithBadPhrase || looksLikeSentence) {
 							newAutocompletion.status = 'error'
 							if (newAutocompletion.requestId) this._llmMessageService.abort(newAutocompletion.requestId)
 							reject('Model provided explanation instead of code')
@@ -405,9 +436,12 @@ export class AutocompleteService extends Disposable implements IAutocompleteServ
 				})
 				newAutocompletion.requestId = requestId
 
-				// if the request hasnt resolved in TIMEOUT_TIME seconds, reject it
+				// if the request hasnt resolved in TIMEOUT_TIME ms, abort the underlying LLM
+				// request (not just the promise — otherwise it keeps streaming into a dead entry)
 				setTimeout(() => {
 					if (newAutocompletion.status === 'pending') {
+						newAutocompletion.status = 'error'
+						if (newAutocompletion.requestId) this._llmMessageService.abort(newAutocompletion.requestId)
 						reject('Timeout receiving message to LLM.')
 					}
 				}, TIMEOUT_TIME)
@@ -430,6 +464,10 @@ export class AutocompleteService extends Disposable implements IAutocompleteServ
 			try {
 				await newAutocompletion.llmPromise
 				// console.log('id: ' + newAutocompletion.id)
+
+				// stale by the time it resolved — keep it cached (a future request can match it),
+				// but don't render it at an outdated position
+				if (token?.isCancellationRequested) return []
 
 				const autocompletionMatchup = { startIdx: 0, startLine: 0, startCharacter: 0 }
 				const inlineCompletions = toInlineCompletions({ autocompletionMatchup, autocompletion: newAutocompletion, prefixAndSuffix, position })
@@ -455,8 +493,8 @@ export class AutocompleteService extends Disposable implements IAutocompleteServ
 		@IModelService private readonly _modelService: IModelService,
 		@IVoidSettingsService private readonly _settingsService: IVoidSettingsService,
 		@IConvertToLLMMessageService private readonly _convertToLLMMessageService: IConvertToLLMMessageService,
-		@ILogService private readonly _logService: ILogService
-		// @IContextGatheringService private readonly _contextGatheringService: IContextGatheringService,
+		@ILogService private readonly _logService: ILogService,
+		@IContextGatheringService private readonly _contextGatheringService: IContextGatheringService,
 	) {
 		super();
 
@@ -479,7 +517,7 @@ export class AutocompleteService extends Disposable implements IAutocompleteServ
 
 		this._register(this._langFeatureService.inlineCompletionsProvider.register('*', {
 			provideInlineCompletions: async (model, position, context, token) => {
-				const items = await this._provideInlineCompletionItems(model, position)
+				const items = await this._provideInlineCompletionItems(model, position, token)
 
 				// console.log('item: ', items?.[0]?.insertText)
 				return { items: items, }
@@ -529,6 +567,30 @@ export class AutocompleteService extends Disposable implements IAutocompleteServ
 		}))
 	}
 
+	/**
+	 * D1: build the FIM "relevant context" string from the context-gathering service's cache (nearby +
+	 * enclosing-scope snippets it already maintains on content change). Read synchronously (no added
+	 * latency in the completion hot path) and bounded so it can't bloat the FIM prompt. Empty string
+	 * when the cache is cold — identical to the prior behavior, so this only ever adds signal.
+	 */
+	private _buildRelevantContext(): string {
+		try {
+			const snippets = this._contextGatheringService.getCachedSnippets()
+			if (!snippets || snippets.length === 0) return ''
+			const MAX_SNIPPETS = 5
+			const MAX_CHARS = 2000
+			let out = ''
+			for (const s of snippets.slice(0, MAX_SNIPPETS)) {
+				if (!s) continue
+				if (out.length + s.length > MAX_CHARS) break
+				out += (out ? '\n-------------------------------\n' : '') + s
+			}
+			return out
+		} catch {
+			return ''
+		}
+	}
+
 	// Speculative prefetching: start generating next-line completion after accept
 	private async _speculativePrefetch(model: ITextModel, position: Position): Promise<void> {
 		if (this._prefetchingActive) return; // Don't double-prefetch
@@ -546,7 +608,7 @@ export class AutocompleteService extends Disposable implements IAutocompleteServ
 
 			// Add newline to simulate next line
 			const prefixWithNewline = prefix + _ln;
-			const relevantContext = '';
+			const relevantContext = this._buildRelevantContext(); // D1
 			const cursorOffset = model.getOffsetAt(position);
 
 			const { shouldGenerate, llmPrefix, llmSuffix, stopTokens, predictionType } = getCompletionOptions(

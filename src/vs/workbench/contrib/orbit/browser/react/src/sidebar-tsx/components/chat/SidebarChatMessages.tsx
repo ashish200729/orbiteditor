@@ -40,7 +40,11 @@ export const SidebarChatMessages = ({
 		? userMessageIndices[userMessageIndices.length - 1]
 		: null;
 
-	const messageElements = useMemo(() => {
+	// Heavy pass: build the bubble content for every message. Deliberately excludes the sticky
+	// props from its deps — sticky state changes on every scroll tick, and rebuilding each bubble
+	// element per tick reconciles the entire thread. The cheap wrapper pass below re-applies
+	// sticky styling; bubble element identity is preserved so React bails out of their subtrees.
+	const messageItems = useMemo(() => {
 		const PARALLEL_TOOLS = ['Read', 'Glob', 'Grep', 'read_lint_errors'] as const;
 
 		const isParallelTool = (msg: ChatMessage): boolean => {
@@ -105,7 +109,6 @@ export const SidebarChatMessages = ({
 				const shouldAddGap = (previousRole === 'user' && currentRole === 'assistant')
 					|| (previousRole === 'assistant' && currentRole === 'user');
 				const isUserMessage = group.message.role === 'user';
-				const isThisStickyMessage = isUserMessage && stickyMessageIndex === i;
 				const showTodoOnMessage = isUserMessage
 					&& i === lastUserMessageIndex
 					&& liveTodos.length > 0;
@@ -117,19 +120,13 @@ export const SidebarChatMessages = ({
 					userMessageCount += 1;
 				}
 
-				return (
-					<div
-						key={`msg-${i}-${group.message.role}`}
-						data-message-index={i}
-						data-role={group.message.role}
-						className={`${shouldAddGap ? 'mt-2' : ''}${isThisStickyMessage ? ' sticky' : ''}`}
-						style={isThisStickyMessage ? {
-							top: `${stickyOffset}px`,
-							backgroundColor: 'var(--vscode-editor-background)',
-							zIndex: 20,
-							boxShadow: '0 2px 8px -2px rgba(0, 0, 0, 0.15)',
-						} : undefined}
-					>
+				return {
+					key: `msg-${i}-${group.message.role}`,
+					index: i as number | undefined,
+					role: group.message.role as string | undefined,
+					shouldAddGap,
+					isUserMessage,
+					bubble: (
 						<ChatBubble
 							currCheckpointIdx={currCheckpointIdx}
 							checkpointBeforeIdx={checkpointBeforeIdx}
@@ -143,13 +140,18 @@ export const SidebarChatMessages = ({
 							threadTodos={showTodoOnMessage ? liveTodos : undefined}
 							isAgentRunning={showTodoOnMessage ? !!isRunning : undefined}
 						/>
-					</div>
-				);
+					),
+				};
 			}
 
 			const groupKey = `parallel-${group.messages.map(m => m.index).join('-')}`;
-			return (
-				<div key={groupKey}>
+			return {
+				key: groupKey,
+				index: undefined as number | undefined,
+				role: undefined as string | undefined,
+				shouldAddGap: false,
+				isUserMessage: false,
+				bubble: (
 					<ParallelToolGroup
 						messages={group.messages}
 						previousMessages={previousMessages}
@@ -159,8 +161,8 @@ export const SidebarChatMessages = ({
 						scrollContainerRef={scrollContainerRef}
 						scrollActions={scrollActions}
 					/>
-				</div>
-			);
+				),
+			};
 		});
 	}, [
 		previousMessages,
@@ -168,12 +170,29 @@ export const SidebarChatMessages = ({
 		currCheckpointIdx,
 		isRunning,
 		scrollActions,
-		stickyOffset,
-		stickyMessageIndex,
 		liveTodos,
 		lastUserMessageIndex,
 		scrollContainerRef,
 	]);
 
-	return <>{messageElements}</>;
+	// Cheap pass: only the wrapper divs are recreated when sticky state changes on scroll.
+	return <>{messageItems.map(item => {
+		const isThisStickyMessage = item.isUserMessage && item.index !== undefined && stickyMessageIndex === item.index;
+		return (
+			<div
+				key={item.key}
+				data-message-index={item.index}
+				data-role={item.role}
+				className={`${item.shouldAddGap ? 'mt-2' : ''}${isThisStickyMessage ? ' sticky' : ''}`}
+				style={isThisStickyMessage ? {
+					top: `${stickyOffset}px`,
+					backgroundColor: 'var(--vscode-editor-background)',
+					zIndex: 20,
+					boxShadow: '0 2px 8px -2px rgba(0, 0, 0, 0.15)',
+				} : undefined}
+			>
+				{item.bubble}
+			</div>
+		);
+	})}</>;
 };

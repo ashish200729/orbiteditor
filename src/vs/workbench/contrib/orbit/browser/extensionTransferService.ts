@@ -91,6 +91,11 @@ class ExtensionTransferService extends Disposable implements IExtensionTransferS
 							await fileService.createFolder(toParent)
 						}
 						for (const extensionFolder of stat.children ?? []) {
+							// Skip symlinks: a symlinked "extension" would copy its target (possibly
+							// outside the source tree) and load it as a real extension — ext-host RCE.
+							if (extensionFolder.isSymbolicLink) {
+								continue
+							}
 							const from = extensionFolder.resource
 							const to = URI.joinPath(toParent, extensionFolder.name)
 							const toStat = await fileService.resolve(from)

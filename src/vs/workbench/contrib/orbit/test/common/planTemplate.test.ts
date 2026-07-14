@@ -103,6 +103,18 @@ suite('PlanTemplate', () => {
 		assert.ok(result.content.includes('1. [✓] First task'));
 	});
 
+	test('markTodoComplete uses the stable rendered index (counts completed items too)', () => {
+		// Index 2 targets the SECOND rendered row regardless of completion state.
+		const second = markTodoComplete(SAMPLE_PLAN, 2);
+		assert.ok(second.completedItem.includes('Second task'));
+		// After completing item 1, index 2 must still target the second item (not skip it).
+		const first = markTodoComplete(SAMPLE_PLAN, 1).content;
+		const both = markTodoComplete(first, 2);
+		assert.ok(both.completedItem.includes('Second task'));
+		assert.ok(both.content.includes('1. [✓] First task'));
+		assert.ok(both.content.includes('2. [✓] Second task'));
+	});
+
 	test('updatePlanStatus changes frontmatter status', () => {
 		const updated = updatePlanStatus(SAMPLE_PLAN, 'in-progress');
 		assert.ok(updated.includes('status: in-progress'));
@@ -157,7 +169,9 @@ suite('PlanTemplate', () => {
 	});
 
 	test('syncPlanStatus updates status based on progress', () => {
-		const completed = markTodoComplete(markTodoComplete(SAMPLE_PLAN, 1).content, 1).content;
+		// itemIndex is the stable rendered position (1..N over ALL items), so completing the first
+		// two todos means marking index 1 then index 2 (not index 1 twice).
+		const completed = markTodoComplete(markTodoComplete(SAMPLE_PLAN, 1).content, 2).content;
 		const synced = syncPlanStatus(completed);
 		assert.ok(synced.includes('status: completed'));
 	});

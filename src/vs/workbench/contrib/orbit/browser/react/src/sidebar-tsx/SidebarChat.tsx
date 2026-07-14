@@ -6,7 +6,7 @@
 import React, { Fragment, KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 // Services and hooks
-import { useAccessor, useChatThreadsState, useThreadRunningState, useSettingsState, useCommandBarState, useMCPServiceState } from '../util/services.js';
+import { useAccessor, useChatThreadsState, useThreadRunningState, useSettingsState, useCommandBarState, useMCPServiceState, useQueuedUserMessages, useIsQueuePaused } from '../util/services.js';
 
 // Common imports
 import { URI } from '../../../../../../../base/common/uri.js';
@@ -15,7 +15,7 @@ import { isFeatureNameDisabled } from '../../../../common/orbitSettingsTypes.js'
 import { isABuiltinToolName } from '../../../../common/prompt/prompts.js';
 
 import { TextAreaFns, VoidInputBox2 } from '../util/inputs.js';
-import { focusInConnectedWindow } from '../util/helpers.js';
+import { focusInConnectedWindow, downscaleImageDataUrl } from '../util/helpers.js';
 import { getConnectedWindow } from '../util/connectedWindow.js';
 import { VOID_CTRL_L_ACTION_ID } from '../../../actionIDs.js';
 import { VOID_OPEN_SETTINGS_ACTION_ID } from '../../../orbitSettingsPane.js';
@@ -45,6 +45,14 @@ import { CommandBarInChat } from './components/chatComponents/CommandBarInChat.j
 // Context providers
 import { TodoProvider } from './contexts/TodoContext.js';
 import { ChatMessagesScrollArea } from './components/chat/ChatMessagesScrollArea.js';
+import {
+	VOID_MESSAGE_QUEUE,
+	VOID_MESSAGE_QUEUE_ACTION,
+	VOID_MESSAGE_QUEUE_COUNT,
+	VOID_MESSAGE_QUEUE_HEADER,
+	VOID_MESSAGE_QUEUE_ITEM,
+	VOID_MESSAGE_QUEUE_POSITION,
+} from './messageQueueCssClasses.js';
 
 // Extracted hooks
 import { useChatScrollPolicy } from './hooks/useChatScrollPolicy.js';
@@ -98,6 +106,14 @@ export { getRelative, getFolderName, getBasename, voidOpenFileFn } from './utils
 // MAIN COMPONENT
 // ============================================================================
 
+/** A pasted/dropped image staged for the next message. `id` is a stable React key. */
+type StagedImage = { id: string; url: string }
+let _stagedImageSeq = 0
+const nextStagedImageId = (): string => {
+	const c = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto
+	return c?.randomUUID?.() ?? `img-${Date.now()}-${(_stagedImageSeq++).toString(36)}`
+}
+
 export const SidebarChat = () => {
 	const textAreaRef = useRef<HTMLTextAreaElement | null>(null)
 	const textAreaFnsRef = useRef<TextAreaFns | null>(null)
@@ -122,6 +138,8 @@ export const SidebarChat = () => {
 
 	const threadId = currentThread.id
 	const isRunning = useThreadRunningState(threadId)
+	const queuedMessages = useQueuedUserMessages(threadId)
+	const isQueuePaused = useIsQueuePaused(threadId)
 
 	const mcpToolNameSet = useMemo(() => {
 		const names = new Set<string>()
@@ -144,8 +162,9 @@ export const SidebarChat = () => {
 
 	const sidebarRef = useRef<HTMLDivElement>(null)
 	const scrollContainerRef = useRef<HTMLDivElement | null>(null)
-	// State for images
-	const [images, setImages] = useState<string[]>([])
+	// State for images. Each carries a stable id so React keys survive delete+add (index keys
+	// reuse the wrong DOM node, and identical data-URLs would collide if keyed by content).
+	const [images, setImages] = useState<StagedImage[]>([])
 	// State for drag and drop visual feedback
 	const [isDragOver, setIsDragOver] = useState(false)
 
@@ -162,7 +181,8 @@ export const SidebarChat = () => {
 				const reader = new FileReader()
 				reader.onload = (event) => {
 					const dataUrl = event.target?.result as string
-					resolve(dataUrl)
+					// Downscale before it enters thread state/storage and every request.
+					downscaleImageDataUrl(dataUrl).then(resolve)
 				}
 				reader.onerror = reject
 				reader.readAsDataURL(file)
@@ -175,7 +195,7 @@ export const SidebarChat = () => {
 				const ok = results
 					.filter((r): r is PromiseFulfilledResult<string> => r.status === 'fulfilled')
 					.map(r => r.value)
-				if (ok.length > 0) setImages(prev => [...prev, ...ok])
+				if (ok.length > 0) setImages(prev => [...prev, ...ok.map(url => ({ id: nextStagedImageId(), url }))])
 				const failed = results.filter(r => r.status === 'rejected')
 				if (failed.length > 0) console.error('Error reading image files:', failed.map(r => (r as PromiseRejectedResult).reason))
 			})
@@ -185,16 +205,22 @@ export const SidebarChat = () => {
 	const onSubmit = useCallback(async (_forceSubmit?: string, _images?: string[]) => {
 
 		if (isDisabled && !_forceSubmit) return
-		if (isRunning) return
+		// note: submitting while the agent is running is allowed — the service queues the
+		// message (Cursor-style) and drains it when the current run ends
 
 		const threadId = chatThreadsService.state.currentThreadId
 
 		// send message to LLM
 		const userMessage = _forceSubmit || textAreaRef.current?.value || ''
-		const imagesToSend = _images ?? images
+		const imagesToSend = _images ?? images.map(im => im.url)
+
+		// Snapshot the staged selections NOW. Staging is cleared right after submit (below), and while
+		// the agent is running this message may be QUEUED — the queued entry must carry its own context
+		// snapshot rather than falling back to whatever is staged when it later drains.
+		const selectionsSnapshot = chatThreadsService.state.allThreads[threadId]?.state.stagingSelections ?? []
 
 		try {
-			await chatThreadsService.addUserMessageAndStreamResponse({ userMessage, _images: imagesToSend.length > 0 ? imagesToSend : undefined, threadId })
+			await chatThreadsService.addUserMessageAndStreamResponse({ userMessage, _chatSelections: selectionsSnapshot, _images: imagesToSend.length > 0 ? imagesToSend : undefined, threadId })
 		} catch (e) {
 			console.error('Error while sending message in chat:', e)
 		}
@@ -204,7 +230,7 @@ export const SidebarChat = () => {
 		textAreaFnsRef.current?.setValue('')
 		focusInConnectedWindow(textAreaRef.current) // focus input after submit (keeps Agents pop-out frontmost)
 
-	}, [chatThreadsService, isDisabled, isRunning, textAreaRef, textAreaFnsRef, setSelections, settingsState, images])
+	}, [chatThreadsService, isDisabled, textAreaRef, textAreaFnsRef, setSelections, settingsState, images])
 
 	const onAbort = useCallback(async () => {
 		const threadId = currentThread.id
@@ -359,11 +385,30 @@ export const SidebarChat = () => {
 	}, [hasImageFiles, processImageFiles])
 
 	// Get the handlers (created once and reused)
-	const dragHandlers = createDragHandlers()
+	const dragHandlers = useMemo(() => createDragHandlers(), [createDragHandlers])
+
+	// Safety net: the drag highlight is toggled by four nested elements' enter/leave handlers, and
+	// the composer textarea stops event propagation, so a boundary crossing can drop the final
+	// `dragleave` and leave `isDragOver` stuck on. A document-level drop/dragend/exit always fires
+	// when the operation truly ends — force-clear there so the overlay can never latch.
+	useEffect(() => {
+		const doc = sidebarRef.current?.ownerDocument ?? document
+		const clear = () => setIsDragOver(false)
+		// dragleave with no relatedTarget = the pointer left the window entirely.
+		const onWindowLeave = (e: DragEvent) => { if (!e.relatedTarget) clear() }
+		doc.addEventListener('drop', clear)
+		doc.addEventListener('dragend', clear)
+		doc.addEventListener('dragleave', onWindowLeave)
+		return () => {
+			doc.removeEventListener('drop', clear)
+			doc.removeEventListener('dragend', clear)
+			doc.removeEventListener('dragleave', onWindowLeave)
+		}
+	}, [])
 
 	// Remove image
-	const removeImage = useCallback((index: number) => {
-		setImages(prev => prev.filter((_, i) => i !== index))
+	const removeImage = useCallback((id: string) => {
+		setImages(prev => prev.filter(im => im.id !== id))
 	}, [])
 
 	// File input ref for image button
@@ -397,6 +442,7 @@ export const SidebarChat = () => {
 		onAbort={onAbort}
 		isStreaming={!!isRunning}
 		isDisabled={isDisabled}
+		hasMessageToSubmit={!instructionsAreEmpty}
 		showSelections={true}
 		// showProspectiveSelections={previousMessagesHTML.length === 0}
 		selections={selections}
@@ -458,16 +504,16 @@ className={`min-h-[40px] px-0.5 py-0.5 resize-none placeholder:text-void-fg-4`}
 					onDragLeave={dragHandlers.handleDragLeave}
 					onDrop={dragHandlers.handleDrop}
 				>
-					{images.map((imageUrl, index) => (
-						<div key={index} className='relative'>
+					{images.map((im, index) => (
+						<div key={im.id} className='relative'>
 							<img
-								src={imageUrl}
+								src={im.url}
 								alt={`Upload ${index + 1}`}
 								className='w-12 h-12 object-cover rounded border border-void-border-3 shadow-sm'
 							/>
 							<button
 								type='button'
-								onClick={() => removeImage(index)}
+								onClick={() => removeImage(im.id)}
 								className='absolute -top-1 -right-1 bg-void-bg-3 rounded-full p-0.5 hover:brightness-125 cursor-pointer shadow-sm'
 							>
 								<IconX size={12} className='stroke-[2]' />
@@ -502,10 +548,51 @@ className={`min-h-[40px] px-0.5 py-0.5 resize-none placeholder:text-void-fg-4`}
 
 
 
-	const threadPageInput = <div key={'input' + chatThreadsState.currentThreadId}>
+	const queuedMessagesHTML = queuedMessages.length === 0 ? null : <section className={VOID_MESSAGE_QUEUE} aria-label='Queued messages'>
+		<div className={VOID_MESSAGE_QUEUE_HEADER}>
+			{isQueuePaused
+				? <span className='text-void-warning shrink-0 select-none' role='status' aria-live='polite'>Queue paused — last run failed</span>
+				: <span className='shrink-0 select-none font-medium text-void-fg-2'>Up next</span>}
+			<span className={VOID_MESSAGE_QUEUE_COUNT} aria-label={`${queuedMessages.length} queued message${queuedMessages.length === 1 ? '' : 's'}`}>{queuedMessages.length}</span>
+			<div className='flex-1 min-w-2' />
+			{isQueuePaused && <button
+				type='button'
+				className={`${VOID_MESSAGE_QUEUE_ACTION} shrink-0`}
+				onClick={() => chatThreadsService.resumeQueuedUserMessages(threadId)}
+			>Resume</button>}
+			<button
+				type='button'
+				className={`${VOID_MESSAGE_QUEUE_ACTION} shrink-0`}
+				onClick={() => chatThreadsService.clearQueuedUserMessages(threadId)}
+			>Clear all</button>
+		</div>
+		<div role='list' className='flex flex-col gap-1'>
+			{queuedMessages.map((q, i) => {
+				const attachmentCount = (q._chatSelections?.length ?? 0) + (q._images?.length ?? 0)
+				return (
+					<div key={i} role='listitem' className={VOID_MESSAGE_QUEUE_ITEM}>
+						<span className={`${VOID_MESSAGE_QUEUE_POSITION} select-none`} aria-hidden='true'>{i + 1}</span>
+						<span className='truncate flex-1 min-w-0'>{q.userMessage}</span>
+						{attachmentCount > 0 && <span className='shrink-0 text-void-fg-4 text-[11px] select-none' title={`${attachmentCount} attachment${attachmentCount === 1 ? '' : 's'}`}>{attachmentCount} file{attachmentCount === 1 ? '' : 's'}</span>}
+						<button
+							type='button'
+							className={`${VOID_MESSAGE_QUEUE_ACTION} shrink-0`}
+							onClick={() => chatThreadsService.removeQueuedUserMessage(threadId, i)}
+							aria-label='Remove queued message'
+						>
+							<IconX size={12} className='stroke-[2]' />
+						</button>
+					</div>
+				)
+			})}
+		</div>
+	</section>
+
+	const threadPageInput = <div key={'input' + chatThreadsState.currentThreadId} className='shrink-0'>
 		<div className='px-4'>
 			<CommandBarInChat />
 		</div>
+		{queuedMessagesHTML}
 		<div className='px-2 pb-2'>
 			{inputChatArea}
 		</div>

@@ -8,6 +8,7 @@ import { ChevronDown, ChevronRight } from 'lucide-react';
 import { URI } from '../../../../../../../../base/common/uri.js';
 import { VsCodeFileIcon } from '../../sidebar-tsx/utils/fileIcons.js';
 import type { GitFileChange } from '../../../../../common/orbitSCMTypes.js';
+import { badgeFor } from './ChangesPanel.js';
 
 /**
  * Compact folder tree of the changed files, shown on the right of the diff
@@ -23,19 +24,6 @@ interface TreeNode {
 	change?: GitFileChange;
 	children: Map<string, TreeNode>;
 }
-
-const statusLetter = (f: GitFileChange): { letter: string; kind: string } => {
-	if (f.conflicted) { return { letter: '!', kind: 'conflict' }; }
-	if (f.untracked) { return { letter: 'U', kind: 'untracked' }; }
-	const c = f.staged ? f.index : f.worktree;
-	switch (c) {
-		case 'A': return { letter: 'A', kind: 'add' };
-		case 'D': return { letter: 'D', kind: 'del' };
-		case 'R': return { letter: 'R', kind: 'rename' };
-		case 'C': return { letter: 'C', kind: 'rename' };
-		default: return { letter: 'M', kind: 'mod' };
-	}
-};
 
 const buildTree = (files: GitFileChange[]): TreeNode => {
 	const root: TreeNode = { name: '', path: '', isFile: false, children: new Map() };
@@ -91,7 +79,9 @@ const Row = ({
 }) => {
 	if (node.isFile) {
 		const f = node.change!;
-		const badge = statusLetter(f);
+		// Same helper as the diff list header so the two badges never disagree
+		// (they used different staged/worktree precedence before).
+		const badge = badgeFor(f);
 		const uri = URI.file(`${root}/${f.path}`);
 		return (
 			<button

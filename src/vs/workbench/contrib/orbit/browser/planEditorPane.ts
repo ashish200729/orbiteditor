@@ -29,6 +29,7 @@ import { convertPlanTodoToExecutionTodo, parseNumberedTodoMarkdown, syncPlanStat
 import { buildPlanImplementationMessage } from '../common/planBuildMessage.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
+import { planFileLock } from '../common/planFileLock.js';
 
 export class PlanEditorPane extends EditorPane {
 	static readonly ID = VOID_PLAN_EDITOR_ID;
@@ -127,10 +128,6 @@ export class PlanEditorPane extends EditorPane {
 			this.planTodoSyncService.watchThreadTodos(thread.id, input.resource.fsPath);
 			this.chatThreadService.setLinkedPlanPath(thread.id, input.resource.fsPath);
 			this.chatThreadService.setThreadTodoList(thread.id, todos);
-			// Match buildPlanFromThread: clear the ephemeral plan draft now that the
-			// saved plan file is the source of truth. Previously handleBuild skipped
-			// this, leaving a stale draft pinned to the thread.
-			this.chatThreadService.clearThreadPlanDraft(thread.id);
 
 			// 5. Switch to agent mode
 			await this.settingsService.setGlobalSetting('chatMode', 'agent');
@@ -149,11 +146,16 @@ export class PlanEditorPane extends EditorPane {
 					this.chatThreadService.setPlanBuildState(thread.id, 'failed');
 					return;
 				}
-				const currentContent = await this.fileService.readFile(input.resource);
-				const statusUpdated = syncPlanStatus(currentContent.value.toString());
-				if (statusUpdated !== currentContent.value.toString()) {
-					await this.fileService.writeFile(input.resource, VSBuffer.fromString(statusUpdated));
-				}
+				// Serialize this read-modify-write with planTodoSyncService.syncThreadToPlan
+				// and the plan tools (all take planFileLock on the same fsPath) so a
+				// concurrent todo sync can't clobber the status update or vice-versa.
+				await planFileLock.withLock(input.resource.fsPath, async () => {
+					const currentContent = await this.fileService.readFile(input.resource);
+					const statusUpdated = syncPlanStatus(currentContent.value.toString());
+					if (statusUpdated !== currentContent.value.toString()) {
+						await this.fileService.writeFile(input.resource, VSBuffer.fromString(statusUpdated));
+					}
+				});
 			} catch (error) {
 				console.warn('[PlanEditor] Failed to update plan status:', error);
 				// Don't block Build on a transient status update failure, but log it.
@@ -168,11 +170,18 @@ export class PlanEditorPane extends EditorPane {
 				todos,
 			);
 
+			// Build must start immediately — interrupt any in-flight run rather than queueing behind it.
+			await this.chatThreadService.abortRunning(thread.id);
 			await this.chatThreadService.addUserMessageAndStreamResponse({
 				userMessage: displayContent,
 				llmInstructions: llmContent,
 				threadId: thread.id
 			});
+			// Match buildPlanFromThread: clear the ephemeral plan draft now that the
+			// saved plan file is the source of truth. Deferred until the send has
+			// succeeded so an error earlier in Build (status write, mode switch, abort)
+			// doesn't permanently discard the draft before the run even starts.
+			this.chatThreadService.clearThreadPlanDraft(thread.id);
 			await this.chatThreadService.waitForThreadAgentRunEnd(thread.id);
 			this.chatThreadService.setPlanBuildState(thread.id, 'built');
 

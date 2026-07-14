@@ -84,6 +84,17 @@ export const StreamingMessagePane = React.memo(({
 		);
 	});
 
+	// The "Open settings" link only helps for auth/config problems. Transient network
+	// or server errors shouldn't push the user toward settings, so gate the link.
+	const isConfigError = (() => {
+		if (!latestError) return false;
+		const fe = latestError.fullError as { status?: number; statusCode?: number } | null;
+		const status = fe?.status ?? fe?.statusCode;
+		if (status === 401 || status === 403) return true;
+		const text = `${latestError.message ?? ''} ${(latestError.fullError as Error | null)?.message ?? ''}`.toLowerCase();
+		return /\bapi key\b|apikey|unauthor|forbidden|invalid api|authenticat|not configured|missing api|credential|no api key|sign in|log in/.test(text);
+	})();
+
 	if (!currStreamingMessageHTML && generatingTools.length === 0 && !isWaitingForAIResponse && latestError === undefined) {
 		return null;
 	}
@@ -101,7 +112,9 @@ export const StreamingMessagePane = React.memo(({
 						onDismiss={() => { chatThreadsService.dismissStreamError(threadId) }}
 						showDismiss={true}
 					/>
-					<WarningBox className='text-sm my-2 mx-4' onClick={() => { commandService.executeCommand(VOID_OPEN_SETTINGS_ACTION_ID) }} text='Open settings' />
+					{isConfigError && (
+						<WarningBox className='text-sm my-2 mx-4' onClick={() => { commandService.executeCommand(VOID_OPEN_SETTINGS_ACTION_ID) }} text='Open settings' />
+					)}
 				</div>
 			}
 		</>

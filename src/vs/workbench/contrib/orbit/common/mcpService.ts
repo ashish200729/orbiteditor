@@ -13,6 +13,7 @@ import { IEditorService } from '../../../services/editor/common/editorService.js
 import { IProductService } from '../../../../platform/product/common/productService.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import { IChannel } from '../../../../base/parts/ipc/common/ipc.js';
+import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
 import { MCPServerOfName, MCPConfigFileJSON, MCPServer, MCPToolCallParams, RawMCPToolCall, MCPServerEventResponse } from './mcpServiceTypes.js';
 import { Event, Emitter } from '../../../../base/common/event.js';
@@ -35,7 +36,7 @@ export interface IMCPService {
 	onDidChangeState: Event<void>;
 
 	getMCPTools(): InternalToolInfo[] | undefined;
-	callMCPTool(toolData: MCPToolCallParams): Promise<{ result: RawMCPToolCall }>;
+	callMCPTool(toolData: MCPToolCallParams, token?: CancellationToken): Promise<{ result: RawMCPToolCall }>;
 	stringifyResult(result: RawMCPToolCall): string
 }
 
@@ -359,8 +360,10 @@ class MCPService extends Disposable implements IMCPService {
 	}
 
 
-	public async callMCPTool(toolData: MCPToolCallParams): Promise<{ result: RawMCPToolCall }> {
-		const result = await this.channel.call<RawMCPToolCall>('callTool', toolData);
+	public async callMCPTool(toolData: MCPToolCallParams, token?: CancellationToken): Promise<{ result: RawMCPToolCall }> {
+		// Passing the token lets the main process abort the underlying MCP SDK call (via AbortSignal)
+		// when the caller times out or cancels — otherwise the call keeps running server-side.
+		const result = await this.channel.call<RawMCPToolCall>('callTool', toolData, token);
 		if (result.event === 'error') {
 			throw new Error(`Error: ${result.text}`)
 		}

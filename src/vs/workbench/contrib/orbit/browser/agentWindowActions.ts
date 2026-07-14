@@ -42,6 +42,7 @@ export class AgentWindowTitlebarContribution extends Disposable implements IWork
 
 	private pill: HTMLButtonElement | undefined;
 	private observer: MutationObserver | undefined;
+	private retryTimer: number | undefined;
 	private readonly pillDisposables = this._register(new DisposableStore());
 
 	constructor(
@@ -52,6 +53,18 @@ export class AgentWindowTitlebarContribution extends Disposable implements IWork
 		// Single state subscription for the lifetime of the contribution —
 		// avoids re-registering listeners every time the pill is re-injected.
 		this._register(this.agentWindowService.onDidChangeState(() => this.updateActiveState()));
+
+		// One cleanup for the (reused) retry timer and observer — registering a
+		// fresh toDisposable per retry tick / per titlebar recreation accumulated
+		// dead wrappers on the permanent store for the workbench's lifetime.
+		this._register(toDisposable(() => {
+			if (this.retryTimer !== undefined) {
+				mainWindow.clearTimeout(this.retryTimer);
+				this.retryTimer = undefined;
+			}
+			this.observer?.disconnect();
+			this.observer = undefined;
+		}));
 
 		this.tryInject(0);
 	}
@@ -64,8 +77,13 @@ export class AgentWindowTitlebarContribution extends Disposable implements IWork
 		const rightContent = mainWindow.document.querySelector(TITLEBAR_RIGHT_SELECTOR) as HTMLElement | null;
 		if (!rightContent) {
 			if (attempt < 60) {
-				const handle = mainWindow.setTimeout(() => this.tryInject(attempt + 1), 100);
-				this._register(toDisposable(() => mainWindow.clearTimeout(handle)));
+				if (this.retryTimer !== undefined) {
+					mainWindow.clearTimeout(this.retryTimer);
+				}
+				this.retryTimer = mainWindow.setTimeout(() => {
+					this.retryTimer = undefined;
+					this.tryInject(attempt + 1);
+				}, 100);
 			}
 			return;
 		}
@@ -139,7 +157,6 @@ export class AgentWindowTitlebarContribution extends Disposable implements IWork
 
 		this.observer = observer;
 		observer.observe(rightContent, { childList: true });
-		this._register(toDisposable(() => observer.disconnect()));
 	}
 
 	private updateActiveState(): void {

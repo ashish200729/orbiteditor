@@ -4,6 +4,21 @@
  *--------------------------------------------------------------------------------------*/
 
 import { RawToolParamsObj } from '../../common/sendLLMMessageTypes.js';
+import { isABuiltinToolName } from '../../common/prompt/prompts.js';
+
+/**
+ * Whether tool params should be normalized (path/content aliasing + snake_case
+ * conversion). Only BUILT-IN tools want this — their validators destructure fixed
+ * snake_case keys. MCP / unknown tools have arbitrary schemas (e.g. camelCase
+ * `maxResults`), so their params must pass through verbatim. When no tool name is
+ * available we keep the historical behavior and normalize.
+ *
+ * `mcpToolNames`, when provided, takes precedence: a real MCP tool with this exact
+ * name (e.g. one literally named `read_file`) is never treated as the builtin Read
+ * tool, even though `read_file` also resolves to Read as a builtin-name synonym.
+ */
+const shouldNormalizeForTool = (toolName: string | undefined, mcpToolNames?: Iterable<string>): boolean =>
+	toolName === undefined || isABuiltinToolName(toolName, { mcpToolNames });
 
 const PATH_FIELDS = [
 	{ field: 'path', target: 'path' },
@@ -79,7 +94,13 @@ const normalizeAllKeysToSnakeCase = (parsed: Record<string, unknown>): Record<st
 	return out;
 };
 
-const normalizeParsedParams = (parsed: Record<string, unknown>): RawToolParamsObj => {
+const normalizeParsedParams = (parsed: Record<string, unknown>, toolName?: string, mcpToolNames?: Iterable<string>): RawToolParamsObj => {
+	// MCP / unknown tools: pass params through verbatim (their schemas are arbitrary and
+	// may legitimately use camelCase). Only built-in tools get aliasing + snake_casing.
+	if (!shouldNormalizeForTool(toolName, mcpToolNames)) {
+		return { ...parsed } as RawToolParamsObj;
+	}
+
 	// First, apply field-specific aliases so path/uri/content get mapped to
 	// their canonical targets regardless of casing. These take priority over
 	// the generic casing conversion because they may also remap the *target*
@@ -195,7 +216,7 @@ const extractStringFieldAcceptingCasing = (
 	return undefined;
 };
 
-export const parsePartialToolParams = (toolParamsStr: string): {
+export const parsePartialToolParams = (toolParamsStr: string, toolName?: string, mcpToolNames?: Iterable<string>): {
 	rawParams: RawToolParamsObj;
 	doneParams: string[];
 	isDone: boolean;
@@ -208,7 +229,7 @@ export const parsePartialToolParams = (toolParamsStr: string): {
 	try {
 		const parsed = JSON.parse(trimmed);
 		if (typeof parsed === 'object' && parsed !== null) {
-			const rawParams = normalizeParsedParams(parsed as Record<string, unknown>);
+			const rawParams = normalizeParsedParams(parsed as Record<string, unknown>, toolName, mcpToolNames);
 			return {
 				rawParams,
 				doneParams: Object.keys(rawParams),
@@ -217,6 +238,13 @@ export const parsePartialToolParams = (toolParamsStr: string): {
 		}
 	} catch {
 		// fall through to partial extraction
+	}
+
+	// Partial-JSON progressive extraction relies on the built-in path/content field
+	// aliases, so skip it for MCP / unknown tools — their params are only surfaced once
+	// the JSON fully parses (verbatim, above).
+	if (!shouldNormalizeForTool(toolName, mcpToolNames)) {
+		return { rawParams: {}, doneParams: [], isDone: false };
 	}
 
 	const rawParams: RawToolParamsObj = {};

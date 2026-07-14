@@ -7,7 +7,7 @@ import { IWorkspaceContextService } from '../../../../platform/workspace/common/
 import { IEditorService } from '../../../services/editor/common/editorService.js';
 import { ChatMessage } from '../common/chatThreadServiceTypes.js';
 import { getIsReasoningEnabledState, getReservedOutputTokenSpace, getModelCapabilities } from '../common/modelCapabilities.js';
-import { reParsedToolXMLString, chat_systemMessage } from '../common/prompt/prompts.js';
+import { reParsedToolXMLString, chat_systemMessage, augmentChatMessagesWithHarnessContext } from '../common/prompt/prompts.js';
 import { AnthropicLLMChatMessage, AnthropicReasoning, GeminiLLMChatMessage, LLMChatMessage, LLMFIMMessage, OpenAILLMChatMessage, RawToolParamsObj, ToolPolicy } from '../common/sendLLMMessageTypes.js';
 import { IVoidSettingsService } from '../common/orbitSettingsService.js';
 import { ChatMode, FeatureName, ModelSelection, ProviderName } from '../common/orbitSettingsTypes.js';
@@ -332,8 +332,10 @@ const prepareMessages_anthropic_tools = (messages: SimpleLLMMessage[], supportsA
 							}
 						});
 					} else {
-						// If it's a URL, convert to base64 if possible, or skip
-						// For now, we'll skip URLs that aren't data URIs for Anthropic
+						// Anthropic only accepts base64 image blocks — a remote URL can't be inlined.
+						// Leave a text breadcrumb instead of silently dropping it so the model knows an
+						// image was present but couldn't be sent.
+						content.push({ type: 'text', text: '[image omitted: remote image URLs are not supported for this provider]' })
 						console.warn('Anthropic API requires base64-encoded images. URL images are not supported.')
 					}
 				}
@@ -600,10 +602,14 @@ const prepareOpenAIOrAnthropicMessages = ({
 	reservedOutputTokenSpace: number | null | undefined,
 }): { messages: AnthropicOrOpenAILLMMessage[], separateSystemMessage: string | undefined } => {
 
-	reservedOutputTokenSpace = Math.max(
-		contextWindow * 1 / 2, // reserve at least 1/4 of the token window length
-		reservedOutputTokenSpace ?? 4_096 // defaults to 4096
-	)
+	// Reserve room for the model's output, but never more than 1/4 of the window (the previous
+	// code reserved 1/2 — the comment said 1/4 — which needlessly discarded ~half of usable
+	// input context). Clamp so tiny-window models keep a sane, non-negative input budget.
+	{
+		const reserveCap = Math.max(1_024, Math.floor(contextWindow / 4))
+		const desiredReserve = Math.max(reservedOutputTokenSpace ?? 4_096, 1_024)
+		reservedOutputTokenSpace = Math.min(desiredReserve, reserveCap)
+	}
 	let messages: (SimpleLLMMessage | { role: 'system', content: string })[] = deepClone(messages_)
 
 	// ================ system message ================
@@ -651,54 +657,64 @@ const prepareOpenAIOrAnthropicMessages = ({
 		return base * multiplier
 	}
 
-	const _findLargestByWeight = (messages_: MesType[]) => {
+	// Iterate the array we're actually trimming (not a stale copy). Returns the highest-weight
+	// (least valuable) message to trim next, plus its weight so callers can stop when nothing
+	// worthwhile remains.
+	const _findLargestByWeight = (msgs: MesType[]) => {
 		let largestIndex = -1
 		let largestWeight = -Infinity
-		for (let i = 0; i < messages.length; i += 1) {
-			const m = messages[i]
-			const w = weight(m, messages_, i)
+		for (let i = 0; i < msgs.length; i += 1) {
+			const w = weight(msgs[i], msgs, i)
 			if (w > largestWeight) {
 				largestWeight = w
 				largestIndex = i
 			}
 		}
-		return largestIndex
+		return { largestIndex, largestWeight }
 	}
 
-	let totalLen = 0
-	for (const m of messages) { totalLen += m.content.length }
-	const charsNeedToTrim = totalLen - Math.max(
-		(contextWindow - reservedOutputTokenSpace) * CHARS_PER_TOKEN, // can be 0, in which case charsNeedToTrim=everything, bad
-		5_000 // ensure we don't trim at least 5k chars (just a random small value)
+	const totalContentLen = () => messages.reduce((sum, m) => sum + m.content.length, 0)
+
+	// Input budget in characters. Never let this collapse below a small floor so a huge reserve
+	// on a tiny window can't force total truncation.
+	const inputCharBudget = Math.max(
+		(contextWindow - reservedOutputTokenSpace) * CHARS_PER_TOKEN,
+		5_000
 	)
 
-
-	// <----------------------------------------->
-	// 0                      |    |             |
-	//                        |    contextWindow |
-	//                     contextWindow - maxOut|putTokens
-	//                                          totalLen
-	let remainingCharsToTrim = charsNeedToTrim
-	let i = 0
-
-	while (remainingCharsToTrim > 0) {
-		i += 1
-		if (i > 100) break
-
-		const trimIdx = _findLargestByWeight(messages)
-		const m = messages[trimIdx]
-
-		// if can finish here, do
-		const numCharsWillTrim = m.content.length - TRIM_TO_LEN
-		if (numCharsWillTrim > remainingCharsToTrim) {
-			// trim remainingCharsToTrim + '...'.length chars
-			m.content = m.content.slice(0, m.content.length - remainingCharsToTrim - '...'.length).trim() + '...'
-			break
+	// Phase A: trim the highest-weight messages down to TRIM_TO_LEN until we're under budget or
+	// there's nothing left worth trimming. Unlike the old code, this loops until it actually fits
+	// (bounded by a generous iteration guard) instead of giving up after 100 iterations and then
+	// shipping an over-window payload that the provider rejects with a 400.
+	{
+		let guard = 0
+		const maxIters = messages.length * 3 + 20
+		while (totalContentLen() > inputCharBudget && guard < maxIters) {
+			guard += 1
+			const { largestIndex, largestWeight } = _findLargestByWeight(messages)
+			if (largestIndex < 0 || largestWeight <= 0) break // nothing left worth trimming
+			const m = messages[largestIndex]
+			if (m.content.length <= TRIM_TO_LEN) { alreadyTrimmedIdxes.add(largestIndex); continue }
+			m.content = m.content.substring(0, TRIM_TO_LEN - '...'.length) + '...'
+			alreadyTrimmedIdxes.add(largestIndex)
 		}
+	}
 
-		remainingCharsToTrim -= numCharsWillTrim
-		m.content = m.content.substring(0, TRIM_TO_LEN - '...'.length) + '...'
-		alreadyTrimmedIdxes.add(trimIdx)
+	// Phase B (hard guarantee): if a thread has so many messages that even trimming every body to
+	// TRIM_TO_LEN still exceeds the window, hard-trim non-protected bodies to a tiny floor,
+	// oldest-first, until we fit. We never DROP messages (that would orphan tool_result/tool_use
+	// pairs and cause its own provider 400) — we only shrink bodies. The system message (idx 0),
+	// the first user message, and the last two messages are left intact as essential context.
+	if (totalContentLen() > inputCharBudget) {
+		const firstUserIdx = messages.findIndex(m => m.role === 'user')
+		const HARD_FLOOR = 24
+		for (let idx = 1; idx < messages.length - 2 && totalContentLen() > inputCharBudget; idx += 1) {
+			if (idx === firstUserIdx) continue
+			const m = messages[idx]
+			if (m.content.length > HARD_FLOOR) {
+				m.content = m.content.substring(0, HARD_FLOOR - 1) + '…'
+			}
+		}
 	}
 
 	// ================ system message hack ================
@@ -1014,9 +1030,13 @@ class ConvertToLLMMessageService extends Disposable implements IConvertToLLMMess
 				})
 			}
 			else if (m.role === 'tool') {
+				// Only terminal tool states carry a real result. Non-terminal states (still awaiting
+				// approval, or mid-execution) hold placeholder content like "(Loading...)" — never
+				// forward that to the model as a result; send a neutral interrupted marker instead.
+				const isTerminalToolState = m.type === 'success' || m.type === 'tool_error' || m.type === 'rejected' || m.type === 'invalid_params'
 				simpleLLMMessages.push({
 					role: m.role,
-					content: m.content,
+					content: isTerminalToolState ? m.content : '(interrupted)',
 					name: m.name,
 					id: m.id,
 					rawParams: m.rawParams,
@@ -1094,7 +1114,9 @@ class ConvertToLLMMessageService extends Disposable implements IConvertToLLMMess
 		const aiInstructions = this._getCombinedAIInstructions();
 		const isReasoningEnabled = getIsReasoningEnabledState('Chat', providerName, modelName, modelSelectionOptions, overridesOfModel)
 		const reservedOutputTokenSpace = getReservedOutputTokenSpace(providerName, modelName, { isReasoningEnabled, overridesOfModel })
-		const llmMessages = this._chatMessagesToSimpleMessages(chatMessages)
+		// Per-turn harness context (mode reminder + timestamp + <user_query> wrap) on the latest
+		// user message — applied at LLM-prepare time only, never stored in chat history.
+		const llmMessages = augmentChatMessagesWithHarnessContext(this._chatMessagesToSimpleMessages(chatMessages), chatMode)
 
 		const { messages, separateSystemMessage } = prepareMessages({
 			messages: llmMessages,
@@ -1114,9 +1136,6 @@ class ConvertToLLMMessageService extends Disposable implements IConvertToLLMMess
 	// --- FIM ---
 
 	prepareFIMMessage: IConvertToLLMMessageService['prepareFIMMessage'] = ({ messages, metadata }) => {
-		// Get combined AI instructions with the provided aiInstructions as the base
-		// const combinedInstructions = this._getCombinedAIInstructions(); // Reserved for future use
-
 		// Enhanced FIM prompt following best practices from GitHub Copilot and Cursor
 		// Key insight: Keep instructions minimal and use natural code context
 		// The model should "fill in the blank" naturally, not follow complex instructions

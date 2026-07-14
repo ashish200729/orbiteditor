@@ -163,7 +163,12 @@ const _validatedModelState = (state: Omit<VoidSettingsState, '_modelOptions'>): 
 		const settingsAtProvider = newSettingsOfProvider[providerName]
 		if (!settingsAtProvider) continue
 
-		const didFillInProviderSettings = Object.keys(defaultProviderSettings[providerName]).every(key => !!settingsAtProvider[key as keyof typeof settingsAtProvider])
+		const didFillInProviderSettings = Object.keys(defaultProviderSettings[providerName]).every(key => {
+			const val = settingsAtProvider[key as keyof typeof settingsAtProvider]
+			// Treat whitespace-only strings as empty: a pasted key that is only spaces/newlines
+			// must not count as "configured" (it would fail silently at request time otherwise).
+			return typeof val === 'string' ? val.trim().length > 0 : !!val
+		})
 
 		if (didFillInProviderSettings === settingsAtProvider._didFillInProviderSettings) continue
 
@@ -328,9 +333,19 @@ class VoidSettingsService extends Disposable implements IVoidSettingsService {
 
 	async readAndInitializeState() {
 		let readS: VoidSettingsState
+		// Only a failure to READ/parse the persisted blob should fall back to defaults. Once we
+		// have a valid merged state, a later migration/normalization throw must NOT reset it —
+		// doing so would silently wipe the user's API keys.
 		try {
 			readS = await this._readState();
 			readS = mergeWithDefaultState(readS)
+		}
+		catch (e) {
+			console.error('[OrbitSettings] Failed to read settings; resetting to defaults.', e)
+			readS = defaultState()
+		}
+
+		try {
 			// 1.0.3 addition, remove when enough users have had this code run
 			if (readS.globalSettings.includeToolLintErrors === undefined) readS.globalSettings.includeToolLintErrors = true
 
@@ -349,7 +364,8 @@ class VoidSettingsService extends Disposable implements IVoidSettingsService {
 			if (readS.globalSettings.autoAcceptLLMChanges === undefined) readS.globalSettings.autoAcceptLLMChanges = false;
 		}
 		catch (e) {
-			readS = defaultState()
+			// Preserve the already-read settings (including API keys) rather than wiping them.
+			console.error('[OrbitSettings] Settings migration failed; preserving existing settings.', e)
 		}
 
 		// the stored data structure might be outdated, so we need to update it here
@@ -380,7 +396,8 @@ class VoidSettingsService extends Disposable implements IVoidSettingsService {
 		}
 
 		catch (e) {
-			readS = defaultState()
+			// Preserve the already-read settings (including API keys) rather than wiping them.
+			console.error('[OrbitSettings] Provider settings normalization failed; preserving existing settings.', e)
 		}
 
 		this.state = readS

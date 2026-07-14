@@ -19,6 +19,7 @@ import { IWorkspaceContextService } from '../../../../platform/workspace/common/
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IQuickInputService } from '../../../../platform/quickinput/common/quickInput.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { IWorkspaceTrustManagementService } from '../../../../platform/workspace/common/workspaceTrust.js';
 import { URI } from '../../../../base/common/uri.js';
 import { basename, dirname } from '../../../../base/common/resources.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
@@ -68,6 +69,7 @@ class SkillImportService implements ISkillImportService {
 		@ICommandService private readonly _commandService: ICommandService,
 		@IQuickInputService private readonly _quickInputService: IQuickInputService,
 		@ILogService private readonly _logService: ILogService,
+		@IWorkspaceTrustManagementService private readonly _workspaceTrust: IWorkspaceTrustManagementService,
 	) { }
 
 	/**
@@ -87,7 +89,42 @@ class SkillImportService implements ISkillImportService {
 	}
 
 	private async _reload(): Promise<void> {
-		await reloadOrbitSkills(this._fileService, this._environmentService, this._workspaceContextService, this._settingsService);
+		await reloadOrbitSkills(this._fileService, this._environmentService, this._workspaceContextService, this._settingsService, this._workspaceTrust.isWorkspaceTrusted());
+	}
+
+	private static readonly MAX_SKILL_IMPORT_BYTES = 50 * 1024 * 1024; // 50 MB — far above any real skill
+	private static readonly MAX_SKILL_IMPORT_ENTRIES = 2000;
+
+	/**
+	 * Walk a skill folder before copying it wholesale. Rejects symlinks (a link inside the
+	 * skill could point at credential dirs and get copied/followed) and folders that are
+	 * unreasonably large for a skill (accidental node_modules, build output, …).
+	 * Returns a human-readable reason to skip, or null when the folder is safe to copy.
+	 */
+	private async _unsafeSkillFolderReason(root: URI): Promise<string | null> {
+		let totalBytes = 0;
+		let entries = 0;
+		const walk = async (uri: URI): Promise<string | null> => {
+			const stat = await this._fileService.resolve(uri, { resolveMetadata: true });
+			if (stat.isSymbolicLink) return `contains a symbolic link (${stat.resource.fsPath})`;
+			for (const child of stat.children ?? []) {
+				if (child.isSymbolicLink) return `contains a symbolic link (${child.resource.fsPath})`;
+				if (++entries > SkillImportService.MAX_SKILL_IMPORT_ENTRIES) {
+					return `has more than ${SkillImportService.MAX_SKILL_IMPORT_ENTRIES} files`;
+				}
+				if (child.isDirectory) {
+					const reason = await walk(child.resource);
+					if (reason) return reason;
+				} else {
+					totalBytes += child.size ?? 0;
+					if (totalBytes > SkillImportService.MAX_SKILL_IMPORT_BYTES) {
+						return `is larger than ${Math.round(SkillImportService.MAX_SKILL_IMPORT_BYTES / (1024 * 1024))} MB`;
+					}
+				}
+			}
+			return null;
+		};
+		return walk(root);
 	}
 
 	async importFromCursor(): Promise<SkillImportResult> {
@@ -135,8 +172,24 @@ class SkillImportService implements ISkillImportService {
 						continue; // never clobber an existing skill
 					}
 
+					// Guard before copying wholesale: no symlinks, no runaway folder sizes.
+					const unsafeReason = await this._unsafeSkillFolderReason(child.resource);
+					if (unsafeReason) {
+						result.errors.push(`Skipped ${child.name}: folder ${unsafeReason}`);
+						continue;
+					}
+
 					// Copy the whole skill folder (SKILL.md + any supporting files).
 					await this._fileService.copy(child.resource, dest, /* overwrite */ false);
+					// Post-copy re-verify: the source may have changed between check and
+					// copy (TOCTOU). If the destination now looks unsafe, remove it and
+					// report as an error instead of silently loading attacker-controlled data.
+					const postCopyReason = await this._unsafeSkillFolderReason(dest);
+					if (postCopyReason) {
+						await this._fileService.del(dest, { recursive: true }).catch(() => { /* best-effort */ });
+						result.errors.push(`Skipped ${child.name}: folder ${postCopyReason} (detected after copy)`);
+						continue;
+					}
 					result.imported++;
 				} catch (err) {
 					result.errors.push(`Failed to import ${child.name}: ${err}`);
@@ -208,7 +261,7 @@ class SkillImportService implements ISkillImportService {
 		const skillFile = URI.joinPath(root, normalized, 'SKILL.md');
 		try {
 			const body = NEW_SKILL_TEMPLATE.replace(/%NAME%/g, normalized);
-			await this._fileService.writeFile(skillFile, VSBuffer.fromString(body));
+			await this._fileService.writeFile(skillFile, VSBuffer.fromString(body), { atomic: { postfix: '.orbittmp' } });
 			await this._reload();
 			// Best-effort: open the new file for editing.
 			try { await this._commandService.executeCommand('vscode.open', skillFile); } catch { /* non-fatal */ }

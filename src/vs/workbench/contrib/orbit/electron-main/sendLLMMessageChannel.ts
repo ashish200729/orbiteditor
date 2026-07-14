@@ -94,7 +94,22 @@ export class LLMMessageChannel implements IServerChannel {
 			}
 		}
 		catch (e) {
-			console.log('llmMessageChannel: Call Error:', e)
+			// If a send throws before its own error handling wires up, the renderer's
+			// messageIsDonePromise would otherwise hang forever. Surface it as an onError so the
+			// turn loop can settle.
+			if (command === 'sendLLMMessage' && params?.requestId) {
+				this._failRequest(params.requestId, e)
+			}
+		}
+	}
+
+	/** Fire onError for a request and clear its tracking so a failed send can't hang the renderer. */
+	private _failRequest(requestId: string, e: unknown) {
+		const message = e instanceof Error ? e.message : `${e}`
+		try {
+			this.llmMessageEmitters.onError.fire({ requestId, message, fullError: e instanceof Error ? e : null })
+		} finally {
+			delete this._infoOfRunningRequest[requestId]
 		}
 	}
 
@@ -118,7 +133,6 @@ export class LLMMessageChannel implements IServerChannel {
 				delete this._infoOfRunningRequest[requestId];
 			},
 			onError: (p) => {
-				console.log('sendLLM: firing err');
 				this.llmMessageEmitters.onError.fire({ requestId, ...p });
 				// request errored out — drop its tracking entry to avoid a slow leak across a long session
 				delete this._infoOfRunningRequest[requestId];
@@ -126,6 +140,10 @@ export class LLMMessageChannel implements IServerChannel {
 			abortRef: this._infoOfRunningRequest[requestId].abortRef,
 		}
 		const p = sendLLMMessage(mainThreadParams, this.metricsService);
+		// If the send rejects without having fired onError/onFinalMessage, settle the renderer.
+		Promise.resolve(p).catch(e => {
+			if (requestId in this._infoOfRunningRequest) this._failRequest(requestId, e)
+		})
 		this._infoOfRunningRequest[requestId].waitForSend = p
 	}
 

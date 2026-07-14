@@ -10,7 +10,7 @@ export const _ln = isWindows ? allLinebreakSymbols[0] : allLinebreakSymbols[1]
 
 export const DEBOUNCE_TIME = 200 // Reduced from 500ms for faster response
 export const DEBOUNCE_TIME_FAST = 100 // Even faster when cache hit is likely
-export const TIMEOUT_TIME = 60000
+export const TIMEOUT_TIME = 8000 // Autocomplete is interactive — a completion that takes >8s is useless and its pending entry blocks the cache
 export const MAX_CACHE_SIZE = 20
 export const MAX_PENDING_REQUESTS = 2
 export const MAX_TRIM_CACHE_SIZE = 100

@@ -673,7 +673,11 @@ export const FilesExplorerPanel = ({
 				next.delete(key);
 			} else {
 				next.add(key);
-				void loadChildren(node);
+				// Force a refetch: the watcher only refreshes EXPANDED dirs, so a
+				// collapsed dir's cache goes stale on external changes and was
+				// served as-is on re-expand. The stale rows still paint instantly
+				// (cache isn't cleared) and swap when the fresh listing lands.
+				void loadChildren(node, true);
 			}
 			return next;
 		});
@@ -705,6 +709,23 @@ export const FilesExplorerPanel = ({
 		return [...keys].map(k => byKey.get(k)).filter((n): n is ExplorerNode => !!n && !n.isRoot);
 	}, [selectedKeys, selectedKey]);
 
+	/**
+	 * Resolve which nodes an action invoked on `node` should apply to: the whole
+	 * multi-selection when `node` is part of it, else just `node` — matching the
+	 * main explorer. (Delete/Duplicate used to always act on the single node
+	 * while the selection visibly included more.)
+	 */
+	const targetsFor = React.useCallback((node: ExplorerNode): ExplorerNode[] => {
+		const key = nodeKey(node.uri);
+		if (selectedKeys.has(key) && selectedKeys.size > 1) {
+			const sel = selectedNodes().filter(n => !n.isRoot);
+			if (sel.length > 0) {
+				return sel;
+			}
+		}
+		return node.isRoot ? [] : [node];
+	}, [selectedKeys, selectedNodes]);
+
 	const refreshParentOf = React.useCallback(async (resource: URI) => {
 		const parentUri = resourceDirname(resource);
 		const all = [...rootsRef.current, ...Object.values(childrenRef.current).flat()];
@@ -735,6 +756,19 @@ export const FilesExplorerPanel = ({
 		}
 		try {
 			for (const src of fileClipboard.uris) {
+				const srcKey = nodeKey(src);
+				const destDirKey = nodeKey(targetDir.uri);
+				// Never paste a folder into itself or its own subtree — the drop
+				// handler guards this, but Paste didn't (cut A, paste into A →
+				// move(A, A/A) fs error).
+				if (destDirKey === srcKey || destDirKey.startsWith(srcKey + '/')) {
+					continue;
+				}
+				// Cut+paste into the folder it already lives in is a no-op, not a
+				// silent "foo copy".
+				if (fileClipboard.mode === 'cut' && nodeKey(resourceDirname(src)) === destDirKey) {
+					continue;
+				}
 				const name = resourceBasename(src);
 				let dest = joinPath(targetDir.uri, name);
 				let i = 1;
@@ -766,32 +800,40 @@ export const FilesExplorerPanel = ({
 
 	const duplicateNode = React.useCallback(async (node: ExplorerNode) => {
 		setContextMenu(null);
-		if (node.isRoot) {
-			return;
-		}
-		const parentUri = resourceDirname(node.uri);
-		const all = [...rootsRef.current, ...Object.values(childrenRef.current).flat()];
-		const parentNode = all.find(n => nodeKey(n.uri) === nodeKey(parentUri));
-		if (!parentNode) {
+		// Duplicate the whole selection when invoked on part of it (parity with
+		// Cut/Copy), not just the context-menu node.
+		const targets = targetsFor(node);
+		if (targets.length === 0) {
 			return;
 		}
 		try {
-			const name = node.name;
-			const dot = name.lastIndexOf('.');
-			const stem = dot > 0 ? name.slice(0, dot) : name;
-			const ext = dot > 0 ? name.slice(dot) : '';
-			let dest = joinPath(parentUri, `${stem} copy${ext}`);
-			let i = 1;
-			while (await fileService.exists(dest)) {
-				dest = joinPath(parentUri, `${stem} copy ${i}${ext}`);
-				i++;
+			const all = [...rootsRef.current, ...Object.values(childrenRef.current).flat()];
+			const parentKeys = new Set<string>();
+			for (const t of targets) {
+				const parentUri = resourceDirname(t.uri);
+				const name = t.name;
+				const dot = name.lastIndexOf('.');
+				const stem = dot > 0 ? name.slice(0, dot) : name;
+				const ext = dot > 0 ? name.slice(dot) : '';
+				let dest = joinPath(parentUri, `${stem} copy${ext}`);
+				let i = 1;
+				while (await fileService.exists(dest)) {
+					dest = joinPath(parentUri, `${stem} copy ${i}${ext}`);
+					i++;
+				}
+				await fileService.copy(t.uri, dest);
+				parentKeys.add(nodeKey(parentUri));
 			}
-			await fileService.copy(node.uri, dest);
-			await loadChildren(parentNode, true);
+			for (const pk of parentKeys) {
+				const parentNode = all.find(n => nodeKey(n.uri) === pk);
+				if (parentNode) {
+					await loadChildren(parentNode, true);
+				}
+			}
 		} catch (e: unknown) {
 			notificationService.error(String((e as Error)?.message ?? e));
 		}
-	}, [fileService, loadChildren, notificationService]);
+	}, [fileService, loadChildren, notificationService, targetsFor]);
 
 	const onRowDragStart = React.useCallback((e: React.DragEvent, node: ExplorerNode) => {
 		const key = nodeKey(node.uri);
@@ -884,6 +926,30 @@ export const FilesExplorerPanel = ({
 					try { return URI.parse(s); } catch { return null; }
 				})
 				.filter((u): u is URI => !!u);
+		// External OS drop (Finder/Explorer): no uri-list, but real File objects.
+		// This used to silently no-op.
+		if (uris.length === 0 && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+			try {
+				for (const file of Array.from(e.dataTransfer.files)) {
+					const data = new Uint8Array(await file.arrayBuffer());
+					const name = file.name;
+					let dest = joinPath(folder.uri, name);
+					let i = 1;
+					const dot = name.lastIndexOf('.');
+					const stem = dot > 0 ? name.slice(0, dot) : name;
+					const ext = dot > 0 ? name.slice(dot) : '';
+					while (await fileService.exists(dest)) {
+						dest = joinPath(folder.uri, `${stem} copy${i > 1 ? ` ${i}` : ''}${ext}`);
+						i++;
+					}
+					await fileService.createFile(dest, VSBuffer.wrap(data));
+				}
+				await loadChildren(folder, true);
+			} catch (err: unknown) {
+				notificationService.error(String((err as Error)?.message ?? err));
+			}
+			return;
+		}
 		if (uris.length === 0) {
 			return;
 		}
@@ -976,6 +1042,7 @@ export const FilesExplorerPanel = ({
 		if (invalid) {
 			if (!name) {
 				// Empty cancel is quiet (Escape / empty blur).
+				inlineCancelledRef.current = true;
 				setInlineEdit(null);
 				commitGuardRef.current = false;
 				return;
@@ -989,11 +1056,15 @@ export const FilesExplorerPanel = ({
 		try {
 			if (edit.mode === 'rename') {
 				if (name === edit.node.name) {
+					inlineCancelledRef.current = true;
 					setInlineEdit(null);
 					return;
 				}
 				const target = joinPath(resourceDirname(edit.node.uri), name);
-				if (await fileService.exists(target)) {
+				// A case-only rename (README → readme) on a case-insensitive FS makes
+				// exists(target) resolve to the file itself — that's not a collision.
+				const isCaseOnlyRename = target.toString().toLowerCase() === edit.node.uri.toString().toLowerCase();
+				if (!isCaseOnlyRename && await fileService.exists(target)) {
 					notificationService.error(`A file or folder named "${name}" already exists.`);
 					commitGuardRef.current = false;
 					return;
@@ -1019,15 +1090,31 @@ export const FilesExplorerPanel = ({
 						}
 						return next;
 					});
+					// Remap the cached child NODES too — remapping only the map keys
+					// left every descendant node with its pre-rename uri/parentKey, so
+					// clicking a child opened the dead old path until the fs watcher
+					// caught up.
+					const rewriteNode = (n: ExplorerNode): ExplorerNode => {
+						const k = nodeKey(n.uri);
+						if (k !== fromKey && !k.startsWith(fromKey + '/')) {
+							return n;
+						}
+						const newUri = target.with({ path: target.path + n.uri.path.slice(from.path.length) });
+						const parentK = n.parentKey && (n.parentKey === fromKey || n.parentKey.startsWith(fromKey + '/'))
+							? toKey + n.parentKey.slice(fromKey.length)
+							: n.parentKey;
+						return { ...n, uri: newUri, parentKey: parentK, name: k === fromKey ? name : n.name };
+					};
 					setChildrenByParent(prev => {
 						const next: Record<string, ExplorerNode[]> = {};
 						for (const [k, v] of Object.entries(prev)) {
+							const mapped = v.map(rewriteNode);
 							if (k === fromKey) {
-								next[toKey] = v;
+								next[toKey] = mapped;
 							} else if (k.startsWith(fromKey + '/')) {
-								next[toKey + k.slice(fromKey.length)] = v;
+								next[toKey + k.slice(fromKey.length)] = mapped;
 							} else {
-								next[k] = v;
+								next[k] = mapped;
 							}
 						}
 						return next;
@@ -1061,6 +1148,11 @@ export const FilesExplorerPanel = ({
 			if (parentNode) {
 				await loadChildren(parentNode, true);
 			}
+			// Mark cancelled BEFORE closing: the input unmounts on setInlineEdit(null)
+			// and its onBlur re-invoked commitInlineEdit with the stale non-null edit
+			// — the file was already moved, so the second run hit the "already
+			// exists" error with a spurious notification.
+			inlineCancelledRef.current = true;
 			setInlineEdit(null);
 		} catch (e: unknown) {
 			notificationService.error(String((e as Error)?.message ?? e));
@@ -1072,19 +1164,21 @@ export const FilesExplorerPanel = ({
 
 	const deleteNode = React.useCallback(async (node: ExplorerNode, permanent: boolean) => {
 		setContextMenu(null);
-		if (node.isRoot) {
+		const targets = targetsFor(node);
+		if (targets.length === 0) {
 			return;
 		}
 		const useTrash = !permanent && configurationService.getValue<boolean>('files.enableTrash') !== false;
 		const confirmDelete = configurationService.getValue<boolean>('explorer.confirmDelete');
 
 		if (confirmDelete) {
+			const what = targets.length === 1 ? `'${targets[0].name}'` : `the ${targets.length} selected items`;
 			const result = await dialogService.confirm({
-				message: `Are you sure you want to delete '${node.name}'?`,
+				message: `Are you sure you want to delete ${what}?`,
 				detail: useTrash
-					? (node.isDirectory
-						? 'You can restore this folder from the Trash.'
-						: 'You can restore this file from the Trash.')
+					? (targets.length === 1 && !targets[0].isDirectory
+						? 'You can restore this file from the Trash.'
+						: 'You can restore from the Trash.')
 					: 'This action is permanent and cannot be undone.',
 				primaryButton: useTrash && isMacintosh ? 'Move to Trash' : 'Delete',
 				type: 'warning',
@@ -1094,36 +1188,50 @@ export const FilesExplorerPanel = ({
 			}
 		}
 		try {
-			try {
-				await fileService.del(node.uri, { useTrash, recursive: true });
-			} catch (first: unknown) {
-				if (!useTrash) {
-					throw first;
+			const deletedKeys = new Set<string>();
+			const parentKeys = new Set<string>();
+			for (const t of targets) {
+				try {
+					await fileService.del(t.uri, { useTrash, recursive: true });
+				} catch (first: unknown) {
+					if (!useTrash) {
+						throw first;
+					}
+					const permanentResult = await dialogService.confirm({
+						message: `Failed to move '${t.name}' to the Trash. Delete permanently?`,
+						detail: String((first as Error)?.message ?? first),
+						primaryButton: 'Delete Permanently',
+						type: 'warning',
+					});
+					if (!permanentResult.confirmed) {
+						continue;
+					}
+					await fileService.del(t.uri, { useTrash: false, recursive: true });
 				}
-				const permanentResult = await dialogService.confirm({
-					message: `Failed to move '${node.name}' to the Trash. Delete permanently?`,
-					detail: String((first as Error)?.message ?? first),
-					primaryButton: 'Delete Permanently',
-					type: 'warning',
-				});
-				if (!permanentResult.confirmed) {
-					return;
-				}
-				await fileService.del(node.uri, { useTrash: false, recursive: true });
+				deletedKeys.add(nodeKey(t.uri));
+				parentKeys.add(nodeKey(resourceDirname(t.uri)));
 			}
-			const parentUri = resourceDirname(node.uri);
 			const all = [...rootsRef.current, ...Object.values(childrenRef.current).flat()];
-			const parentNode = all.find(n => nodeKey(n.uri) === nodeKey(parentUri));
-			if (parentNode) {
-				await loadChildren(parentNode, true);
+			for (const pk of parentKeys) {
+				const parentNode = all.find(n => nodeKey(n.uri) === pk);
+				if (parentNode) {
+					await loadChildren(parentNode, true);
+				}
 			}
-			if (selectedKey === nodeKey(node.uri)) {
-				setSelectedKey(nodeKey(parentUri));
+			// Selection must not keep pointing at dead nodes.
+			if (selectedKey && deletedKeys.has(selectedKey)) {
+				setSelectedKey(nodeKey(resourceDirname(node.uri)));
 			}
+			setSelectedKeys(prev => {
+				if (![...prev].some(k => deletedKeys.has(k))) {
+					return prev;
+				}
+				return new Set([...prev].filter(k => !deletedKeys.has(k)));
+			});
 		} catch (e: unknown) {
 			notificationService.error(String((e as Error)?.message ?? e));
 		}
-	}, [configurationService, dialogService, fileService, notificationService, loadChildren, selectedKey]);
+	}, [configurationService, dialogService, fileService, notificationService, loadChildren, selectedKey, targetsFor]);
 
 	const revealInOS = React.useCallback((node: ExplorerNode) => {
 		setContextMenu(null);
@@ -1271,7 +1379,26 @@ export const FilesExplorerPanel = ({
 			}
 		}
 		const keep = new Set<string>([...matchKeys, ...ancestorKeys]);
-		return visibleRows.filter(n => keep.has(nodeKey(n.uri)));
+		// Walk the CACHED tree directly (not visibleRows): a match inside a
+		// collapsed directory must still show — filtering visibleRows hid every
+		// match whose ancestor was collapsed, which read as "file is gone".
+		// (Matches can only come from already-loaded listings, as before.)
+		const out: ExplorerNode[] = [];
+		const walk = (nodes: ExplorerNode[]) => {
+			for (const n of nodes) {
+				const k = nodeKey(n.uri);
+				if (!keep.has(k)) {
+					continue;
+				}
+				out.push(n);
+				const kids = childrenByParent[k];
+				if (kids) {
+					walk(kids);
+				}
+			}
+		};
+		walk(roots);
+		return out;
 	}, [visibleRows, filterText, roots, childrenByParent]);
 
 	const selectedNode = React.useMemo(
@@ -1288,15 +1415,22 @@ export const FilesExplorerPanel = ({
 		if (inlineEdit) {
 			return;
 		}
-		// If the filter input is focused, let it handle keys.
-		if (filterInputRef.current && document.activeElement === filterInputRef.current) {
+		// If the filter input is focused, let it handle keys. Use the CONNECTED
+		// document — in the pop-out, the main window's `document.activeElement`
+		// never matches, making this guard dead.
+		const activeDoc = treeRef.current ? getConnectedDocument(treeRef.current) : document;
+		if (filterInputRef.current && activeDoc.activeElement === filterInputRef.current) {
 			return;
 		}
-		const idx = selectedNode ? visibleRows.findIndex(n => nodeKey(n.uri) === nodeKey(selectedNode.uri)) : -1;
+		// Navigate what is RENDERED: with a filter active the tree shows
+		// filteredRows, and arrowing through unfiltered rows selected invisible
+		// nodes (highlight vanished, Enter opened an unseen file).
+		const rows = filteredRows;
+		const idx = selectedNode ? rows.findIndex(n => nodeKey(n.uri) === nodeKey(selectedNode.uri)) : -1;
 
 		if (e.key === 'ArrowDown') {
 			e.preventDefault();
-			const next = visibleRows[Math.min(visibleRows.length - 1, Math.max(0, idx) + 1)];
+			const next = rows[Math.min(rows.length - 1, Math.max(0, idx) + 1)];
 			if (next) {
 				setSelectedKey(nodeKey(next.uri));
 			}
@@ -1304,7 +1438,7 @@ export const FilesExplorerPanel = ({
 		}
 		if (e.key === 'ArrowUp') {
 			e.preventDefault();
-			const next = visibleRows[Math.max(0, (idx < 0 ? 0 : idx) - 1)];
+			const next = rows[Math.max(0, (idx < 0 ? 0 : idx) - 1)];
 			if (next) {
 				setSelectedKey(nodeKey(next.uri));
 			}
@@ -1312,14 +1446,14 @@ export const FilesExplorerPanel = ({
 		}
 		if (e.key === 'Home') {
 			e.preventDefault();
-			if (visibleRows[0]) {
-				setSelectedKey(nodeKey(visibleRows[0].uri));
+			if (rows[0]) {
+				setSelectedKey(nodeKey(rows[0].uri));
 			}
 			return;
 		}
 		if (e.key === 'End') {
 			e.preventDefault();
-			const last = visibleRows[visibleRows.length - 1];
+			const last = rows[rows.length - 1];
 			if (last) {
 				setSelectedKey(nodeKey(last.uri));
 			}
@@ -1386,7 +1520,7 @@ export const FilesExplorerPanel = ({
 			}
 		} else if ((e.key === 'a' || e.key === 'A') && (e.metaKey || e.ctrlKey)) {
 			e.preventDefault();
-			setSelectedKeys(new Set(visibleRows.filter(n => !n.isRoot).map(n => nodeKey(n.uri))));
+			setSelectedKeys(new Set(filteredRows.filter(n => !n.isRoot).map(n => nodeKey(n.uri))));
 		} else if (e.key === 'Escape') {
 			// Escape clears cut state (main explorer behavior) and any filter.
 			if (fileClipboard?.mode === 'cut') {
@@ -1396,7 +1530,7 @@ export const FilesExplorerPanel = ({
 				setFilterText('');
 			}
 		}
-	}, [inlineEdit, selectedNode, visibleRows, expanded, childrenByParent, toggleExpand, startRename, deleteNode, handleActivate, cutOrCopy, pasteInto, cancelCut, fileClipboard, filterText, onOpenFile]);
+	}, [inlineEdit, selectedNode, filteredRows, expanded, childrenByParent, toggleExpand, startRename, deleteNode, handleActivate, cutOrCopy, pasteInto, cancelCut, fileClipboard, filterText, onOpenFile]);
 
 	if (rootState === 'error') {
 		return <PanelPlaceholder icon={FolderTree} label="Can't load explorer" detail={rootError || 'Unknown error'} />;

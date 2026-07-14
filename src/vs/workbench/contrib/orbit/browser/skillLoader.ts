@@ -24,6 +24,7 @@ import { Disposable } from '../../../../base/common/lifecycle.js';
 import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { registerWorkbenchContribution2, WorkbenchPhase } from '../../../common/contributions.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
+import { IWorkspaceTrustManagementService } from '../../../../platform/workspace/common/workspaceTrust.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import { URI } from '../../../../base/common/uri.js';
@@ -138,6 +139,7 @@ export function reloadOrbitSkills(
 	environmentService: INativeEnvironmentService,
 	workspaceContextService: IWorkspaceContextService,
 	settingsService?: IVoidSettingsService,
+	isWorkspaceTrusted: boolean = true,
 ): Promise<void> {
 	if (_reloadInFlight) {
 		_reloadQueued = true;
@@ -147,7 +149,7 @@ export function reloadOrbitSkills(
 		try {
 			do {
 				_reloadQueued = false;
-				await _doReloadOrbitSkills(fileService, environmentService, workspaceContextService, settingsService);
+				await _doReloadOrbitSkills(fileService, environmentService, workspaceContextService, settingsService, isWorkspaceTrusted);
 			} while (_reloadQueued);
 		} finally {
 			_reloadInFlight = null;
@@ -162,6 +164,7 @@ async function _doReloadOrbitSkills(
 	environmentService: INativeEnvironmentService,
 	workspaceContextService: IWorkspaceContextService,
 	settingsService?: IVoidSettingsService,
+	isWorkspaceTrusted: boolean = true,
 ): Promise<void> {
 	// User-level: the global ~/.agents registry first (external), then Orbit's own
 	// ~/.orbit/skills, so an Orbit-owned skill can intentionally shadow a global one.
@@ -172,10 +175,14 @@ async function _doReloadOrbitSkills(
 	setUserSkills(userSkills);
 
 	// Project-level (each workspace folder): project .agents/skills then .orbit/skills.
+	// Gated on workspace trust — project skills inject descriptions into the agent prompt and their
+	// bodies run on invocation, so a cloned/untrusted repo must not silently register them.
 	const projectSkills: SkillDefinition[] = [];
-	for (const folder of workspaceContextService.getWorkspace().folders) {
-		projectSkills.push(...await loadSkillsFromDir(URI.joinPath(folder.uri, '.agents', 'skills'), 'project', fileService, { external: true }));
-		projectSkills.push(...await loadSkillsFromDir(URI.joinPath(folder.uri, '.orbit', 'skills'), 'project', fileService, { external: false }));
+	if (isWorkspaceTrusted) {
+		for (const folder of workspaceContextService.getWorkspace().folders) {
+			projectSkills.push(...await loadSkillsFromDir(URI.joinPath(folder.uri, '.agents', 'skills'), 'project', fileService, { external: true }));
+			projectSkills.push(...await loadSkillsFromDir(URI.joinPath(folder.uri, '.orbit', 'skills'), 'project', fileService, { external: false }));
+		}
 	}
 	setProjectSkills(projectSkills);
 
@@ -195,6 +202,7 @@ class SkillLoader extends Disposable {
 		@IFileService private readonly _fileService: IFileService,
 		@INativeEnvironmentService private readonly _environmentService: INativeEnvironmentService,
 		@IVoidSettingsService private readonly _settingsService: IVoidSettingsService,
+		@IWorkspaceTrustManagementService private readonly _workspaceTrust: IWorkspaceTrustManagementService,
 	) {
 		super();
 		this._init();
@@ -211,7 +219,7 @@ class SkillLoader extends Disposable {
 	}
 
 	private async _reload(): Promise<void> {
-		await reloadOrbitSkills(this._fileService, this._environmentService, this._workspaceContextService, this._settingsService);
+		await reloadOrbitSkills(this._fileService, this._environmentService, this._workspaceContextService, this._settingsService, this._workspaceTrust.isWorkspaceTrusted());
 	}
 
 	private async _init(): Promise<void> {
@@ -226,6 +234,9 @@ class SkillLoader extends Disposable {
 		this._register(this._settingsService.onDidChangeState(() => {
 			setDisabledSkills(this._settingsService.state.globalSettings.disabledSkills ?? []);
 		}));
+
+		// Re-scan when workspace trust is granted/revoked so project skills appear/disappear.
+		this._register(this._workspaceTrust.onDidChangeTrust(() => { this._reloadScheduler.schedule(); }));
 
 		// Watch skill directories so the list stays in sync when skills are added, edited,
 		// or removed on disk (by the agent's file tools, the user, or an import).

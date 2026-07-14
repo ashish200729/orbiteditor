@@ -3,7 +3,7 @@
  *  Licensed under the Apache License, Version 2.0. See LICENSE.txt for more information.
  *--------------------------------------------------------------------------------------*/
 
-import { Disposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { registerSingleton, InstantiationType } from '../../../../platform/instantiation/common/extensions.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { ICodeEditor, IOverlayWidget, IViewZone } from '../../../../editor/browser/editorBrowser.js';
@@ -31,6 +31,7 @@ import { VOID_ACCEPT_DIFF_ACTION_ID, VOID_REJECT_DIFF_ACTION_ID } from './action
 import { mountCtrlK } from './react/out/quick-edit-tsx/index.js'
 import { QuickEditPropsType } from './quickEditActions.js';
 import { IModelContentChangedEvent } from '../../../../editor/common/textModelEvents.js';
+import { localize } from '../../../../nls.js';
 import { extractCodeFromFIM, extractCodeFromRegular, ExtractedSearchReplaceBlock, extractSearchReplaceBlocks } from '../common/helpers/extractCodeFromResult.js';
 import { INotificationService, } from '../../../../platform/notification/common/notification.js';
 import { EditorOption } from '../../../../editor/common/config/editorOptions.js';
@@ -100,9 +101,30 @@ const getLeadingWhitespacePx = (editor: ICodeEditor, startLine: number): number 
 };
 
 
-// Helper function to remove whitespace except newlines
-const removeWhitespaceExceptNewlines = (str: string): string => {
-	return str.replace(/[^\S\n]+/g, '');
+// Helper: trim leading/trailing whitespace on each line (preserves newlines and
+// intra-line spacing, so line numbers/columns are unaffected). Used as a lenient
+// fallback so a match tolerant of indentation differences still lines up per line.
+const trimEachLine = (str: string): string => {
+	return str.split('\n').map(l => l.trim()).join('\n')
+}
+
+// Whether a match at matchIdx (length matchLen) begins and ends on line boundaries.
+const isLineAnchoredMatch = (contents: string, matchIdx: number, matchLen: number): boolean => {
+	const startsAtLine = matchIdx === 0 || contents.charAt(matchIdx - 1) === '\n'
+	const endIdx = matchIdx + matchLen
+	const endsAtLine = endIdx === contents.length || contents.charAt(endIdx) === '\n'
+	return startsAtLine && endsAtLine
+}
+
+// indexOf `needle`, but if lineAnchored, only accept occurrences that start and end
+// on line boundaries (skipping sub-line matches like `x = 1` inside `let x = 1`).
+const indexOfInCode = (haystack: string, needle: string, from: number, lineAnchored: boolean): number => {
+	let at = haystack.indexOf(needle, from)
+	if (!lineAnchored) return at
+	while (at !== -1 && !isLineAnchoredMatch(haystack, at, needle.length)) {
+		at = haystack.indexOf(needle, at + 1)
+	}
+	return at
 }
 
 
@@ -110,7 +132,11 @@ const removeWhitespaceExceptNewlines = (str: string): string => {
 // finds block.orig in fileContents and return its range in file
 // startingAtLine is 1-indexed and inclusive
 // returns 1-indexed lines
-const findTextInCode = (text: string, fileContents: string, canFallbackToRemoveWhitespace: boolean, opts: { startingAtLine?: number, returnType: 'lines', requireUnique?: boolean }) => {
+// lineAnchored: require the match to begin/end on line boundaries (use when the caller
+// replaces whole lines, so a sub-line match can't destroy surrounding text)
+const findTextInCode = (text: string, fileContents: string, canFallbackToRemoveWhitespace: boolean, opts: { startingAtLine?: number, returnType: 'lines', requireUnique?: boolean, lineAnchored?: boolean }) => {
+
+	const lineAnchored = opts?.lineAnchored ?? false
 
 	const returnAns = (fileContents: string, idx: number) => {
 		const startLine = numLinesOfStr(fileContents.substring(0, idx + 1))
@@ -120,16 +146,18 @@ const findTextInCode = (text: string, fileContents: string, canFallbackToRemoveW
 		return [startLine, endLine] as const
 	}
 
+	// char index of the start of startingAtLine (1-indexed, inclusive): all lines strictly
+	// before it. slice(0, startingAtLine - 1) so the search still includes startingAtLine.
 	const startingAtLineIdx = (fileContents: string) => opts?.startingAtLine !== undefined ?
-		fileContents.split('\n').slice(0, opts.startingAtLine).join('\n').length // num characters in all lines before startingAtLine
+		fileContents.split('\n').slice(0, Math.max(opts.startingAtLine - 1, 0)).join('\n').length
 		: 0
 
 	// idx = starting index in fileContents
-	let idx = fileContents.indexOf(text, startingAtLineIdx(fileContents))
+	let idx = indexOfInCode(fileContents, text, startingAtLineIdx(fileContents), lineAnchored)
 
 	// if idx was found
 	if (idx !== -1) {
-		if (opts?.requireUnique && fileContents.indexOf(text, idx + 1) !== -1)
+		if (opts?.requireUnique && indexOfInCode(fileContents, text, idx + 1, lineAnchored) !== -1)
 			return 'Not unique' as const
 		return returnAns(fileContents, idx)
 	}
@@ -137,14 +165,14 @@ const findTextInCode = (text: string, fileContents: string, canFallbackToRemoveW
 	if (!canFallbackToRemoveWhitespace)
 		return 'Not found' as const
 
-	// try to find it ignoring all whitespace this time
-	text = removeWhitespaceExceptNewlines(text)
-	fileContents = removeWhitespaceExceptNewlines(fileContents)
-	idx = fileContents.indexOf(text, startingAtLineIdx(fileContents));
+	// try to find it tolerating per-line leading/trailing whitespace differences this time
+	// (per-line trim preserves newline count, so line numbers still map back correctly)
+	text = trimEachLine(text)
+	fileContents = trimEachLine(fileContents)
+	idx = indexOfInCode(fileContents, text, startingAtLineIdx(fileContents), lineAnchored);
 
 	if (idx === -1) return 'Not found' as const
-	const lastIdx = fileContents.lastIndexOf(text)
-	if (lastIdx !== idx) return 'Not unique' as const
+	if (indexOfInCode(fileContents, text, idx + 1, lineAnchored) !== -1) return 'Not unique' as const
 
 	return returnAns(fileContents, idx)
 }
@@ -203,7 +231,12 @@ class EditCodeService extends Disposable implements IEditCodeService {
 		super();
 
 		// this function initializes data structures and listens for changes
-		const registeredModelURIs = new Set<string>()
+		// Track per-model content listeners by model identity (not fsPath): a file can be
+		// closed and reopened as a brand new ITextModel with the same path, and that new model
+		// must get its own listener. Keying by fsPath left the reopened model with no content
+		// listener (diff realign + conflict-stop went dead) and leaked the stale one.
+		const modelListeners = new Map<ITextModel, IDisposable>()
+		this._register(toDisposable(() => { modelListeners.forEach(l => l.dispose()); modelListeners.clear() }))
 		const initializeModel = async (model: ITextModel) => {
 			try {
 				await this._voidModelService.initializeModel(model.uri)
@@ -212,23 +245,24 @@ class EditCodeService extends Disposable implements IEditCodeService {
 				return
 			}
 
+			// model may have been disposed during the await above
+			if (model.isDisposed()) return
+
 			// do not add listeners to the same model twice - important, or will see duplicates
-			if (registeredModelURIs.has(model.uri.fsPath)) return
-			registeredModelURIs.add(model.uri.fsPath)
+			if (modelListeners.has(model)) return
 
 			if (!(model.uri.fsPath in this.diffAreasOfURI)) {
 				this.diffAreasOfURI[model.uri.fsPath] = new Set();
 			}
 
 			// when the user types, realign diff areas and re-render them
-			this._register(
-				model.onDidChangeContent(e => {
-					// it's as if we just called _write, now all we need to do is realign and refresh
-					if (this.weAreWriting) return
-					const uri = model.uri
-					this._onUserChangeContent(uri, e)
-				})
-			)
+			const listener = model.onDidChangeContent(e => {
+				// it's as if we just called _write, now all we need to do is realign and refresh
+				if (this.weAreWriting) return
+				const uri = model.uri
+				this._onUserChangeContent(uri, e)
+			})
+			modelListeners.set(model, listener)
 
 			// when the model first mounts, refresh any diffs that might be on it (happens if diffs were added in the BG)
 			this._refreshStylesAndDiffsInURI(model.uri)
@@ -236,6 +270,27 @@ class EditCodeService extends Disposable implements IEditCodeService {
 		// initialize all existing models + initialize when a new model mounts
 		for (let model of this._modelService.getModels()) { initializeModel(model) }
 		this._register(this._modelService.onModelAdded(model => { initializeModel(model) }));
+		// when a model is removed (file closed), dispose its listener so a later reopen re-registers
+		this._register(this._modelService.onModelRemoved(model => {
+			const listener = modelListeners.get(model)
+			if (listener) { listener.dispose(); modelListeners.delete(model) }
+
+			// If the model is disposed mid-stream (file closed while an edit is being written), the
+			// stream can no longer write to it: abort those streams so their DiffZones don't stay stuck
+			// in isStreaming=true (and the underlying LLM request keeps running). onModelRemoved is a
+			// model-level signal (the file is truly gone), not a per-editor close, so this is safe.
+			for (const diffareaid of this.diffAreasOfURI[model.uri.fsPath] ?? []) {
+				const diffArea = this.diffAreaOfId[diffareaid]
+				if (diffArea?.type === 'DiffZone' && diffArea._streamState.isStreaming)
+					this._stopIfStreaming(diffArea)
+			}
+
+			// dispose + drop this URI's refresh scheduler so the map doesn't grow unbounded as files
+			// open/close over a session (the scheduler is recreated lazily if the file reopens).
+			const schedulerKey = model.uri.toString()
+			const scheduler = this._refreshStylesSchedulerByURI.get(schedulerKey)
+			if (scheduler) { scheduler.dispose(); this._refreshStylesSchedulerByURI.delete(schedulerKey) }
+		}));
 
 
 		// this function adds listeners to refresh styles when editor changes tab
@@ -253,6 +308,11 @@ class EditCodeService extends Disposable implements IEditCodeService {
 
 
 	private _onUserChangeContent(uri: URI, e: IModelContentChangedEvent) {
+		// A user edit at or above a streaming DiffZone invalidates the stream's write head: the
+		// stream tracks absolute model positions that realignment below can't fix up, so later
+		// chunks would land at stale offsets and clobber user content. Stop those streams cleanly
+		// (whatever has been written stays as reviewable diffs); edits fully below a zone are safe.
+		this._stopStreamsConflictingWithUserEdit(uri, e)
 		for (const change of e.changes) {
 			this._realignAllDiffAreasLines(uri, change.text, change.range)
 		}
@@ -386,6 +446,7 @@ class EditCodeService extends Disposable implements IEditCodeService {
 
 		let zoneId: string | null = null
 		let viewZone_: IViewZone | null = null
+		let focusTimeout: ReturnType<typeof setTimeout> | undefined = undefined
 		const textAreaRef: { current: HTMLTextAreaElement | null } = { current: null }
 
 
@@ -423,7 +484,7 @@ class EditCodeService extends Disposable implements IEditCodeService {
 
 						if (!(ctrlKZone.diffareaid in this.mostRecentTextOfCtrlKZoneId)) { // detect first mount this way (a hack)
 							this.mostRecentTextOfCtrlKZoneId[ctrlKZone.diffareaid] = undefined
-							setTimeout(() => textAreaRef.current?.focus(), 100)
+							focusTimeout = setTimeout(() => textAreaRef.current?.focus(), 100)
 						}
 					},
 					onChangeHeight(height) {
@@ -443,6 +504,7 @@ class EditCodeService extends Disposable implements IEditCodeService {
 
 			// cleanup
 			return () => {
+				if (focusTimeout !== undefined) clearTimeout(focusTimeout)
 				editor.changeViewZones(accessor => { if (zoneId) accessor.removeZone(zoneId) })
 				disposeFn?.()
 			}
@@ -642,9 +704,15 @@ class EditCodeService extends Disposable implements IEditCodeService {
 			{ startLineNumber: 1, startColumn: 1, endLineNumber: model.getLineCount(), endColumn: Number.MAX_SAFE_INTEGER } // whole file
 			: range_
 
+		// Callers build `text` from LF-normalized model reads, so it uses '\n'. Match the
+		// model's actual EOL when writing so we don't inject mixed EOLs (or silently convert a
+		// CRLF file to LF). normalizedText is the canonical LF form used for comparisons/realign.
+		const normalizedText = text.indexOf('\r') === -1 ? text : text.replace(/\r\n/g, '\n')
+		const textForModel = model.getEOL() === '\r\n' ? normalizedText.replace(/\n/g, '\r\n') : normalizedText
+
 		// realign is 100% independent from written text (diffareas are nonphysical), can do this first
 		if (shouldRealignDiffAreas) {
-			const newText = text
+			const newText = normalizedText
 			const oldRange = range
 			this._realignAllDiffAreasLines(uri, newText, oldRange)
 		}
@@ -652,7 +720,7 @@ class EditCodeService extends Disposable implements IEditCodeService {
 		const uriStr = model.getValue(EndOfLinePreference.LF)
 
 		// heuristic check
-		const dontNeedToWrite = uriStr === text
+		const dontNeedToWrite = uriStr === normalizedText
 		if (dontNeedToWrite) {
 			this._refreshStylesAndDiffsInURI(uri) // at the end of a write, we still expect to refresh all styles. e.g. sometimes we expect to restore all the decorations even if no edits were made when _writeText is used
 			return
@@ -660,7 +728,7 @@ class EditCodeService extends Disposable implements IEditCodeService {
 
 		this.weAreWriting = true
 		try {
-			model.applyEdits([{ range, text }])
+			model.applyEdits([{ range, text: textForModel }])
 		} finally {
 			// Phase 2.7 (H9) fix: if applyEdits throws (e.g. model disposed, range out
 			// of bounds, undo stack full), the flag must be reset or the diff-area
@@ -831,6 +899,9 @@ class EditCodeService extends Disposable implements IEditCodeService {
 	private _deleteCtrlKZone(ctrlKZone: CtrlKZone) {
 		this._clearAllEffects(ctrlKZone._URI)
 		ctrlKZone._mountInfo?.dispose()
+		// drop the remembered input text: the diffareaid can reappear (e.g. snapshot restore),
+		// and a stale entry suppresses the first-mount auto-focus for the reused id.
+		delete this.mostRecentTextOfCtrlKZoneId[ctrlKZone.diffareaid]
 		delete this.diffAreaOfId[ctrlKZone.diffareaid]
 		this.diffAreasOfURI[ctrlKZone._URI.fsPath]?.delete(ctrlKZone.diffareaid.toString())
 	}
@@ -924,8 +995,9 @@ class EditCodeService extends Disposable implements IEditCodeService {
 			// if the change fully contains the diffArea, make the diffArea have the same range as the change
 			else if (diffArea.startLine > startLine && diffArea.endLine < endLine) {
 				// console.log('CHANGE FULLY CONTAINS DA')
+				// new text occupies lines [startLine, startLine + newTextHeight - 1]
 				diffArea.startLine = startLine
-				diffArea.endLine = startLine + newTextHeight
+				diffArea.endLine = startLine + newTextHeight - 1
 			}
 			// if the change contains only the diffArea's top
 			else if (startLine < diffArea.startLine && diffArea.startLine <= endLine) {
@@ -968,7 +1040,9 @@ class EditCodeService extends Disposable implements IEditCodeService {
 				this._refreshStylesAndDiffsInURI(uri)
 			}, 100)
 			this._refreshStylesSchedulerByURI.set(key, scheduler)
-			this._register(scheduler)
+			// NOT _register'd: lifetime is tied to the map and cleaned up on model removal (see
+			// onModelRemoved). Registering would retain every scheduler in the disposable store for
+			// the lifetime of this eager singleton — the same unbounded growth we want to avoid.
 		}
 		scheduler.schedule()
 	}
@@ -1276,7 +1350,10 @@ class EditCodeService extends Disposable implements IEditCodeService {
 			// We're about to revert every change via _undoHistory, so suppress the
 			// auto-accept to avoid firing an accept for state that no longer exists.
 			await onDone({ suppressAutoAccept: true })
-			this._undoHistory(uri)
+			// onDone already saved the (possibly partial) buffer to disk; the undo only reverts
+			// the in-memory model, so re-save afterwards to avoid disk/memory divergence.
+			await this._undoHistory(uri)
+			await this._voidModelService.saveModel(uri)
 			throw e.fullError || new Error(e.message)
 		}
 
@@ -1389,7 +1466,10 @@ class EditCodeService extends Disposable implements IEditCodeService {
 			// Clean up the diff zone and revert partial writes if the rewrite throws,
 			// instead of leaving a dangling streaming diff zone behind.
 			await onDone({ suppressAutoAccept: true })
-			this._undoHistory(uri)
+			// onDone already saved the (possibly partial) buffer to disk; the undo only reverts
+			// the in-memory model, so re-save afterwards to avoid disk/memory divergence.
+			await this._undoHistory(uri)
+			await this._voidModelService.saveModel(uri)
 			throw e.fullError || new Error(e.message)
 		}
 
@@ -1828,7 +1908,7 @@ class EditCodeService extends Disposable implements IEditCodeService {
 
 		const replacements: { origStart: number; origEnd: number; block: ExtractedSearchReplaceBlock }[] = []
 		for (const b of blocks) {
-			const res = findTextInCode(b.orig, modelStr, true, { returnType: 'lines', requireUnique: true })
+			const res = findTextInCode(b.orig, modelStr, true, { returnType: 'lines', requireUnique: true, lineAnchored: true })
 			if (typeof res === 'string')
 				throw new Error(this._errContentOfInvalidStr(res, b.orig))
 			let [startLine, endLine] = res
@@ -2038,7 +2118,7 @@ class EditCodeService extends Disposable implements IEditCodeService {
 						// if this is the first time we're seeing this block, add it as a diffarea so we can start streaming in it
 						if (!(blockNum in addedTrackingZoneOfBlockNum)) {
 
-							const originalBounds = findTextInCode(block.orig, originalFileCode, true, { returnType: 'lines', requireUnique: true })
+							const originalBounds = findTextInCode(block.orig, originalFileCode, true, { returnType: 'lines', requireUnique: true, lineAnchored: true })
 							// if error
 							// Check for overlap with existing modified ranges
 							const hasOverlap = typeof originalBounds === 'string' ? false : addedTrackingZoneOfBlockNum.some(trackingZone => {
@@ -2211,7 +2291,7 @@ class EditCodeService extends Disposable implements IEditCodeService {
 
 
 	_undoHistory(uri: URI) {
-		this._undoRedoService.undo(uri)
+		return this._undoRedoService.undo(uri)
 	}
 
 
@@ -2223,6 +2303,32 @@ class EditCodeService extends Disposable implements IEditCodeService {
 		return !!ctrlKZone._linkedStreamingDiffZone
 	}
 
+
+	/** Stop any DiffZone stream whose write position a user edit just invalidated (edit begins at
+	 * or above the zone's end). Mirrors the user-pressed-stop path, but keeps the user's edit and
+	 * the partially-written diffs instead of undoing. */
+	private _stopStreamsConflictingWithUserEdit(uri: URI, e: IModelContentChangedEvent) {
+		let stoppedAny = false
+		for (const diffareaid of this.diffAreasOfURI[uri.fsPath] ?? []) {
+			const diffArea = this.diffAreaOfId[diffareaid]
+			if (diffArea?.type !== 'DiffZone' || !diffArea._streamState.isStreaming) continue
+			const conflicts = e.changes.some(change => change.range.startLineNumber <= diffArea.endLine)
+			if (!conflicts) continue
+			this._stopIfStreaming(diffArea)
+			stoppedAny = true
+			// release any Ctrl+K zone linked to this stream so its UI doesn't stay in "streaming"
+			for (const otherId of this.diffAreasOfURI[uri.fsPath] ?? []) {
+				const other = this.diffAreaOfId[otherId]
+				if (other?.type === 'CtrlKZone' && other._linkedStreamingDiffZone === diffArea.diffareaid) {
+					other._linkedStreamingDiffZone = null
+					this._onDidChangeStreamingInCtrlKZone.fire({ uri, diffareaid: other.diffareaid })
+				}
+			}
+		}
+		if (stoppedAny) {
+			this._notificationService.info(localize('orbit.editStreamStoppedByUserEdit', "Orbit stopped an in-progress edit because you modified the file while it was being written. The changes written so far are ready for review."))
+		}
+	}
 
 	private _stopIfStreaming(diffZone: DiffZone) {
 		const uri = diffZone._URI
@@ -2329,6 +2435,11 @@ class EditCodeService extends Disposable implements IEditCodeService {
 
 		if (diffArea.type !== 'DiffZone') return
 
+		// Ignore accept while the zone is still streaming: mutating originalCode / deleting the
+		// zone here races the write head and corrupts the in-progress edit. (Diffs are only fired
+		// for review once streaming stops, so a legit accept can never land during streaming.)
+		if (diffArea._streamState.isStreaming) return
+
 		const uri = diffArea._URI
 
 		// add to history
@@ -2397,6 +2508,10 @@ class EditCodeService extends Disposable implements IEditCodeService {
 		if (!diffArea) return
 
 		if (diffArea.type !== 'DiffZone') return
+
+		// Ignore reject while the zone is still streaming (same race as acceptDiff): reverting/deleting
+		// the zone under the active write head corrupts the in-progress edit.
+		if (diffArea._streamState.isStreaming) return
 
 		const uri = diffArea._URI
 

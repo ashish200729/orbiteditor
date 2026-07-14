@@ -10,13 +10,20 @@ import { EDIT_TOOL_HEIGHTS, EDIT_TOOL_MIN_VIEWPORT_PX, EDIT_TOOL_VIEWPORT_MAX_PX
 
 export type EditToolExpandState = 'collapsed' | 'expanded';
 
-const scrollContentToBottom = (el: HTMLDivElement) => {
-	requestAnimationFrame(() => {
+// Returns a canceller so callers can abort the pending frames on cleanup — otherwise a mid-stream
+// unmount leaves rAF callbacks firing against a detached node (one leaked pair per chunk).
+const scrollContentToBottom = (el: HTMLDivElement): (() => void) => {
+	let inner = 0;
+	const outer = requestAnimationFrame(() => {
 		el.scrollTop = el.scrollHeight;
-		requestAnimationFrame(() => {
+		inner = requestAnimationFrame(() => {
 			el.scrollTop = el.scrollHeight;
 		});
 	});
+	return () => {
+		cancelAnimationFrame(outer);
+		if (inner) { cancelAnimationFrame(inner); }
+	};
 };
 
 export const EditToolExpandableContent = ({
@@ -96,7 +103,8 @@ export const EditToolExpandableContent = ({
 		if (!shouldAutoScroll || !contentRef.current) {
 			return;
 		}
-		scrollContentToBottom(contentRef.current);
+		const cancel = scrollContentToBottom(contentRef.current);
+		return cancel;
 	}, [dependencyKey, shouldAutoScroll]);
 
 	// Follow async layout changes (Monaco mount, viewport opening) that aren't
@@ -107,14 +115,16 @@ export const EditToolExpandableContent = ({
 			return;
 		}
 		const el = contentRef.current;
+		let cancelScroll: (() => void) | null = null;
 		const resizeObserver = new ResizeObserver(() => {
-			scrollContentToBottom(el);
+			cancelScroll?.();
+			cancelScroll = scrollContentToBottom(el);
 		});
 		resizeObserver.observe(el);
 		for (const child of Array.from(el.children)) {
 			resizeObserver.observe(child);
 		}
-		return () => resizeObserver.disconnect();
+		return () => { cancelScroll?.(); resizeObserver.disconnect(); };
 	}, [shouldAutoScroll]);
 
 	const showControls = needsShowMore && !isStreaming;

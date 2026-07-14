@@ -6,10 +6,10 @@
 /**
  * Minimal unified-diff parser for the Changes panel's inline diff view.
  *
- * We request diffs with full context (`--unified=<big>`), so a hunk usually
- * spans the whole file. The renderer then collapses long runs of unchanged
- * lines into expandable "N unmodified lines" bands — matching the main-window
- * SCM diff. The parser also preserves each hunk's raw text + the file header so
+ * Diffs are requested with a small context (contextLines: 3); the renderer
+ * fills the inter-hunk gaps with expandable "N unmodified lines" bands built
+ * from the real file content — matching the main-window SCM diff. The parser
+ * also preserves each hunk's raw text + the file header so
  * a single hunk can be re-emitted as a valid patch for `git apply` (stage/
  * unstage/discard hunk).
  */
@@ -77,7 +77,12 @@ export const parseUnifiedDiff = (diff: string): ParsedDiff => {
 		const line = lines[i];
 		if (line.startsWith('@@')) {
 			const parsed = parseHunkHeader(line);
-			if (!parsed) { continue; }
+			if (!parsed) {
+				// Malformed hunk header: stop attributing body lines to the previous
+				// hunk — a later buildHunkPatch on it would emit a corrupt patch.
+				current = null;
+				continue;
+			}
 			current = { rawLines: [line], rows: [], oldStart: parsed.oldStart, newStart: parsed.newStart };
 			result.hunks.push(current);
 			oldLine = parsed.oldStart;

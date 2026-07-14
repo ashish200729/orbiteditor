@@ -54,7 +54,9 @@ export const ChatMessagesScrollArea = React.memo(({
 	// doneParams on every render (~20x/sec) — for a streaming file write that serialized the entire
 	// growing file buffer each time (megabytes/sec of throwaway work), a major freeze source. Instead we
 	// sum string-value lengths directly: O(number of params) and zero allocation, while still tracking growth.
-	const streamContentLength = (streamState?.llmInfo?.displayContentSoFar?.length ?? 0)
+	// Keyed on `streamState` so it only recomputes when the stream actually advances — not on
+	// unrelated parent re-renders (sticky/scroll ticks) that leave streamState identity intact.
+	const streamContentLength = useMemo(() => (streamState?.llmInfo?.displayContentSoFar?.length ?? 0)
 		+ (streamState?.llmInfo?.reasoningSoFar?.length ?? 0)
 		+ (streamState?.llmInfo?.toolCallsSoFar?.reduce((sum, tool) => {
 			let toolLen = (tool.name?.length ?? 0) + (tool.doneParams?.length ?? 0)
@@ -66,7 +68,7 @@ export const ChatMessagesScrollArea = React.memo(({
 				}
 			}
 			return sum + toolLen
-		}, 0) ?? 0);
+		}, 0) ?? 0), [streamState]);
 
 	const scrollGeneration = useMemo(
 		() => previousMessages.length + streamContentLength + (streamState?.isRunning ? 1 : 0),

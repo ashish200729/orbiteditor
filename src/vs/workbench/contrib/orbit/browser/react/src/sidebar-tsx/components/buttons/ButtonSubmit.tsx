@@ -9,20 +9,23 @@ import { DEFAULT_BUTTON_SIZE } from './constants.js';
 
 type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement>
 
-export const ButtonSubmit = ({ className, disabled, ...props }: ButtonProps & Required<Pick<ButtonProps, 'disabled'>>) => {
+interface ButtonSubmitProps extends ButtonProps {
+	disabled: boolean;
+	tooltip?: string;
+}
+
+export const ButtonSubmit = ({ className, disabled, tooltip = 'Send', ...props }: ButtonSubmitProps) => {
 
 	return <button
 		type='button'
-		className={`rounded-full w-5 h-5 flex-shrink-0 flex items-center justify-center
-			transition-all duration-200
-			${disabled ? 'bg-void-fg-4/30 cursor-default opacity-50' : 'bg-void-fg-1 hover:bg-void-fg-2 cursor-pointer'}
-			${className}
-		`}
+		className={`void-composer-action void-composer-action--send flex-shrink-0 ${disabled ? 'opacity-60 cursor-default' : 'cursor-pointer'} ${className ?? ''}`}
+		disabled={disabled}
 		data-tooltip-id='void-tooltip'
-		data-tooltip-content={'Send'}
+		data-tooltip-content={tooltip}
 		data-tooltip-place='top'
+		aria-label={props['aria-label'] ?? tooltip}
 		{...props}
 	>
-		<IconArrowUp size={DEFAULT_BUTTON_SIZE} className="stroke-[2] p-[3px] text-void-bg-3" />
+		<IconArrowUp size={DEFAULT_BUTTON_SIZE} className="stroke-[2] p-[3px] text-current" />
 	</button>
 }

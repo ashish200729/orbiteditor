@@ -34,6 +34,32 @@ export const computeUnifiedDiffLines = (oldStr: string, newStr: string): Unified
 	return result;
 };
 
+/** Cheap streaming view of a str-replace/rewrite: the old block as removed lines followed by the
+ * (growing) new block as added lines. Running the real LCS `diffLines` on every streamed chunk is
+ * O(n²) across the stream; this is a single linear split per chunk, and the real diff runs once
+ * when the edit completes. */
+export const computeStreamingDiffLines = (oldStr: string, newStr: string): UnifiedDiffLine[] => {
+	const result: UnifiedDiffLine[] = [];
+	if (oldStr.length > 0) {
+		for (const line of splitDiffValueIntoLines(oldStr)) {
+			result.push({ type: 'removed', content: line });
+		}
+	}
+	if (newStr.length > 0) {
+		for (const line of splitDiffValueIntoLines(newStr)) {
+			result.push({ type: 'added', content: line });
+		}
+	}
+	return result;
+};
+
+/** Upper-bound +/- counts without running the LCS diff — used while an edit is still streaming.
+ * Converges to the exact `computeDiffStats` result when the edit completes. */
+export const estimateDiffStats = (oldStr: string, newStr: string): { additions: number; deletions: number } => {
+	const countLines = (s: string): number => s.length === 0 ? 0 : splitDiffValueIntoLines(s).length;
+	return { additions: countLines(newStr), deletions: countLines(oldStr) };
+};
+
 export const computeDiffStats = (oldStr: string, newStr: string): { additions: number; deletions: number } => {
 	const changes = diffLines(oldStr, newStr);
 	let additions = 0;

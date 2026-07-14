@@ -52,6 +52,16 @@
 	--void-ring-color: #0078D4;
 	--void-link-color: var(--vscode-textLink-foreground, #3794ff);
 	--void-accent: var(--vscode-button-background, var(--vscode-textLink-foreground, #3794ff));
+	/* Composer actions use VS Code's semantic button tokens instead of foreground
+	   colors. This keeps Send and Stop legible in every installed light, dark,
+	   and high-contrast theme. */
+	--void-composer-primary-bg: var(--vscode-button-background, var(--void-accent));
+	--void-composer-primary-fg: var(--vscode-button-foreground, var(--void-bg-3));
+	--void-composer-primary-hover-bg: var(--vscode-button-hoverBackground, var(--void-composer-primary-bg));
+	--void-composer-secondary-bg: var(--vscode-button-secondaryBackground, color-mix(in srgb, var(--void-fg-1) 12%, var(--void-bg-1) 88%));
+	--void-composer-secondary-fg: var(--vscode-button-secondaryForeground, var(--void-fg-1));
+	--void-composer-secondary-hover-bg: var(--vscode-button-secondaryHoverBackground, color-mix(in srgb, var(--void-fg-1) 18%, var(--void-bg-1) 82%));
+	--void-composer-disabled-bg: color-mix(in srgb, var(--void-composer-primary-bg) 32%, var(--void-bg-1) 68%);
 
 	/* Dropdown / menu selection surfaces.
 	   Opaque (color-mix of two opaque colors), theme-adaptive, and hue-neutral
@@ -166,6 +176,136 @@
 	border: none !important;
 	-webkit-appearance: none;
 	appearance: none;
+}
+
+/* The composer intentionally keeps a compact circular action vocabulary, but
+   gives each control a dependable 28px hit target and theme-safe contrast. */
+.void-composer-action {
+	width: 28px;
+	height: 28px;
+	border: 0;
+	border-radius: 999px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	transition: background-color 160ms ease-out, color 160ms ease-out, opacity 160ms ease-out, transform 160ms ease-out;
+}
+
+.void-composer-action:active:not(:disabled) {
+	transform: scale(0.94);
+}
+
+.void-composer-action--send {
+	background-color: var(--void-composer-primary-bg);
+	color: var(--void-composer-primary-fg);
+}
+
+.void-composer-action--send:hover:not(:disabled) {
+	background-color: var(--void-composer-primary-hover-bg);
+}
+
+.void-composer-action--send:disabled {
+	background-color: var(--void-composer-disabled-bg);
+	color: color-mix(in srgb, var(--void-composer-primary-fg) 55%, transparent);
+	cursor: default;
+}
+
+.void-composer-action--stop {
+	background-color: var(--void-composer-secondary-bg);
+	color: var(--void-composer-secondary-fg);
+}
+
+.void-composer-action--stop:hover:not(:disabled) {
+	background-color: var(--void-composer-secondary-hover-bg);
+}
+
+/* A queue is a short-lived handoff, so it sits close to the composer with a
+   calm, compact hierarchy instead of reading like another chat message. */
+.void-message-queue {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	margin-top: 2px;
+	padding: 0 8px 6px;
+}
+
+.void-message-queue__header,
+.void-message-queue__item {
+	border: 1px solid var(--void-sidebar-surface-border);
+	background: var(--void-sidebar-pill-bg);
+}
+
+.void-message-queue__header {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	min-height: 28px;
+	padding: 4px 8px;
+	border-radius: 8px;
+	color: var(--void-fg-3);
+	font-size: 11px;
+	line-height: 16px;
+}
+
+.void-message-queue__count {
+	min-width: 18px;
+	height: 18px;
+	margin-left: 1px;
+	padding: 0 5px;
+	border-radius: 999px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	background: color-mix(in srgb, var(--void-fg-1) 12%, transparent);
+	color: var(--void-fg-2);
+	font-size: 10px;
+	font-weight: 500;
+	font-variant-numeric: tabular-nums;
+}
+
+.void-message-queue__action {
+	border: 0;
+	padding: 2px 6px;
+	border-radius: 4px;
+	background: transparent;
+	color: inherit;
+	font-size: 11px;
+	line-height: 16px;
+	cursor: pointer;
+	transition: background-color 160ms ease-out, color 160ms ease-out;
+}
+
+.void-message-queue__action:hover {
+	background: var(--void-toolbar-hover-bg);
+	color: var(--void-fg-1);
+}
+
+.void-message-queue__item {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	min-height: 32px;
+	padding: 5px 8px;
+	border-radius: 8px;
+	color: var(--void-fg-2);
+	font-size: 12px;
+	line-height: 18px;
+}
+
+.void-message-queue__position {
+	width: 16px;
+	flex: 0 0 16px;
+	color: var(--void-fg-4);
+	font-size: 11px;
+	font-variant-numeric: tabular-nums;
+	text-align: center;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.void-composer-action,
+	.void-message-queue__action {
+		transition: none;
+	}
 }
 
 /* Slash `/token` text color — input overlay + sent message bubbles */

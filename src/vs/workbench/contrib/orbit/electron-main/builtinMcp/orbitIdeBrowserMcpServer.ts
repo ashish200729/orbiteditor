@@ -39,7 +39,33 @@ export type BrowserAutomationEnabledProvider = () => boolean;
  * the browser against `http://localhost:*` (the app they're building) is the
  * primary use case for this tool.
  */
-function isAgentNavigableUrl(url: string): boolean {
+/** True if an IP address is in a cloud-metadata / link-local range we must never let the agent reach.
+ * We intentionally do NOT block general private/localhost ranges — driving the app under
+ * development at http://localhost / 127.0.0.1 / 192.168.x is the primary use case. */
+function isBlockedIp(ipRaw: string): boolean {
+	const ip = ipRaw.split('%')[0]; // strip IPv6 zone id
+	// IPv6-mapped IPv4 (e.g. ::ffff:169.254.169.254) — unwrap and re-check.
+	const mapped = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i.exec(ip);
+	if (mapped) { return isBlockedIp(mapped[1]); }
+	const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(ip);
+	if (v4) {
+		const a = Number(v4[1]); const b = Number(v4[2]);
+		return a === 169 && b === 254; // link-local / cloud metadata (AWS/GCP/Azure all use 169.254.169.254)
+	}
+	const low = ip.toLowerCase();
+	// IPv6 link-local fe80::/10 (first hextet 0xfe80-0xfebf, i.e. "fe8"/"fe9"/"fea"/"feb")
+	// and unique-local fc00::/7 (first byte 0xfc-0xfd, i.e. starts with "fc" or "fd")
+	// metadata endpoints — e.g. AWS IMDSv6 is fd00:ec2::254, which is in fc00::/7.
+	if (/^fe[89ab]/.test(low)) { return true; }
+	if (/^f[cd]/.test(low)) { return true; }
+	return false;
+}
+
+function isIpLiteral(host: string): boolean {
+	return /^\d{1,3}(?:\.\d{1,3}){3}$/.test(host) || host.includes(':');
+}
+
+async function isAgentNavigableUrl(url: string): Promise<boolean> {
 	if (url === 'about:blank') { return true; }
 	let parsed: URL;
 	try {
@@ -48,8 +74,21 @@ function isAgentNavigableUrl(url: string): boolean {
 		return false;
 	}
 	if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') { return false; }
-	if (parsed.hostname === '169.254.169.254' || parsed.hostname === 'metadata.google.internal') { return false; }
-	return true;
+	let host = parsed.hostname;
+	if (host.startsWith('[') && host.endsWith(']')) { host = host.slice(1, -1); } // IPv6 literal
+	if (host === 'metadata.google.internal') { return false; }
+	// IP literal (incl. decimal/hex forms new URL keeps verbatim): check directly.
+	if (isIpLiteral(host)) { return !isBlockedIp(host); }
+	// DNS name: resolve and reject if ANY resolved address is a blocked range (defeats
+	// rebinding / a benign-looking name that points at the metadata endpoint).
+	try {
+		const { lookup } = await import('dns/promises');
+		const results = await lookup(host, { all: true });
+		for (const r of results) { if (isBlockedIp(r.address)) { return false; } }
+		return true;
+	} catch {
+		return true; // resolution failed — let the navigation itself fail naturally
+	}
 }
 
 /**
@@ -259,7 +298,7 @@ export class OrbitIdeBrowserMcpServer extends Disposable implements IOrbitBuilti
 		if (!url) {
 			return this.error('browser_navigate requires a `url` parameter.');
 		}
-		if (!isAgentNavigableUrl(url)) {
+		if (!await isAgentNavigableUrl(url)) {
 			return this.error(`browser_navigate: "${url}" is not allowed (only http/https URLs are navigable by the agent).`);
 		}
 		const newTab = params.newTab === true;
@@ -352,7 +391,7 @@ export class OrbitIdeBrowserMcpServer extends Disposable implements IOrbitBuilti
 			}
 			case 'new': {
 				const url = String(params.url ?? 'about:blank');
-				if (!isAgentNavigableUrl(url)) {
+				if (!await isAgentNavigableUrl(url)) {
 					return this.error(`browser_tabs new: "${url}" is not allowed (only http/https URLs are navigable by the agent).`);
 				}
 				const position = params.position === 'active' || params.position === 'side' ? params.position : undefined;
