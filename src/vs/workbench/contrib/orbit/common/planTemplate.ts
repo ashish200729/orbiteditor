@@ -481,7 +481,7 @@ export function markTodoComplete(currentContent: string, itemIndex: number): { c
 	// NOTE: completed rows use the `✓` (✓) marker (numbered) or `[x]` (checkbox), NOT the word
 	// "COMPLETED" — they must be counted too so the rendered index stays aligned.
 	const checkboxRegex = /^- \[( |x|X|-|~|c|C)\] (.*)$/;
-	const numberedRegex = /^(\d+)\.\s+\[(PENDING|IN_PROGRESS|COMPLETED|CANCELLED|✓)\]\s+(.+)$/;
+	const numberedRegex = /^(\d+)\.\s+\[(PENDING|IN_PROGRESS|COMPLETED|CANCELLED|\u2713)\]\s+(.+)$/;
 
 	let renderedIndex = 0;
 	let targetLineIndex = -1;
