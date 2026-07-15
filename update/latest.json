@@ -7,8 +7,8 @@
 			"sha256": "7664b9b83f2ea3932a3a83274537ac6b3c12666892b1e8d60db0f1dd13182156"
 		},
 		"darwin-x64": {
-			"url": "https://github.com/ashish200729/orbiteditor/releases/download/v0.2.1/Orbit-0.2.1-darwin-x64.dmg",
-			"sha256": "cf9c16fb55e63cfaabdd739e66421728a63102e998164488c5cc8f2b1b1e0e01"
+			"url": "https://github.com/ashish200729/orbiteditor/releases/download/v0.2.2/Orbit-0.2.2-darwin-x64.dmg",
+			"sha256": "9c05a44ca4e5ae9529bcbb388fde3ea65a04ec8f09c18db60c76f3a965fc76f2"
 		},
 		"win32-x64": {
 			"url": "https://github.com/ashish200729/orbiteditor/releases/download/v0.1.4/Orbit-0.1.4-win32-x64-setup.exe",
