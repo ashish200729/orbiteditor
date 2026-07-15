@@ -2,6 +2,44 @@
 
 All notable changes to Orbit Editor are documented here.
 
+## 0.2.2
+
+### 🔍 Semantic Codebase Search
+
+Agents can now search your codebase by **meaning**, not just by keywords. Turn it on in Settings → Tools → **Semantic Codebase Search**, point it at a local embedding model (Ollama with `nomic-embed-text`, for instance), and Orbit builds a private per-workspace index of your source code. Once indexed, the agent's `CodebaseSearch` tool finds relevant files, functions, and patterns from a natural-language description — no need to know the exact identifier or grep for the right string.
+
+- **Works locally and privately.** Use Ollama on the same machine and all indexing stays on your hardware. OpenAI-compatible endpoints (OpenAI, vLLM, etc.) are also supported if you prefer a remote model; data is sent to whichever provider you configure.
+- **Agents use it automatically.** When the agent needs to find a concept, architecture pattern, or implementation detail (`CodebaseSearch`), it falls back to `Grep` or `Glob` for exact searches and `Read` for digging into results.
+- **Fast incremental updates.** After the initial index, Orbit watches your files and re-indexes only the changed ones in the background — saves, creates, deletes, and renames all update the index within about a second.
+- **Control what gets indexed.** Orbit respects your existing search exclusions and `.gitignore` patterns. Add a `.orbitignore` file at the workspace root for indexing-specific exclusions:
+  ```gitignore
+  private/
+  fixtures/generated/**
+  *.generated.ts
+  ```
+- **Resilient to interruptions.** If the embedding provider goes down mid-index, the last valid index is preserved and agents fall back to `Grep`, `Glob`, and `Read` with a graceful message — no hard-failing tools.
+- **Index state visible in Settings.** An in-settings status panel shows the indexing phase (scanning / embedding / saving), file progress, the current file being processed, and a summary of indexed files and chunks once ready.
+
+**Note:** Semantic indexing is disabled by default and requires a trusted workspace. Enable it in Settings → Tools → Semantic Codebase Search, then configure an embedding endpoint and model.
+
+### Bug fixes
+
+- Fixed a bug where toggling semantic search off and back on would re-embed the entire codebase instead of reusing the cached index from disk.
+- Fixed a bug where changing the embedding model/provider while search was enabled could produce an index with vectors from two different models, making rankings meaningless.
+- Fixed an indexing progress counter inaccuracy for files larger than the 512 KiB size limit.
+
+### macOS install
+
+- **Recommended (no Gatekeeper warning):**
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/ashish200729/orbiteditor/main/install.sh | bash
+  ```
+- **Or download the `.dmg`** from the release, drag Orbit to Applications, then run once:
+  ```bash
+  xattr -cr /Applications/Orbit.app
+  ```
+  (Orbit isn't notarized by Apple yet, so a browser-downloaded `.dmg` shows a one-time "unverified developer" prompt; the command above clears it.)
+
 ## 0.2.1
 
 ### Customize hub and Marketplace
