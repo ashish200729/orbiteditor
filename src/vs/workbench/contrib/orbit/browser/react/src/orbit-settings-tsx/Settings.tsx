@@ -9,7 +9,7 @@ import { ProviderName, providerNames, VoidStatefulModelInfo, RefreshableProvider
 import ErrorBoundary from '../sidebar-tsx/ErrorBoundary.js'
 import { VoidButtonBgDarken, VoidCustomDropdownBox, VoidInputBox2, VoidSimpleInputBox, VoidSwitch } from '../util/inputs.js'
 import { useAccessor, useIsDark, useIsOptedOut, useRefreshModelListener, useRefreshModelState, useSettingsState, useOpenAiCodexAuthState, useOrbitProviderAuthState, useOrbitUsageStats } from '../util/services.js'
-import { X, RefreshCw, Loader2, Check, Asterisk, Plus, Boxes, Cloud, Sparkles, Settings2, Puzzle, LayoutList, BookOpen, Bot, Trash2, Download, Search, type LucideIcon } from 'lucide-react'
+import { X, RefreshCw, Loader2, Check, Asterisk, Plus, Boxes, Cloud, Sparkles, Settings2, Puzzle, LayoutList, BookOpen, Bot, Trash2, Download, Search, Pause, Play, AlertTriangle, Database, type LucideIcon } from 'lucide-react'
 import { listSkills, onSkillsChanged, type SkillDefinition } from '../../../../common/skillRegistry.js'
 import { listSubAgents, type ResolvedSubAgentDefinition } from '../../../../common/subAgentRegistry.js'
 import { URI } from '../../../../../../../base/common/uri.js'
@@ -899,6 +899,148 @@ const FastApplyMethodDropdown = () => {
 
 }
 
+const SemanticSearchSettings = () => {
+	const accessor = useAccessor()
+	const settingsService = accessor.get('IVoidSettingsService')
+	const semanticService = accessor.get('ISemanticRetrievalService')
+	const dialogService = accessor.get('IDialogService')
+	const settings = useSettingsState().globalSettings
+	const [status, setStatus] = useState(() => semanticService.getStatus())
+	const [deleting, setDeleting] = useState(false)
+	useEffect(() => {
+		const disposable = semanticService.onDidChangeStatus(setStatus)
+		return () => disposable.dispose()
+	}, [semanticService])
+	const providers = useMemo(() => ['ollama', 'openAICompatible'] as const, [])
+	const isIndexing = status.state === 'indexing'
+	const progress = status.progress === undefined ? undefined : Math.max(0, Math.min(100, status.progress))
+	const progressRounded = progress === undefined ? undefined : Math.round(progress)
+	const phaseLabel = status.phase === 'loading' ? 'Loading saved index'
+		: status.phase === 'scanning' ? 'Scanning workspace'
+			: status.phase === 'saving' ? 'Saving local index'
+				: status.operation === 'incremental' ? 'Updating changed files' : 'Embedding codebase'
+	const stateLabel = status.state === 'ready' ? (status.error ? 'Index ready · update failed' : 'Index ready')
+		: status.state === 'error' ? 'Indexing failed'
+			: status.state === 'paused' ? 'Indexing paused'
+				: status.state === 'empty' ? 'No index built'
+					: status.state === 'loading' ? 'Loading index'
+						: isIndexing ? phaseLabel : 'Semantic search disabled'
+	const errorGuidance = status.error
+		? /context length|context window|too many tokens|input length/i.test(status.error)
+			? 'Orbit automatically retries oversized chunks. If this remains, choose an embedding model with a larger context window.'
+			: /401|403|authentication|API key|permission/i.test(status.error)
+				? 'Check the API key and confirm that it can use the configured embedding model.'
+				: /404|not found/i.test(status.error)
+					? 'Check both the endpoint URL and embedding model name.'
+					: /ECONNREFUSED|Failed to fetch|timed? out|network|socket/i.test(status.error)
+						? 'Confirm the provider is running and reachable from this computer, then retry.'
+						: 'Review the provider settings, then retry. Your last successful local index is preserved when available.'
+		: undefined
+	const canDelete = status.indexedChunks > 0 || status.lastIndexedAt !== undefined || status.state === 'paused' || status.state === 'error'
+
+	const deleteIndex = useCallback(async () => {
+		const result = await dialogService.confirm({
+			type: 'warning',
+			message: 'Delete the semantic codebase index?',
+			detail: 'This removes locally stored embeddings and metadata. Your source files are not changed.',
+			primaryButton: 'Delete Index',
+		})
+		if (!result.confirmed) return
+		setDeleting(true)
+		try { await semanticService.deleteIndex() } finally { setDeleting(false) }
+	}, [dialogService, semanticService])
+
+	const formatLastIndexed = (timestamp: number) => new Date(timestamp).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
+
+	return <>
+		<SettingsCell
+			label="Semantic Codebase Search"
+			description="Build a private local workspace index so agents can find code by meaning. Disabled by default."
+			showDivider
+		>
+			<VoidSwitch size='xs' value={settings.semanticSearchEnabled} onChange={value => settingsService.setGlobalSetting('semanticSearchEnabled', value)} />
+		</SettingsCell>
+		{settings.semanticSearchEnabled && <div className='@@settings-nested flex flex-col gap-2'>
+			<div className='@@settings-nested-row'>
+				<span className='@@settings-nested-label'>Embedding provider</span>
+				<VoidCustomDropdownBox
+					options={providers}
+					selectedOption={settings.semanticEmbeddingProvider}
+					onChangeOption={provider => settingsService.setGlobalSetting('semanticEmbeddingProvider', provider)}
+					getOptionDisplayName={provider => provider === 'ollama' ? 'Ollama' : 'OpenAI-compatible'}
+					getOptionDropdownName={provider => provider === 'ollama' ? 'Ollama (local or remote)' : 'OpenAI-compatible'}
+					getOptionsEqual={(a, b) => a === b}
+					className='text-xs text-void-fg-3 bg-void-bg-1 border border-void-border-1 rounded px-1'
+				/>
+			</div>
+			<label className='@@semantic-index-field'>
+				<span>Endpoint</span>
+				<VoidSimpleInputBox value={settings.semanticEmbeddingEndpoint} onChangeValue={value => settingsService.setGlobalSetting('semanticEmbeddingEndpoint', value)} placeholder='http://localhost:11434' aria-label='Embedding endpoint' spellCheck={false} autoCapitalize='none' compact />
+			</label>
+			<label className='@@semantic-index-field'>
+				<span>Model</span>
+				<VoidSimpleInputBox value={settings.semanticEmbeddingModel} onChangeValue={value => settingsService.setGlobalSetting('semanticEmbeddingModel', value)} placeholder='nomic-embed-text' aria-label='Embedding model' spellCheck={false} autoCapitalize='none' compact />
+			</label>
+			{settings.semanticEmbeddingProvider === 'openAICompatible' && <label className='@@semantic-index-field'>
+				<span>API key <span className='@@semantic-index-optional'>(optional)</span></span>
+				<VoidSimpleInputBox value={settings.semanticEmbeddingApiKey} onChangeValue={value => settingsService.setGlobalSetting('semanticEmbeddingApiKey', value)} placeholder='API key' aria-label='Embedding API key' passwordBlur compact />
+			</label>}
+			<div className='text-xs text-void-warning'>Source chunks and search queries are sent to this endpoint. Only use a provider you trust.</div>
+
+			<section className={`@@semantic-index-status @@semantic-index-status--${status.state}`} aria-label='Semantic index status'>
+				<div className='@@semantic-index-status-header'>
+					<div className='@@semantic-index-status-title' role='status' aria-live='polite'>
+						<span className='@@semantic-index-state-icon' aria-hidden='true'>
+							{isIndexing || status.state === 'loading' ? <Loader2 size={14} /> : status.state === 'error' || status.error ? <AlertTriangle size={14} /> : status.state === 'ready' ? <Check size={14} /> : <Database size={14} />}
+						</span>
+						<span>{stateLabel}</span>
+					</div>
+					{progressRounded !== undefined && isIndexing ? <span className='@@semantic-index-percent'>{progressRounded}%</span> : null}
+				</div>
+
+				{(isIndexing || status.state === 'loading') && <div
+					className='@@semantic-index-progress'
+					role='progressbar'
+					aria-label={phaseLabel}
+					aria-valuemin={0}
+					aria-valuemax={100}
+					aria-valuenow={progressRounded}
+				>
+					<div className={`@@semantic-index-progress-fill${progress === undefined ? ' @@semantic-index-progress-fill--indeterminate' : ''}`} style={progress === undefined ? undefined : { width: `${progress}%` }} />
+				</div>}
+
+				{isIndexing && <div className='@@semantic-index-phase'>
+					<span>{phaseLabel}</span>
+					{status.processedFiles !== undefined && status.totalFiles !== undefined ? <span>{status.processedFiles.toLocaleString()} of {status.totalFiles.toLocaleString()} files{status.indexedChunks ? ` · ${status.indexedChunks.toLocaleString()} chunks` : ''}</span> : null}
+				</div>}
+
+				{status.currentFile && isIndexing ? <div className='@@semantic-index-current' title={status.currentFile}>{status.currentFile}</div> : null}
+				{isIndexing && status.recentFiles?.length ? <div className='@@semantic-index-recent' aria-label='Recently processed files'>
+					{status.recentFiles.map((file, index) => <div key={`${file}:${index}`} title={file}><span aria-hidden='true'>·</span><span>{file}</span></div>)}
+				</div> : null}
+
+				{status.error ? <div className='@@semantic-index-error' role='alert'>
+					<div>{status.error}</div>
+					{errorGuidance ? <div className='@@semantic-index-error-guidance'>{errorGuidance}</div> : null}
+				</div> : null}
+
+				{status.state === 'ready' && !status.error ? <div className='@@semantic-index-summary'>
+					<span>{status.indexedFiles.toLocaleString()} files</span>
+					<span>{status.indexedChunks.toLocaleString()} chunks</span>
+					{status.lastIndexedAt ? <span>Updated {formatLastIndexed(status.lastIndexedAt)}</span> : null}
+				</div> : null}
+
+				<div className='@@semantic-index-actions'>
+					{isIndexing ? <button type='button' className='@@semantic-index-action' onClick={() => semanticService.pause()}><Pause size={13} aria-hidden='true' /> Pause</button>
+						: status.state === 'paused' ? <button type='button' className='@@semantic-index-action @@semantic-index-action--primary' onClick={() => void semanticService.rebuild()}><Play size={13} aria-hidden='true' /> Resume</button>
+							: status.state !== 'loading' ? <button type='button' className='@@semantic-index-action @@semantic-index-action--primary' disabled={!settings.semanticEmbeddingEndpoint.trim() || !settings.semanticEmbeddingModel.trim()} onClick={() => void semanticService.rebuild()}><RefreshCw size={13} aria-hidden='true' /> {status.state === 'empty' ? 'Build index' : status.state === 'error' || status.error ? 'Retry' : 'Rebuild'}</button> : null}
+					<button type='button' className='@@semantic-index-action @@semantic-index-action--danger' disabled={isIndexing || deleting || !canDelete} onClick={() => void deleteIndex()}><Trash2 size={13} aria-hidden='true' /> {deleting ? 'Deleting…' : 'Delete index'}</button>
+				</div>
+			</section>
+		</div>}
+	</>
+}
+
 
 export const OllamaSetupInstructions = ({ sayWeAutoDetect }: { sayWeAutoDetect?: boolean }) => {
 	return <div className='prose-p:my-0 prose-ol:list-decimal prose-p:py-0 prose-ol:my-0 prose-ol:py-0 prose-span:my-0 prose-span:py-0 text-void-fg-3 text-sm list-decimal select-text'>
@@ -1656,6 +1798,8 @@ export const Settings = () => {
 							onChange={(newVal) => voidSettingsService.setGlobalSetting('browserAutomationEnabled', newVal)}
 						/>
 					</SettingsCell>
+
+					<SemanticSearchSettings />
 
 				</SettingsSection>
 			</ErrorBoundary>

@@ -178,6 +178,25 @@
 	appearance: none;
 }
 
+/* Chat History search input: no focus ring/border (native inputs match :focus-visible on mouse click too) */
+.chat-history-search-input,
+.chat-history-search-input:focus,
+.chat-history-search-input:focus-visible {
+	outline: none !important;
+	box-shadow: none !important;
+	border: none !important;
+	-webkit-appearance: none;
+	appearance: none;
+}
+
+/* Mode/Model dropdown search input: no focus ring, but keep its bottom divider border */
+.void-dropdown-search-input,
+.void-dropdown-search-input:focus,
+.void-dropdown-search-input:focus-visible {
+	outline: none !important;
+	box-shadow: none !important;
+}
+
 /* The composer intentionally keeps a compact circular action vocabulary, but
    gives each control a dependable 28px hit target and theme-safe contrast. */
 .void-composer-action {
@@ -219,20 +238,34 @@
 	background-color: var(--void-composer-secondary-hover-bg);
 }
 
+/* Secondary composer affordances (attach image, open browser) — same 28px
+   circular hit target as Send/Stop, but ghost at rest so Send stays the one
+   visually "loud" control in the row. */
+.void-composer-action--ghost {
+	background-color: transparent;
+	color: var(--void-fg-1);
+	opacity: 0.75;
+}
+
+.void-composer-action--ghost:hover:not(:disabled) {
+	background-color: var(--void-toolbar-hover-bg);
+	opacity: 1;
+}
+
 /* A queue is a short-lived handoff, so it sits close to the composer with a
    calm, compact hierarchy instead of reading like another chat message. */
 .void-message-queue {
 	display: flex;
 	flex-direction: column;
-	gap: 4px;
-	margin-top: 2px;
+	margin-top: 4px;
 	padding: 0 8px 6px;
 }
 
-.void-message-queue__header,
-.void-message-queue__item {
+.void-message-queue__card {
 	border: 1px solid var(--void-sidebar-surface-border);
 	background: var(--void-sidebar-pill-bg);
+	border-radius: 8px;
+	overflow: hidden;
 }
 
 .void-message-queue__header {
@@ -241,10 +274,14 @@
 	gap: 6px;
 	min-height: 28px;
 	padding: 4px 8px;
-	border-radius: 8px;
 	color: var(--void-fg-3);
 	font-size: 11px;
 	line-height: 16px;
+}
+
+.void-message-queue__list {
+	max-height: 148px;
+	overflow-y: auto;
 }
 
 .void-message-queue__count {
@@ -286,10 +323,15 @@
 	gap: 8px;
 	min-height: 32px;
 	padding: 5px 8px;
-	border-radius: 8px;
+	border-top: 1px solid var(--void-sidebar-surface-border);
 	color: var(--void-fg-2);
 	font-size: 12px;
 	line-height: 18px;
+	transition: background-color 160ms ease-out;
+}
+
+.void-message-queue__item:hover {
+	background: var(--void-dropdown-hover-bg);
 }
 
 .void-message-queue__position {
@@ -303,8 +345,11 @@
 
 @media (prefers-reduced-motion: reduce) {
 	.void-composer-action,
-	.void-message-queue__action {
+	.void-message-queue__action,
+	.void-message-queue__item,
+	.orbit-card-enter {
 		transition: none;
+		animation: none;
 	}
 }
 
@@ -634,7 +679,13 @@ select:-webkit-autofill:focus {
 	to { opacity: 1; transform: none; }
 }
 .orbit-card-enter {
-	animation: orbit-card-enter 0.18s ease-out;
+	animation: orbit-card-enter 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+	/* Set per-instance via inline style `--orbit-stagger: N` (e.g. rows revealed together in a
+	   tool group) for a light cascading reveal; defaults to 0 (no delay) everywhere else. */
+	animation-delay: calc(var(--orbit-stagger, 0) * 40ms);
+	/* Guarantees each staggered row starts fully transparent instead of flashing at its final
+	   opacity for the delay duration before the animation begins. */
+	animation-fill-mode: backwards;
 }
 
 /* Directional question-slide entrance (AskQuestion multi-question nav). CSS-driven,
@@ -1214,6 +1265,278 @@ select:-webkit-autofill:focus {
 
 .settings-progress-fill--warning {
 	background: color-mix(in srgb, var(--void-warning) 75%, transparent);
+}
+
+.semantic-index-field {
+	display: grid;
+	grid-template-columns: minmax(5.5rem, 0.28fr) minmax(0, 1fr);
+	align-items: center;
+	gap: 0.625rem;
+	color: var(--void-fg-3);
+	font-size: 0.75rem;
+}
+
+.semantic-index-field > span:first-child {
+	min-width: 0;
+}
+
+.semantic-index-optional {
+	color: var(--void-fg-4);
+}
+
+.semantic-index-status {
+	min-width: 0;
+	margin-top: 0.375rem;
+	padding-top: 0.875rem;
+	border-top: 1px solid var(--void-border-4);
+	color: var(--void-fg-2);
+	font-size: 0.75rem;
+}
+
+.semantic-index-status-header,
+.semantic-index-phase,
+.semantic-index-actions,
+.semantic-index-summary {
+	display: flex;
+	align-items: center;
+	gap: 0.625rem;
+}
+
+.semantic-index-status-header,
+.semantic-index-phase {
+	justify-content: space-between;
+}
+
+.semantic-index-status-title {
+	display: flex;
+	min-width: 0;
+	align-items: center;
+	gap: 0.4375rem;
+	color: var(--void-fg-1);
+	font-weight: 500;
+}
+
+.semantic-index-state-icon {
+	display: inline-flex;
+	flex: 0 0 auto;
+	color: var(--void-fg-3);
+}
+
+.semantic-index-status--indexing .semantic-index-state-icon,
+.semantic-index-status--loading .semantic-index-state-icon {
+	color: var(--vscode-progressBar-background);
+}
+
+.semantic-index-status--indexing .semantic-index-state-icon svg,
+.semantic-index-status--loading .semantic-index-state-icon svg {
+	animation: semantic-index-spin 1s linear infinite;
+}
+
+.semantic-index-status--ready .semantic-index-state-icon {
+	color: var(--vscode-testing-iconPassed, var(--vscode-charts-green));
+}
+
+.semantic-index-status--error .semantic-index-state-icon,
+.semantic-index-status--ready:has(.semantic-index-error) .semantic-index-state-icon {
+	color: var(--vscode-errorForeground);
+}
+
+.semantic-index-percent {
+	flex: 0 0 auto;
+	color: var(--void-fg-1);
+	font-variant-numeric: tabular-nums;
+	font-weight: 500;
+}
+
+.semantic-index-progress {
+	position: relative;
+	height: 4px;
+	margin-top: 0.625rem;
+	overflow: hidden;
+	border-radius: 999px;
+	background: color-mix(in srgb, var(--void-fg-1) 10%, transparent);
+}
+
+.semantic-index-progress-fill {
+	height: 100%;
+	border-radius: inherit;
+	background: var(--vscode-progressBar-background);
+	transition: width 180ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.semantic-index-progress-fill--indeterminate {
+	width: 38%;
+	animation: semantic-index-indeterminate 1.2s cubic-bezier(0.65, 0, 0.35, 1) infinite;
+}
+
+.semantic-index-phase {
+	margin-top: 0.5rem;
+	color: var(--void-fg-3);
+	font-variant-numeric: tabular-nums;
+}
+
+.semantic-index-current {
+	min-width: 0;
+	margin-top: 0.625rem;
+	overflow: hidden;
+	color: var(--void-fg-2);
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.semantic-index-recent {
+	display: flex;
+	min-width: 0;
+	margin-top: 0.375rem;
+	flex-direction: column;
+	gap: 0.25rem;
+	color: var(--void-fg-3);
+}
+
+.semantic-index-recent > div {
+	display: flex;
+	min-width: 0;
+	align-items: center;
+	gap: 0.375rem;
+}
+
+.semantic-index-recent > div > span:last-child {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.semantic-index-error {
+	margin-top: 0.75rem;
+	padding: 0.625rem 0.75rem;
+	border: 1px solid color-mix(in srgb, var(--vscode-errorForeground) 45%, transparent);
+	border-radius: 6px;
+	background: color-mix(in srgb, var(--vscode-errorForeground) 8%, transparent);
+	color: var(--vscode-errorForeground);
+	overflow-wrap: anywhere;
+	line-height: 1.45;
+}
+
+.semantic-index-error-guidance {
+	margin-top: 0.25rem;
+	color: var(--void-fg-2);
+}
+
+.semantic-index-summary {
+	margin-top: 0.625rem;
+	flex-wrap: wrap;
+	color: var(--void-fg-3);
+}
+
+.semantic-index-summary > span:not(:last-child)::after {
+	margin-inline-start: 0.625rem;
+	color: var(--void-border-1);
+	content: '·';
+}
+
+.semantic-index-actions {
+	margin-top: 0.875rem;
+	justify-content: flex-end;
+	flex-wrap: wrap;
+}
+
+.semantic-index-action {
+	display: inline-flex;
+	min-height: 1.75rem;
+	align-items: center;
+	justify-content: center;
+	gap: 0.375rem;
+	padding: 0.25rem 0.625rem;
+	border: 1px solid var(--void-border-2);
+	border-radius: 5px;
+	background: transparent;
+	color: var(--void-fg-2);
+	cursor: pointer;
+	transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease;
+}
+
+.semantic-index-action:hover:not(:disabled) {
+	border-color: var(--void-border-1);
+	background: color-mix(in srgb, var(--void-fg-1) 7%, transparent);
+	color: var(--void-fg-1);
+}
+
+.semantic-index-action:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: 2px;
+}
+
+.semantic-index-action:disabled {
+	opacity: 0.45;
+	cursor: not-allowed;
+}
+
+.semantic-index-action--primary {
+	border-color: var(--vscode-button-background);
+	background: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
+}
+
+.semantic-index-action--primary:hover:not(:disabled) {
+	border-color: var(--vscode-button-hoverBackground);
+	background: var(--vscode-button-hoverBackground);
+	color: var(--vscode-button-foreground);
+}
+
+.semantic-index-action--danger:hover:not(:disabled) {
+	border-color: color-mix(in srgb, var(--vscode-errorForeground) 55%, var(--void-border-2));
+	background: color-mix(in srgb, var(--vscode-errorForeground) 8%, transparent);
+	color: var(--vscode-errorForeground);
+}
+
+@keyframes semantic-index-spin {
+	to { transform: rotate(360deg); }
+}
+
+@keyframes semantic-index-indeterminate {
+	from { transform: translateX(-110%); }
+	to { transform: translateX(290%); }
+}
+
+@media (max-width: 520px) {
+	.semantic-index-field {
+		grid-template-columns: 1fr;
+		gap: 0.25rem;
+	}
+
+	.semantic-index-actions {
+		justify-content: stretch;
+	}
+
+	.semantic-index-action {
+		flex: 1 1 auto;
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.semantic-index-progress-fill,
+	.semantic-index-action {
+		transition: none;
+	}
+
+	.semantic-index-progress-fill--indeterminate,
+	.semantic-index-status--indexing .semantic-index-state-icon svg,
+	.semantic-index-status--loading .semantic-index-state-icon svg {
+		animation: none;
+	}
+}
+
+@media (forced-colors: active) {
+	.semantic-index-progress-fill,
+	.semantic-index-progress-fill--indeterminate {
+		background: Highlight;
+	}
+
+	.semantic-index-error,
+	.semantic-index-action {
+		forced-color-adjust: none;
+	}
 }
 
 .settings-stat-grid {

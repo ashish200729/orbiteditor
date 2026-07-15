@@ -54,7 +54,7 @@ export const StreamingMessagePane = React.memo(({
 	const isWaitingForAIResponse = !!isRunning && !hasVisibleStreamingContent && !toolIsGenerating && !isAwaitingUserAction;
 
 	const currStreamingMessageHTML = (reasoningSoFar || displayContentSoFar) ?
-		<div className={shouldAddGapForStreaming ? 'mt-2' : ''}>
+		<div className={`orbit-card-enter${shouldAddGapForStreaming ? ' mt-2' : ''}`}>
 			<ChatBubble
 				key={'curr-streaming-msg'}
 				currCheckpointIdx={currCheckpointIdx}

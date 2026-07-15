@@ -47,6 +47,7 @@ export const titleOfBuiltinToolName = {
 	'Read': { done: 'Read', proposed: 'Read', running: loadingTitleWrapper('Reading') },
 	'Glob': { done: 'Globbed', proposed: 'Glob', running: loadingTitleWrapper('Globbing') },
 	'Grep': { done: 'Grepped', proposed: 'Grep', running: loadingTitleWrapper('Grepping') },
+	'CodebaseSearch': { done: 'Searched codebase', proposed: 'Search codebase', running: loadingTitleWrapper('Searching codebase') },
 	'StrReplace': { done: 'Edited', proposed: 'Edit', running: loadingTitleWrapper('Editing') },
 	'Write': { done: 'Wrote', proposed: 'Write', running: loadingTitleWrapper('Writing') },
 	'Shell': { done: 'Ran', proposed: 'Run', running: loadingTitleWrapper('Running') },

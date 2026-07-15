@@ -3,7 +3,7 @@
  *  Licensed under the Apache License, Version 2.0. See LICENSE.txt for more information.
  *--------------------------------------------------------------------------------------------*/
 
-import { Bot, ListChecks, MessageCircle } from 'lucide-react';
+import { Infinity as InfinityIcon, ListChecks, MessageCircle } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type { ChatMode } from '../../../../../../common/orbitSettingsTypes.js';
 import type { SlashCategoryProvider } from '../types.js';
@@ -22,10 +22,10 @@ const detailOfChatMode: Record<ChatMode, string> = {
 	agent: 'Edits files and uses tools',
 };
 
-const iconOfChatMode: Record<ChatMode, LucideIcon> = {
+export const iconOfChatMode: Record<ChatMode, LucideIcon> = {
 	normal: MessageCircle,
 	plan: ListChecks,
-	agent: Bot,
+	agent: InfinityIcon,
 };
 
 /** Modes category: selecting sets the chat mode (shown by the existing toolbar pill). */

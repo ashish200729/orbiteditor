@@ -4,6 +4,7 @@ import { createDecorator } from '../../../../platform/instantiation/common/insta
 import { RawMCPToolCall } from './mcpServiceTypes.js';
 import { builtinTools } from './prompt/prompts.js';
 import { RawToolParamsObj } from './sendLLMMessageTypes.js';
+import { SemanticSearchResult } from './semanticRetrievalTypes.js';
 
 
 
@@ -55,6 +56,7 @@ export type BuiltinToolCallParams = {
 	'Read': { uri: URI, offset: number, limit: number },
 	'Glob': { globPattern: string, targetDirectory: URI | null },
 	'Grep': { pattern: string, path: URI | null, glob: string | null, outputMode: GrepOutputMode, beforeContext: number, afterContext: number, caseInsensitive: boolean, type: string | null, headLimit: number | null, offset: number, multiline: boolean },
+	'CodebaseSearch': { query: string, path: URI | null, topK: number },
 	'read_lint_errors': { uri: URI },
 	// ---
 	'StrReplace': { path: URI, oldString: string, newString: string, replaceAll: boolean },
@@ -99,6 +101,7 @@ export type BuiltinToolResultType = {
 	| { kind: 'pdf'; textContent: string; totalPages: number },
 	'Glob': { uris: URI[], hasNextPage: boolean, totalMatches: number, mtimeSortTruncated: boolean },
 	'Grep': { output: string, results: GrepFileResult[], totalMatchCount: number, shownMatchCount: number, totalFileCount: number, shownFileCount: number, truncated: boolean, outputMode: GrepOutputMode },
+	'CodebaseSearch': SemanticSearchResult,
 	'read_lint_errors': { lintErrors: LintErrorItem[] | null },
 	// ---
 	'StrReplace': Promise<{ lintErrors: LintErrorItem[] | null }>,
@@ -147,6 +150,7 @@ export const READ_ONLY_BUILTIN_TOOL_NAMES = [
 	'Read',
 	'Glob',
 	'Grep',
+	'CodebaseSearch',
 	'read_lint_errors',
 ] as const satisfies readonly BuiltinToolName[]
 

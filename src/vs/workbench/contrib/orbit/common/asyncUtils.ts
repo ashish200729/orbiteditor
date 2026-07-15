@@ -15,3 +15,29 @@ export function withTimeout<T>(promise: Promise<T>, ms: number, label: string): 
 		);
 	});
 }
+
+/** Maps inputs with bounded concurrency while preserving input order in the returned results. */
+export async function mapWithConcurrency<T, R>(
+	items: readonly T[],
+	maxConcurrency: number,
+	mapper: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+	if (!Number.isInteger(maxConcurrency) || maxConcurrency < 1) {
+		throw new Error('maxConcurrency must be a positive integer');
+	}
+	if (items.length === 0) return [];
+
+	const results = new Array<R>(items.length);
+	let nextIndex = 0;
+	const worker = async () => {
+		while (true) {
+			const index = nextIndex++;
+			if (index >= items.length) return;
+			results[index] = await mapper(items[index]!, index);
+		}
+	};
+
+	const workerCount = Math.min(maxConcurrency, items.length);
+	await Promise.all(Array.from({ length: workerCount }, () => worker()));
+	return results;
+}

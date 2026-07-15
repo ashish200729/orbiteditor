@@ -28,7 +28,6 @@ export async function initialize(injectPath: string): Promise<void> {
 		try {
 			const path = join(injectPackageJSONPath, `../node_modules/${name}/package.json`);
 			let { main } = JSON.parse(String(await promises.readFile(path)));
-
 			if (!main) {
 				main = 'index.js';
 			}

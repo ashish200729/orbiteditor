@@ -522,36 +522,9 @@ export const BlockCodeApplyWrapper = ({
 	language: string;
 	uri: URI | 'current',
 }) => {
-	const accessor = useAccessor()
-	const commandService = accessor.get('ICommandService')
-	const { currStreamStateRef } = useApplyStreamState({ applyBoxId })
-	const currStreamState = currStreamStateRef.current
-
-
-	const name = uri !== 'current' ?
-		<ListableToolItem
-			name={<span className='not-italic'>{getBasename(uri.fsPath)}</span>}
-			isSmall={true}
-			showDot={false}
-			onClick={() => { voidOpenFileFn(uri, accessor) }}
-		/>
-		: <span>{language}</span>
-
-
-	return <div className='border border-void-border-3 rounded overflow-hidden bg-void-bg-3 my-1'>
-		{/* header */}
-		<div className=" select-none flex justify-between items-center py-1 px-2 border-b border-void-border-3 cursor-default">
-			<div className="flex items-center">
-				<StatusIndicatorForApplyButton uri={uri} applyBoxId={applyBoxId} />
-				<span className="text-[13px] font-light text-void-fg-3">
-					{name}
-				</span>
-			</div>
-			<div className={`${canApply ? '' : 'hidden'} flex items-center gap-1`}>
-				<JumpToFileButton uri={uri} />
-				{currStreamState === 'idle-no-changes' && <CopyButton codeStr={codeStr} toolTipName='Copy' />}
-				<ApplyButtonsHTML uri={uri} applyBoxId={applyBoxId} codeStr={codeStr} language={language} />
-			</div>
+	return <div className='group relative border border-void-border-3 rounded-lg overflow-hidden bg-void-bg-3 my-2'>
+		<div className='absolute top-1.5 right-1.5 z-10 opacity-0 group-hover:opacity-100 transition-opacity duration-150'>
+			<CopyButton codeStr={codeStr} toolTipName='Copy' />
 		</div>
 
 		{/* contents */}

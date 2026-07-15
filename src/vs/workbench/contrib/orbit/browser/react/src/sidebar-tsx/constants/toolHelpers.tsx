@@ -222,6 +222,10 @@ export const toolNameToDesc = (toolName: string, _toolParams: BuiltinToolCallPar
 					}
 					return { desc1: pattern ? `"${pattern}"` : '', desc1Info: infoParts.join(' · ') }
 				},
+				'CodebaseSearch': () => {
+					const query = rawParams.query as string | undefined
+					return { desc1: query ? `"${query}"` : '' }
+				},
 			'StrReplace': () => {
 					const pathStr = (rawParams.path ?? rawParams.uri) as string | undefined
 					if (pathStr) {
@@ -372,6 +376,13 @@ export const toolNameToDesc = (toolName: string, _toolParams: BuiltinToolCallPar
 			return {
 				desc1: `"${toolParams.pattern}"`,
 				desc1Info: infoParts.join(' · '),
+			}
+		},
+		'CodebaseSearch': () => {
+			const toolParams = _toolParams as BuiltinToolCallParams['CodebaseSearch']
+			return {
+				desc1: `"${toolParams.query}"`,
+				desc1Info: toolParams.path ? getRelative(toolParams.path, accessor) : 'workspace',
 			}
 		},
 		'StrReplace': () => {

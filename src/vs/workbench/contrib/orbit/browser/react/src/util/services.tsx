@@ -63,6 +63,7 @@ import { INativeHostService } from '../../../../../../../platform/native/common/
 import { IMainProcessService } from '../../../../../../../platform/ipc/common/mainProcessService.js';
 import { IEditCodeService } from '../../../editCodeServiceInterface.js'
 import { IToolsService } from '../../../../common/toolsServiceTypes.js'
+import { ISemanticRetrievalService } from '../../../semanticRetrievalService.js'
 import { IConvertToLLMMessageService } from '../../../convertToLLMMessageService.js'
 import { ITerminalConfigurationService, ITerminalGroup, ITerminalGroupService, ITerminalInstance, ITerminalInstanceService, ITerminalService } from '../../../../../terminal/browser/terminal.js'
 import { ISearchService } from '../../../../../../services/search/common/search.js'
@@ -377,6 +378,7 @@ const getReactAccessor = (accessor: ServicesAccessor) => {
 		INativeHostService: accessor.get(INativeHostService),
 		IMainProcessService: accessor.get(IMainProcessService),
 		IToolsService: accessor.get(IToolsService),
+		ISemanticRetrievalService: accessor.get(ISemanticRetrievalService),
 		IConvertToLLMMessageService: accessor.get(IConvertToLLMMessageService),
 		ITerminalService: accessor.get(ITerminalService),
 		ITerminalGroupService: accessor.get(ITerminalGroupService),

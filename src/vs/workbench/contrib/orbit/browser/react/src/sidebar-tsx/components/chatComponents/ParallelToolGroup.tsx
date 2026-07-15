@@ -19,6 +19,10 @@ type ParallelToolGroupProps = {
 	isRunning: IsRunningType,
 	scrollContainerRef: React.MutableRefObject<HTMLDivElement | null>,
 	scrollActions: ChatScrollActions,
+	// Only true for a group appended after the thread was first opened — gates both this group's
+	// own entrance (applied by the parent wrapper) and the stagger on its child rows below, so
+	// reopening a thread with existing history never replays the reveal animation.
+	animateEntrance?: boolean,
 }
 
 export const ParallelToolGroup = React.memo(({
@@ -28,6 +32,7 @@ export const ParallelToolGroup = React.memo(({
 	currCheckpointIdx,
 	isRunning,
 	scrollActions,
+	animateEntrance,
 }: ParallelToolGroupProps) => {
 	const [isExpanded, setIsExpanded] = useState(true);
 
@@ -111,11 +116,15 @@ export const ParallelToolGroup = React.memo(({
 
 	const toolList = useMemo(() => (
 		<div className="flex flex-col gap-0 min-w-0 w-full">
-			{messages.map(({ index, message }) => {
+			{messages.map(({ index, message }, i) => {
 				const messageKey = `tool-${index}-${message.role}-${(message as any).name || 'unknown'}`;
 
 				return (
-					<div key={messageKey} className="min-w-0 w-full">
+					<div
+						key={messageKey}
+						className={`min-w-0 w-full${animateEntrance ? ' orbit-card-enter' : ''}`}
+						style={animateEntrance ? { '--orbit-stagger': Math.min(i, 5) } as React.CSSProperties : undefined}
+					>
 						<ChatBubble
 							currCheckpointIdx={currCheckpointIdx}
 							chatMessage={previousMessages[index]}
@@ -130,7 +139,7 @@ export const ParallelToolGroup = React.memo(({
 				);
 			})}
 		</div>
-	), [messages, previousMessages, currCheckpointIdx, isRunning, threadId, scrollActions]);
+	), [messages, previousMessages, currCheckpointIdx, isRunning, threadId, scrollActions, animateEntrance]);
 
 	return (
 		<div className="flex flex-col my-0.5 min-w-0 w-full">

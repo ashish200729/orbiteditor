@@ -3,7 +3,7 @@
  *  Licensed under the Apache License, Version 2.0. See LICENSE.txt for more information.
  *--------------------------------------------------------------------------------------------*/
 
-import React, { useMemo } from 'react';
+import React, { useMemo, useRef } from 'react';
 import { ChatMessage } from '../../../../../../common/chatThreadServiceTypes.js';
 import { isABuiltinToolName } from '../../../../../../common/prompt/prompts.js';
 import { useTodoContext } from '../../contexts/TodoContext.js';
@@ -39,6 +39,15 @@ export const SidebarChatMessages = ({
 	const lastUserMessageIndex = userMessageIndices.length > 0
 		? userMessageIndices[userMessageIndices.length - 1]
 		: null;
+
+	// Only entrance-animate messages appended after a thread is first opened — reopening/switching
+	// to a thread with existing history should render it instantly, not replay every past message.
+	const newMessageBaselineRef = useRef(previousMessages.length);
+	const baselineThreadIdRef = useRef(threadId);
+	if (baselineThreadIdRef.current !== threadId) {
+		baselineThreadIdRef.current = threadId;
+		newMessageBaselineRef.current = previousMessages.length;
+	}
 
 	// Heavy pass: build the bubble content for every message. Deliberately excludes the sticky
 	// props from its deps — sticky state changes on every scroll tick, and rebuilding each bubble
@@ -123,6 +132,7 @@ export const SidebarChatMessages = ({
 				return {
 					key: `msg-${i}-${group.message.role}`,
 					index: i as number | undefined,
+					firstIndex: i,
 					role: group.message.role as string | undefined,
 					shouldAddGap,
 					isUserMessage,
@@ -148,6 +158,7 @@ export const SidebarChatMessages = ({
 			return {
 				key: groupKey,
 				index: undefined as number | undefined,
+				firstIndex: group.messages[0].index,
 				role: undefined as string | undefined,
 				shouldAddGap: false,
 				isUserMessage: false,
@@ -160,6 +171,7 @@ export const SidebarChatMessages = ({
 						isRunning={isRunning}
 						scrollContainerRef={scrollContainerRef}
 						scrollActions={scrollActions}
+						animateEntrance={group.messages[0].index >= newMessageBaselineRef.current}
 					/>
 				),
 			};
@@ -178,12 +190,13 @@ export const SidebarChatMessages = ({
 	// Cheap pass: only the wrapper divs are recreated when sticky state changes on scroll.
 	return <>{messageItems.map(item => {
 		const isThisStickyMessage = item.isUserMessage && item.index !== undefined && stickyMessageIndex === item.index;
+		const isNewSinceOpen = item.firstIndex >= newMessageBaselineRef.current;
 		return (
 			<div
 				key={item.key}
 				data-message-index={item.index}
 				data-role={item.role}
-				className={`${item.shouldAddGap ? 'mt-2' : ''}${isThisStickyMessage ? ' sticky' : ''}`}
+				className={`${item.shouldAddGap ? 'mt-2' : ''}${isThisStickyMessage ? ' sticky' : ''}${isNewSinceOpen ? ' orbit-card-enter' : ''}`}
 				style={isThisStickyMessage ? {
 					top: `${stickyOffset}px`,
 					backgroundColor: 'var(--vscode-editor-background)',

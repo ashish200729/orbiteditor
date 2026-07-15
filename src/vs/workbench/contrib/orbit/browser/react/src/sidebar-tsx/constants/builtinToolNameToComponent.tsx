@@ -249,6 +249,42 @@ export const builtinToolNameToComponent: { [T in BuiltinToolName]: { resultWrapp
 		}
 	},
 
+	'CodebaseSearch': {
+		resultWrapper: ({ toolMessage, compact }) => {
+			const accessor = useAccessor()
+			if (toolMessage.type === 'tool_request') return null
+			const { desc1, desc1Info } = toolNameToDesc(toolMessage.name, toolMessage.params, accessor, toolMessage.rawParams)
+			const statusIconMeta = getToolStatusIconMeta(toolMessage)
+			const componentParams: ToolHeaderParams = {
+				title: getTitle(toolMessage),
+				desc1,
+				desc1Info,
+				isError: toolMessage.type === 'tool_error',
+				isRejected: toolMessage.type === 'rejected',
+				isRunning: toolMessage.type === 'running_now',
+				icon: statusIconMeta?.icon,
+				iconTooltip: statusIconMeta?.tooltip,
+			}
+			if (toolMessage.type === 'success') {
+				componentParams.numResults = toolMessage.result.matches.length
+				componentParams.info = `${toolMessage.result.indexedFiles} indexed files`
+				if (toolMessage.result.matches.length) {
+					componentParams.desc1 = <ToolHoverPreview
+						label={desc1}
+						items={toolMessage.result.matches.map(match => ({
+							name: `${getBasename(match.uri.fsPath)}:${match.startLine}${match.symbolName ? ` · ${match.symbolName}` : ''}`,
+							onClick: () => { voidOpenFileFn(match.uri, accessor, [match.startLine, match.endLine]) },
+						}))}
+						totalCount={toolMessage.result.matches.length}
+					/>
+				}
+			} else if (toolMessage.type === 'tool_error') {
+				componentParams.desc1 = String(toolMessage.result)
+			}
+			return <ToolHeaderWrapper {...componentParams} compact={compact} />
+		},
+	},
+
 	'read_lint_errors': {
 		resultWrapper: ({ toolMessage, compact }) => {
 			const accessor = useAccessor()

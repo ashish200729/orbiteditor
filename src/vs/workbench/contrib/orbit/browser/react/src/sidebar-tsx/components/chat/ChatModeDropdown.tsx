@@ -7,6 +7,7 @@ import React, { useCallback, useMemo } from 'react';
 import { ChatMode } from '../../../../../../common/orbitSettingsTypes.js';
 import { useAccessor, useSettingsState } from '../../../util/services.js';
 import { VoidCustomDropdownBox } from '../../../util/inputs.js';
+import { iconOfChatMode } from '../../../util/slashMenu/providers/modesProvider.js';
 
 const nameOfChatMode = {
 	'normal': 'Chat',
@@ -49,6 +50,8 @@ export const ChatModeDropdown = ({ className }: { className: string }) => {
 			getOptionDropdownDetail={(val) => detailOfChatMode[val]}
 
 			getOptionsEqual={(a, b) => a === b}
+			getOptionIcon={(val) => iconOfChatMode[val]}
+			showCheckmarkOnSelected
 			matchInputWidth={false}
 			offsetPx={-3}
 			opacity={60}

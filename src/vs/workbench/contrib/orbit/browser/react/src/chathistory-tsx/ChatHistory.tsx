@@ -8,8 +8,9 @@ import { useIsDark, useAccessor, useChatThreadsState, useRunningThreadIds, useIs
 import '../styles.css';
 import ErrorBoundary from '../sidebar-tsx/ErrorBoundary.js';
 import { IconShell1 } from '../markdown/ApplyBlockHoverButtons.js';
+import { IconLoadingSpinner } from '../sidebar-tsx/components/icons/IconLoadingSpinner.js';
 import { getConnectedWindow } from '../util/connectedWindow.js';
-import { Check, CheckCircle2, CircleDashed, Copy, LoaderCircle, MessageCircleQuestion, MessageSquarePlus, Trash2, X, MoreHorizontal, LayoutGrid } from 'lucide-react';
+import { Check, CheckCircle2, CircleDashed, Copy, MessageCircleQuestion, MessageSquarePlus, Trash2, X, MoreHorizontal, LayoutGrid, Search } from 'lucide-react';
 import { IsRunningType, ThreadType } from '../../../chatThreadService.js';
 
 export const ChatHistory = ({ className }: { className?: string }) => {
@@ -62,7 +63,6 @@ const isDraftThread = (t: ThreadType): boolean => {
 
 const ChatHistoryContent = () => {
 	const [visibleCount, setVisibleCount] = useState(5);
-	const [hoveredThreadId, setHoveredThreadId] = useState<string | null>(null);
 	const [searchQuery, setSearchQuery] = useState('');
 	const [isSearchFocused, setIsSearchFocused] = useState(false);
 
@@ -179,7 +179,7 @@ const ChatHistoryContent = () => {
 					isSearching ? (
 						// No search results
 						<div className="flex flex-col items-center justify-center h-full text-void-fg-0 px-4 text-center">
-							<p className="text-xs">No agents match "{searchQuery}"</p>
+							<p className="text-[13px]">No agents match "{searchQuery}"</p>
 							<button
 								onClick={() => setSearchQuery('')}
 								className="mt-2 text-[10px] text-void-fg-0 hover:opacity-100 underline opacity-80"
@@ -190,7 +190,7 @@ const ChatHistoryContent = () => {
 					) : (
 						// Empty state - no threads at all
 						<div className="flex flex-col items-center justify-center h-full text-void-fg-0 px-4 text-center">
-							<p className="text-xs mb-1">No agents found</p>
+							<p className="text-[13px] mb-1">No agents found</p>
 							<button
 								onClick={handleNewThread}
 								className="text-[10px] opacity-60 hover:opacity-100 hover:underline"
@@ -208,9 +208,9 @@ const ChatHistoryContent = () => {
 								<div key={bucket} className="flex flex-col">
 									<div
 										className={`
-											text-sm font-normal text-void-fg-0 opacity-70
+											text-[11px] font-medium text-void-fg-3 opacity-70
 											px-3 mx-1 pb-1 select-none
-											${groupIdx === 0 ? 'pt-2' : 'pt-3'}
+											${groupIdx === 0 ? 'pt-2' : 'pt-4'}
 										`}
 									>
 										{bucket}
@@ -219,8 +219,6 @@ const ChatHistoryContent = () => {
 										<PastThreadElement
 											key={thread.id}
 											pastThread={thread}
-											isHovered={hoveredThreadId === thread.id}
-											setHoveredThreadId={setHoveredThreadId}
 											isRunning={runningThreadIds[thread.id]}
 											isActive={currentThreadId === thread.id}
 										/>
@@ -232,10 +230,10 @@ const ChatHistoryContent = () => {
 						{/* More button */}
 						{hasMoreThreads && (
 							<div
-								className="flex items-center gap-2 py-1 px-3 mx-1 rounded-sm text-xs cursor-pointer text-void-fg-0 hover:bg-zinc-700/5 dark:hover:bg-zinc-300/5 transition-all opacity-80 hover:opacity-100"
+								className="flex items-center gap-2 py-1.5 px-2 mx-1 rounded-md text-[13px] cursor-pointer text-void-fg-0 hover:bg-zinc-700/5 dark:hover:bg-zinc-300/5 transition-all opacity-80 hover:opacity-100"
 								onClick={() => setVisibleCount((prev) => prev + 5)}
 							>
-								<MoreHorizontal size={12} className="flex-shrink-0 opacity-60" />
+								<MoreHorizontal size={14} className="flex-shrink-0 opacity-60" />
 								<span className="truncate">More</span>
 							</div>
 						)}
@@ -289,6 +287,7 @@ const ChatHistoryHeader = ({
 	const accessor = useAccessor();
 	const commandService = accessor.get('ICommandService');
 	const agentWindowService = accessor.get('IAgentWindowService');
+	const keybindingService = accessor.get('IKeybindingService');
 	const rootRef = useRef<HTMLDivElement>(null);
 	// Hide the Customize affordance in the pop-out Agent window (main IDE only),
 	// mirroring SidebarChat's browser-button detection.
@@ -298,23 +297,23 @@ const ChatHistoryHeader = ({
 		setInAgentWindow(!!node && getConnectedWindow(node) !== window && agentWindowService.isOpen());
 	}, [agentWindowService]);
 
+	const newThreadKeybindLabel = keybindingService.lookupKeybinding('void.cmdShiftL')?.getLabel();
+
 	const handleCustomize = () => {
 		try { commandService.executeCommand('workbench.action.openVoidCustomize'); }
 		catch (error) { console.error('Error opening Customize:', error); }
 	};
 
 	return (
-		<div ref={rootRef} className="flex flex-col gap-2 mb-1 flex-shrink-0 p-3 pb-1">
+		<div ref={rootRef} className="flex flex-col gap-0.5 mb-1 flex-shrink-0 p-3 pb-2">
 			{/* Search Bar */}
 			<div
 				className={`
-					flex items-center gap-2 px-2 py-1.5 rounded
+					flex items-center gap-2 px-2 py-1.5 mb-1.5 rounded-md
 					bg-zinc-700/5 dark:bg-zinc-300/5
-					border border-transparent
-					${isSearchFocused ? 'border-void-stroke-1' : ''}
-					transition-all
 				`}
 			>
+				<Search size={13} className="flex-shrink-0 text-void-fg-3 opacity-60" />
 				<input
 					type="text"
 					placeholder="Search Agents..."
@@ -322,39 +321,43 @@ const ChatHistoryHeader = ({
 					onChange={(e) => setSearchQuery(e.target.value)}
 					onFocus={() => setIsSearchFocused(true)}
 					onBlur={() => setIsSearchFocused(false)}
-					className="flex-1 bg-transparent outline-none text-xs text-void-fg-0 placeholder:text-void-fg-3 placeholder:opacity-50"
+					className="@@chat-history-search-input flex-1 bg-transparent outline-none text-[13px] text-void-fg-0 placeholder:text-void-fg-3 placeholder:opacity-50"
 				/>
 			</div>
 
-			{/* New Agent Button */}
+			{/* New Agent Row */}
 			<button
 				onClick={onNewThread}
 				className={`
-					w-full py-1.5 rounded
-					border border-zinc-700/10 dark:border-zinc-300/10
+					w-full py-1.5 px-2 rounded-md
 					hover:bg-zinc-700/5 dark:hover:bg-zinc-300/5
-					text-xs text-void-fg-0 transition-colors
-					flex items-center justify-center gap-2 opacity-80 hover:opacity-100
+					text-[13px] text-void-fg-0 transition-colors
+					flex items-center gap-2 opacity-85 hover:opacity-100
 				`}
 			>
-				New Agent
+				<MessageSquarePlus size={14} className="flex-shrink-0" />
+				<span className="flex-1 text-left">New Agent</span>
+				{newThreadKeybindLabel && (
+					<span className="px-1 rounded bg-[var(--vscode-keybindingLabel-background)] text-[var(--vscode-keybindingLabel-foreground)] border border-[var(--vscode-keybindingLabel-border)] text-[10px] opacity-80">
+						{newThreadKeybindLabel}
+					</span>
+				)}
 			</button>
 
-			{/* Customize Button (main window only) */}
+			{/* Customize Row (main window only) */}
 			{!inAgentWindow && (
 				<button
 					onClick={handleCustomize}
 					className={`
 						chat-history-customize
-						w-full py-1.5 rounded
-						border border-zinc-700/10 dark:border-zinc-300/10
+						w-full py-1.5 px-2 rounded-md
 						hover:bg-zinc-700/5 dark:hover:bg-zinc-300/5
-						text-xs text-void-fg-0 transition-colors
-						flex items-center justify-center gap-2 opacity-80 hover:opacity-100
+						text-[13px] text-void-fg-0 transition-colors
+						flex items-center gap-2 opacity-85 hover:opacity-100
 					`}
 				>
-					<LayoutGrid size={13} />
-					Customize
+					<LayoutGrid size={14} className="flex-shrink-0" />
+					<span className="flex-1 text-left">Customize</span>
 				</button>
 			)}
 		</div>
@@ -446,14 +449,10 @@ const TrashButton = ({ threadId }: { threadId: string }) => {
 
 const PastThreadElement = memo(({
 	pastThread,
-	isHovered,
-	setHoveredThreadId,
 	isRunning,
 	isActive,
 }: {
 	pastThread: ThreadType;
-	isHovered: boolean;
-	setHoveredThreadId: (id: string | null) => void;
 	isRunning: IsRunningType | undefined;
 	isActive?: boolean;
 }) => {
@@ -481,26 +480,24 @@ const PastThreadElement = memo(({
 		<div
 			className={`
 				group relative flex items-center justify-between
-				py-1 px-3 mx-1 rounded-sm text-xs cursor-pointer transition-all
+				py-1.5 px-2 mx-1 rounded-md text-[13px] cursor-pointer transition-all
 				${isActive
 					? 'bg-void-bg-3 text-void-fg-0'
 					: 'text-void-fg-0 hover:bg-zinc-700/5 dark:hover:bg-zinc-300/5'
 				}
 			`}
 			onClick={handleClick}
-			onMouseEnter={() => setHoveredThreadId(pastThread.id)}
-			onMouseLeave={() => setHoveredThreadId(null)}
 		>
 			<div className="flex items-center gap-2 min-w-0 overflow-hidden flex-1">
 				{/* Status indicator: running spinner, awaiting user, draft, or completed check */}
 				{isRunning === 'LLM' || isRunning === 'tool' || isRunning === 'idle' ? (
-					<LoaderCircle className="animate-spin text-void-fg-0 opacity-70 flex-shrink-0" size={12} />
+					<IconLoadingSpinner className="text-void-fg-0 opacity-70 flex-shrink-0" size={14} />
 				) : isRunning === 'awaiting_user' ? (
-					<MessageCircleQuestion className="text-void-fg-0 opacity-70 flex-shrink-0" size={12} />
+					<MessageCircleQuestion className="text-void-fg-0 opacity-70 flex-shrink-0" size={14} />
 				) : isDraftThread(pastThread) ? (
-					<CircleDashed className="text-void-fg-0 opacity-70 flex-shrink-0" size={12} />
+					<CircleDashed className="text-void-fg-0 opacity-70 flex-shrink-0" size={14} />
 				) : (
-					<CheckCircle2 className="text-void-fg-0 opacity-80 flex-shrink-0" size={12} />
+					<CheckCircle2 className="text-void-fg-0 opacity-80 flex-shrink-0" size={14} />
 				)}
 
 				{/* Thread title */}
@@ -513,13 +510,9 @@ const PastThreadElement = memo(({
 			</div>
 
 			{/* Action buttons on hover (duplicate + delete) */}
-			<div className="flex items-center pl-2 flex-shrink-0 h-4" data-action-button>
-				{isHovered && (
-					<div className="flex items-center gap-1">
-						<DuplicateButton threadId={pastThread.id} />
-						<TrashButton threadId={pastThread.id} />
-					</div>
-				)}
+			<div className="flex items-center gap-1 pl-2 flex-shrink-0 h-4 opacity-0 group-hover:opacity-100 transition-opacity duration-150" data-action-button>
+				<DuplicateButton threadId={pastThread.id} />
+				<TrashButton threadId={pastThread.id} />
 			</div>
 		</div>
 	);

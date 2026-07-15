@@ -10,11 +10,7 @@ import { DEFAULT_BUTTON_SIZE } from './constants.js';
 export const ButtonOpenBrowser = ({ className, onClick, ...props }: ButtonHTMLAttributes<HTMLButtonElement>) => {
 	return <button
 		type='button'
-		className={`w-6 h-6 flex-shrink-0 cursor-pointer flex items-center justify-center
-		 text-void-fg-1 opacity-75 hover:brightness-90
-			transition-all duration-200
-			${className}
-		`}
+		className={`void-composer-action void-composer-action--ghost flex-shrink-0 cursor-pointer ${className ?? ''}`}
 		onClick={onClick}
 		{...props}
 		data-tooltip-id='void-tooltip'

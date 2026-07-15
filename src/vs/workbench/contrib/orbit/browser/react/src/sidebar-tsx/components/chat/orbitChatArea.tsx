@@ -153,7 +153,7 @@ export const VoidChatArea: React.FC<VoidChatAreaProps> = ({
 						)}
 					<ModelDropdown
 						featureName={featureName}
-						className="w-[140px] sm:w-[180px] min-w-[100px] text-sm leading-5 px-2 shrink grow"
+						className="w-[140px] sm:w-[180px] min-w-[100px] text-xs leading-5 px-2 shrink grow"
 					/>
 					</div>
 				)}

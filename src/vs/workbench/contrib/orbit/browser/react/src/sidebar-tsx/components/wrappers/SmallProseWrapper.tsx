@@ -95,7 +95,7 @@ prose-pre:my-2
 prose-pre:bg-void-bg-2-alt/50
 prose-pre:border
 prose-pre:border-void-border-3/20
-prose-pre:rounded
+prose-pre:rounded-lg
 
 prose-table:text-[12px]
 prose-table:my-2

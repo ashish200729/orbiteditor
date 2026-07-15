@@ -48,9 +48,11 @@ import { ChatMessagesScrollArea } from './components/chat/ChatMessagesScrollArea
 import {
 	VOID_MESSAGE_QUEUE,
 	VOID_MESSAGE_QUEUE_ACTION,
+	VOID_MESSAGE_QUEUE_CARD,
 	VOID_MESSAGE_QUEUE_COUNT,
 	VOID_MESSAGE_QUEUE_HEADER,
 	VOID_MESSAGE_QUEUE_ITEM,
+	VOID_MESSAGE_QUEUE_LIST,
 	VOID_MESSAGE_QUEUE_POSITION,
 } from './messageQueueCssClasses.js';
 
@@ -549,42 +551,49 @@ className={`min-h-[40px] px-0.5 py-0.5 resize-none placeholder:text-void-fg-4`}
 
 
 	const queuedMessagesHTML = queuedMessages.length === 0 ? null : <section className={VOID_MESSAGE_QUEUE} aria-label='Queued messages'>
-		<div className={VOID_MESSAGE_QUEUE_HEADER}>
-			{isQueuePaused
-				? <span className='text-void-warning shrink-0 select-none' role='status' aria-live='polite'>Queue paused — last run failed</span>
-				: <span className='shrink-0 select-none font-medium text-void-fg-2'>Up next</span>}
-			<span className={VOID_MESSAGE_QUEUE_COUNT} aria-label={`${queuedMessages.length} queued message${queuedMessages.length === 1 ? '' : 's'}`}>{queuedMessages.length}</span>
-			<div className='flex-1 min-w-2' />
-			{isQueuePaused && <button
-				type='button'
-				className={`${VOID_MESSAGE_QUEUE_ACTION} shrink-0`}
-				onClick={() => chatThreadsService.resumeQueuedUserMessages(threadId)}
-			>Resume</button>}
-			<button
-				type='button'
-				className={`${VOID_MESSAGE_QUEUE_ACTION} shrink-0`}
-				onClick={() => chatThreadsService.clearQueuedUserMessages(threadId)}
-			>Clear all</button>
-		</div>
-		<div role='list' className='flex flex-col gap-1'>
-			{queuedMessages.map((q, i) => {
-				const attachmentCount = (q._chatSelections?.length ?? 0) + (q._images?.length ?? 0)
-				return (
-					<div key={i} role='listitem' className={VOID_MESSAGE_QUEUE_ITEM}>
-						<span className={`${VOID_MESSAGE_QUEUE_POSITION} select-none`} aria-hidden='true'>{i + 1}</span>
-						<span className='truncate flex-1 min-w-0'>{q.userMessage}</span>
-						{attachmentCount > 0 && <span className='shrink-0 text-void-fg-4 text-[11px] select-none' title={`${attachmentCount} attachment${attachmentCount === 1 ? '' : 's'}`}>{attachmentCount} file{attachmentCount === 1 ? '' : 's'}</span>}
-						<button
-							type='button'
-							className={`${VOID_MESSAGE_QUEUE_ACTION} shrink-0`}
-							onClick={() => chatThreadsService.removeQueuedUserMessage(threadId, i)}
-							aria-label='Remove queued message'
-						>
-							<IconX size={12} className='stroke-[2]' />
-						</button>
-					</div>
-				)
-			})}
+		<div className={VOID_MESSAGE_QUEUE_CARD}>
+			<div className={VOID_MESSAGE_QUEUE_HEADER}>
+				{isQueuePaused
+					? <span className='text-void-warning shrink-0 select-none' role='status' aria-live='polite'>Queue paused — last run failed</span>
+					: <span className='shrink-0 select-none font-medium text-void-fg-2'>Up next</span>}
+				<span className={VOID_MESSAGE_QUEUE_COUNT} aria-label={`${queuedMessages.length} queued message${queuedMessages.length === 1 ? '' : 's'}`}>{queuedMessages.length}</span>
+				<div className='flex-1 min-w-2' />
+				{isQueuePaused && <button
+					type='button'
+					className={`${VOID_MESSAGE_QUEUE_ACTION} shrink-0`}
+					onClick={() => chatThreadsService.resumeQueuedUserMessages(threadId)}
+				>Resume</button>}
+				<button
+					type='button'
+					className={`${VOID_MESSAGE_QUEUE_ACTION} shrink-0`}
+					onClick={() => chatThreadsService.clearQueuedUserMessages(threadId)}
+				>Clear all</button>
+			</div>
+			<div role='list' className={VOID_MESSAGE_QUEUE_LIST}>
+				{queuedMessages.map((q, i) => {
+					const attachmentCount = (q._chatSelections?.length ?? 0) + (q._images?.length ?? 0)
+					return (
+						<div key={i} role='listitem' className={VOID_MESSAGE_QUEUE_ITEM}>
+							<span className={`${VOID_MESSAGE_QUEUE_POSITION} select-none`} aria-hidden='true'>{i + 1}</span>
+							<span
+								className='truncate flex-1 min-w-0'
+								data-tooltip-id='void-tooltip'
+								data-tooltip-content={q.userMessage}
+								data-tooltip-place='top'
+							>{q.userMessage}</span>
+							{attachmentCount > 0 && <span className='shrink-0 text-void-fg-4 text-[11px] select-none' title={`${attachmentCount} attachment${attachmentCount === 1 ? '' : 's'}`}>{attachmentCount} file{attachmentCount === 1 ? '' : 's'}</span>}
+							<button
+								type='button'
+								className={`${VOID_MESSAGE_QUEUE_ACTION} shrink-0 opacity-60 hover:opacity-100 transition-opacity`}
+								onClick={() => chatThreadsService.removeQueuedUserMessage(threadId, i)}
+								aria-label='Remove queued message'
+							>
+								<IconX size={12} className='stroke-[2]' />
+							</button>
+						</div>
+					)
+				})}
+			</div>
 		</div>
 	</section>
 

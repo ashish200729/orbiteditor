@@ -26,7 +26,7 @@ suite('SubAgentToolPolicy', () => {
 	});
 
 	const removedDirectoryTools = ['ls_dir', 'get_dir_tree'] as const;
-	const readOnlyDiscoveryTools = ['Glob', 'Grep'] as const;
+	const readOnlyDiscoveryTools = ['Glob', 'Grep', 'CodebaseSearch'] as const;
 
 	for (const chatMode of ['agent', 'normal', 'plan'] as const) {
 		test(`does not expose removed directory listing tools in ${chatMode} mode`, () => {
@@ -41,12 +41,13 @@ suite('SubAgentToolPolicy', () => {
 		});
 	}
 
-	test('exposes Glob and Grep as LLM-visible read-only tools', () => {
+	test('exposes lexical and semantic search as LLM-visible read-only tools', () => {
 		const tools = availableTools('agent', undefined) ?? [];
 		const toolNames = tools.map(tool => tool.name);
 
 		assert.ok(toolNames.includes('Grep'));
 		assert.ok(toolNames.includes('Glob'));
+		assert.ok(toolNames.includes('CodebaseSearch'));
 	});
 
 	test('Glob and Grep are reachable through allowed tool policy', () => {
@@ -55,6 +56,13 @@ suite('SubAgentToolPolicy', () => {
 
 		assert.ok(toolNames.includes('Glob'));
 		assert.ok(toolNames.includes('Grep'));
+	});
+
+	test('CodebaseSearch has a bounded natural-language query schema', () => {
+		const tool = (availableTools('agent', undefined) ?? []).find(candidate => candidate.name === 'CodebaseSearch');
+		assert.ok(tool);
+		assert.ok(tool!.inputSchema?.properties?.query);
+		assert.deepStrictEqual(tool!.inputSchema?.required, ['query']);
 	});
 
 	test('filters MCP tools to read-only annotations for read-only sub-agents', () => {

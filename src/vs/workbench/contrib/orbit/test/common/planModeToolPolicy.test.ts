@@ -24,6 +24,7 @@ suite('PlanModeToolPolicy', () => {
 		assert.ok(names.includes('task'));
 		assert.ok(names.includes('create_plan'));
 		assert.ok(names.includes('read_plan'));
+		assert.ok(names.includes('CodebaseSearch'));
 		// File-editing tools are NOT available — the agent must use create_plan to
 		// author a plan, never edit code directly in plan mode.
 		assert.ok(!names.includes('StrReplace'), 'StrReplace must NOT be available in plan mode (forces create_plan)');

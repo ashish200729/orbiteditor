@@ -21,6 +21,8 @@ import { IConvertToLLMMessageService } from './convertToLLMMessageService.js';
 import { IVoidNativeNotificationService } from './nativeNotificationService.js';
 import { withTimeout } from '../common/asyncUtils.js';
 import { CancellationTokenSource } from '../../../../base/common/cancellation.js';
+import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
+import { getPathAccessApprovalReason } from '../common/agentToolSecurity.js';
 
 export interface ISubAgentService {
 	readonly _serviceBrand: undefined;
@@ -115,6 +117,7 @@ export class SubAgentService extends Disposable implements ISubAgentService {
 		@IMCPService private readonly _mcpService: IMCPService,
 		@IConvertToLLMMessageService private readonly _convertService: IConvertToLLMMessageService,
 		@IVoidNativeNotificationService private readonly _notificationService: IVoidNativeNotificationService,
+		@IWorkspaceContextService private readonly _workspaceContextService: IWorkspaceContextService,
 	) {
 		super();
 	}
@@ -441,6 +444,28 @@ export class SubAgentService extends Disposable implements ISubAgentService {
 					if (builtinName) {
 						const toolsService = this._getToolsService();
 						const params = toolsService.validateParams[builtinName](toolCall.rawParams as any);
+						const pathReason = getPathAccessApprovalReason(
+							builtinName,
+							params,
+							uri => this._workspaceContextService.isInsideWorkspace(uri),
+						);
+						if (pathReason) {
+							resultStr = `Tool '${toolName}' requires user approval for ${pathReason} and cannot run inside a sub-agent.`;
+							this._onProgress.fire({ toolId, activity: `Blocked: ${toolName}` });
+							appendChatMessage({ role: 'tool', type: 'tool_error', name: builtinName, params: params as any, result: resultStr, content: resultStr, id: callId, rawParams: toolCall.rawParams, mcpServerName: undefined });
+							continue;
+						}
+
+						const approvalType = approvalTypeOfBuiltinToolName[builtinName];
+						const forceApproval = builtinName === 'Shell'
+							&& (params as any).requestSmartModeApproval === true;
+						if (approvalType && (!this._settingsService.state.globalSettings.autoApprove[approvalType] || forceApproval)) {
+							resultStr = `Tool '${toolName}' requires ${approvalType} approval and cannot run inside a sub-agent. Enable auto-approval for ${approvalType} or run the operation in the parent agent.`;
+							this._onProgress.fire({ toolId, activity: `Blocked: ${toolName}` });
+							appendChatMessage({ role: 'tool', type: 'tool_error', name: builtinName, params: params as any, result: resultStr, content: resultStr, id: callId, rawParams: toolCall.rawParams, mcpServerName: undefined });
+							continue;
+						}
+
 						const { result: toolResult, interruptTool } = await toolsService.callTool[builtinName](params as any);
 						this._setCancelable(activeRun, abortRef, interruptTool ?? null);
 						const resolved = await toolResult;
@@ -469,6 +494,7 @@ export class SubAgentService extends Disposable implements ISubAgentService {
 							const mcpTimeoutMs = this._settingsService.state.globalSettings.mcpToolTimeoutMs ?? DEFAULT_MCP_TOOL_TIMEOUT_MS;
 							const mcpCts = new CancellationTokenSource();
 							const mcpTimer = setTimeout(() => mcpCts.cancel(), mcpTimeoutMs);
+							this._setCancelable(activeRun, abortRef, () => mcpCts.cancel());
 							let mcpResult;
 							try {
 								mcpResult = await withTimeout(
@@ -479,6 +505,7 @@ export class SubAgentService extends Disposable implements ISubAgentService {
 							} finally {
 								clearTimeout(mcpTimer);
 								mcpCts.dispose(true);
+								this._setCancelable(activeRun, abortRef, null);
 							}
 							this._throwIfCancelled(activeRun);
 							resultStr = this._mcpService.stringifyResult(mcpResult.result as RawMCPToolCall);

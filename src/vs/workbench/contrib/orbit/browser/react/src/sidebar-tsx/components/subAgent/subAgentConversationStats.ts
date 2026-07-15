@@ -27,7 +27,7 @@ export const computeSubAgentExplorationStats = (messages: readonly ChatMessage[]
 		if (msg.name === 'task') continue;
 		toolCount++;
 		if (msg.name === 'Read') fileCount++;
-		if (msg.name === 'Grep' || msg.name === 'Glob') searchCount++;
+		if (msg.name === 'Grep' || msg.name === 'Glob' || msg.name === 'CodebaseSearch') searchCount++;
 	}
 
 	return { fileCount, searchCount, toolCount };

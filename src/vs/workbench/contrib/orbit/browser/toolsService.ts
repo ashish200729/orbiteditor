@@ -77,6 +77,7 @@ import {
 	validateGrepToolParams,
 } from '../common/grepToolHelpers.js'
 import { validateTodoWriteItems } from '../common/todoToolHelpers.js'
+import { ISemanticRetrievalService } from './semanticRetrievalService.js'
 import {
 	ASK_QUESTION_MAX_TITLE_LENGTH,
 	formatAnswersForLLM,
@@ -278,6 +279,7 @@ export class ToolsService implements IToolsService {
 		@IMetricsService private readonly _metricsService: IMetricsService,
 		@ISubAgentService private readonly _subAgentService: ISubAgentService,
 		@ILogService private readonly logService: ILogService,
+		@ISemanticRetrievalService private readonly semanticRetrievalService: ISemanticRetrievalService,
 	) {
 		const queryBuilder = this._instantiationService.createInstance(QueryBuilder);
 
@@ -299,6 +301,14 @@ export class ToolsService implements IToolsService {
 				return { globPattern, targetDirectory }
 			},
 			Grep: validateGrepToolParams,
+			CodebaseSearch: (params: RawToolParamsObj) => {
+				const query = validateStr('query', params.query).trim()
+				if (!query) throw new Error('CodebaseSearch query must not be empty.')
+				const path = params.path === undefined || params.path === null ? null : pathToURI(params.path)
+				const parsedTopK = params.top_k === undefined ? 8 : Number(params.top_k)
+				if (!Number.isInteger(parsedTopK) || parsedTopK < 1 || parsedTopK > 20) throw new Error('CodebaseSearch top_k must be an integer from 1 to 20.')
+				return { query, path, topK: parsedTopK }
+			},
 
 			read_lint_errors: (params: RawToolParamsObj) => {
 				const {
@@ -733,6 +743,14 @@ export class ToolsService implements IToolsService {
 				return {
 					result: resultPromise,
 					interruptTool: () => tokenSource.cancel(),
+				}
+			},
+
+			CodebaseSearch: async ({ query, path, topK }) => {
+				const controller = new AbortController()
+				return {
+					result: this.semanticRetrievalService.search(query, { path, topK, signal: controller.signal }),
+					interruptTool: () => controller.abort(),
 				}
 			},
 
@@ -1379,6 +1397,13 @@ export class ToolsService implements IToolsService {
 			},
 		Grep: (_params, result) => {
 			return result.output
+			},
+			CodebaseSearch: (_params, result) => {
+				if (!result.matches.length) return result.message ?? 'No semantic matches found. Try a broader query or use Grep and Glob.'
+				return result.matches.map((match, index) => {
+					const symbol = match.symbolName ? ` — ${match.symbolName}` : ''
+					return `${index + 1}. ${match.uri.fsPath}:${match.startLine}-${match.endLine}${symbol}\n\`\`\`\n${match.content}\n\`\`\``
+				}).join('\n\n')
 			},
 			read_lint_errors: (params, result) => {
 				return result.lintErrors ?

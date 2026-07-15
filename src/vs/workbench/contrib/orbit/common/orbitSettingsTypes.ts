@@ -7,6 +7,7 @@
 import { defaultModelsOfProvider, defaultProviderSettings, ModelOverrides } from './modelCapabilities.js';
 import { ToolApprovalType } from './toolsServiceTypes.js';
 import { VoidSettingsState } from './orbitSettingsService.js'
+import { SemanticEmbeddingProvider } from './semanticRetrievalTypes.js';
 
 
 type UnionOfKeys<T> = T extends T ? keyof T : never;
@@ -485,6 +486,11 @@ export type GlobalSettings = {
 	 * built-in server reports offline and its tools are hidden from the agent.
 	 */
 	browserAutomationEnabled: boolean;
+	semanticSearchEnabled: boolean;
+	semanticEmbeddingProvider: SemanticEmbeddingProvider;
+	semanticEmbeddingEndpoint: string;
+	semanticEmbeddingModel: string;
+	semanticEmbeddingApiKey: string;
 }
 
 export const defaultGlobalSettings: GlobalSettings = {
@@ -507,6 +513,11 @@ export const defaultGlobalSettings: GlobalSettings = {
 	disabledAgentTypes: [],
 	mcpToolTimeoutMs: 60_000,
 	browserAutomationEnabled: true,
+	semanticSearchEnabled: false,
+	semanticEmbeddingProvider: 'ollama',
+	semanticEmbeddingEndpoint: 'http://localhost:11434',
+	semanticEmbeddingModel: 'nomic-embed-text',
+	semanticEmbeddingApiKey: '',
 }
 
 export type GlobalSettingName = keyof GlobalSettings

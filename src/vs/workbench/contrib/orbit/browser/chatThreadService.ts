@@ -19,8 +19,8 @@ import { FeatureName, ModelSelection, ModelSelectionOptions } from '../common/or
 import { getModelCapabilities } from '../common/modelCapabilities.js';
 import { selectCompactionBoundary } from '../common/compactionHelpers.js';
 import { IVoidSettingsService } from '../common/orbitSettingsService.js';
-import { withTimeout } from '../common/asyncUtils.js';
-import { approvalTypeOfBuiltinToolName, BuiltinToolCallParams, BuiltinToolName, BuiltinToolResultType, IToolsService, ToolCallParams, ToolName, ToolResult } from '../common/toolsServiceTypes.js';
+import { mapWithConcurrency, withTimeout } from '../common/asyncUtils.js';
+import { approvalTypeOfBuiltinToolName, BuiltinToolCallParams, BuiltinToolResultType, IToolsService, ToolCallParams, ToolName, ToolResult } from '../common/toolsServiceTypes.js';
 import { getEffectiveGrepHeadLimit } from '../common/grepToolHelpers.js';
 import { toFilenameSearchGlobPattern } from '../common/globToolHelpers.js';
 import { CancellationToken, CancellationTokenSource } from '../../../../base/common/cancellation.js';
@@ -54,6 +54,11 @@ import { ITerminalToolService } from './terminalToolService.js';
 import { applyTodoWrite, normalizeTodoList, todoListsEqual } from '../common/todoToolHelpers.js';
 import { getActiveWindow } from '../../../../base/browser/dom.js';
 import { findThreadComposerInWindow, focusInConnectedWindow } from './connectedWindowDom.js';
+import { getPathAccessApprovalReason } from '../common/agentToolSecurity.js';
+import { cloneStagingSelection, queuedUserMessagesEqual } from '../common/messageQueueHelpers.js';
+import type { QueuedUserMessage } from '../common/messageQueueHelpers.js';
+
+export type { QueuedUserMessage } from '../common/messageQueueHelpers.js';
 
 
 // related to retrying when LLM message has error
@@ -63,6 +68,7 @@ const RETRY_DELAY = 2500
 // Hard cap on the agentic tool-use loop so a model that keeps calling tools can't run forever.
 const MAX_AGENT_LOOP_ITERATIONS = 150
 const MAX_QUEUED_USER_MESSAGES = 20        // cap queue depth so a runaway loop of Enter presses can't grow it unbounded
+const MAX_PARALLEL_TOOL_CALLS = 8           // bound filesystem/MCP pressure from one model response
 
 // Upper bound on a provider-supplied Retry-After we'll actually wait before retrying.
 const MAX_RETRY_AFTER_MS = 60_000
@@ -104,11 +110,6 @@ class StaleTurnError extends Error {
 }
 
 const MAX_BROWSER_ELEMENT_SCREENSHOT_CHARS = 1_000_000
-
-// Credential-like paths that require explicit approval even when inside the workspace (e.g. a repo
-// that contains a committed .env or key). Matches sensitive directories anywhere in the path and
-// sensitive basenames/extensions.
-const SENSITIVE_PATH_RE = /(?:^|[\\/])(\.env(\.[\w.-]+)?|\.netrc|\.pgpass|\.htpasswd|id_rsa|id_dsa|id_ecdsa|id_ed25519|credentials|\.ssh|\.aws|\.gnupg|\.kube|secrets?)(?:[\\/]|$)|\.(pem|key|p12|pfx|keystore)$/i
 
 // Persistence guardrails. These bound the size of the on-disk chat-history blob so serializing it
 // never blocks the renderer. Applied ONLY when writing to storage (see `storageStringifyReplacer`);
@@ -524,8 +525,6 @@ export interface IChatThreadService {
 	waitForThreadAgentRunEnd(threadId: string): Promise<void>;
 }
 
-export type QueuedUserMessage = { userMessage: string, llmInstructions?: string, _chatSelections?: StagingSelectionItem[], _images?: string[] }
-
 export const IChatThreadService = createDecorator<IChatThreadService>('voidChatThreadService');
 
 const HIDDEN_TOOL_REPLACEMENT_MESSAGE = (name: string) =>
@@ -885,8 +884,8 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 
 	// !!! this is important for properly restoring URIs from storage
 	// should probably re-use code from void/src/vs/base/common/marshalling.ts instead. but this is simple enough
-	private _convertThreadDataFromStorage(threadsStr: string): ChatThreads {
-		return JSON.parse(threadsStr, (key, value) => {
+	private _parseStorageData<T>(serialized: string): T {
+		return JSON.parse(serialized, (_key, value) => {
 			if (value && typeof value === 'object' && value.$mid === 1) { // $mid is the MarshalledId. $mid === 1 means it is a URI
 				return URI.revive(value); // canonical revive of a marshalled URI (preserves cached fsPath/external markers)
 			}
@@ -900,7 +899,7 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 			return null
 		}
 		try {
-			return this._convertThreadDataFromStorage(threadsStr);
+			return this._parseStorageData<ChatThreads>(threadsStr);
 		} catch (error) {
 			// This runs in the constructor of an EAGERLY-instantiated singleton — an
 			// uncaught throw here doesn't just lose chat history, it can take down
@@ -1010,12 +1009,14 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 		try {
 			const str = this._storageService.get(QUEUED_MESSAGES_STORAGE_KEY, StorageScope.APPLICATION)
 			if (!str) return
-			const parsed = JSON.parse(str) as { [threadId: string]: QueuedUserMessage[] }
+			const parsed = this._parseStorageData<{ [threadId: string]: QueuedUserMessage[] }>(str)
 			for (const threadId of Object.keys(parsed)) {
 				if (!validThreadIds.has(threadId)) continue // thread was deleted since it was persisted
 				const queue = parsed[threadId]
 				if (!Array.isArray(queue) || queue.length === 0) continue
-				this._queuedUserMessagesByThread.set(threadId, queue)
+				const validQueue = queue.filter(q => q && typeof q.userMessage === 'string').slice(0, MAX_QUEUED_USER_MESSAGES)
+				if (validQueue.length === 0) continue
+				this._queuedUserMessagesByThread.set(threadId, validQueue)
 				this._queuePausedByThread.add(threadId) // paused on startup — never auto-fire into a cold thread
 			}
 		} catch (error) {
@@ -1029,40 +1030,6 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 
 	getSubAgentConversation(toolId: string): Readonly<ChatMessage[]> | undefined {
 		return this._subAgentConversations.get(toolId);
-	}
-
-	/** The filesystem URIs a path-taking builtin tool would touch (empty for non-path tools). */
-	private _pathToolUris(builtinToolName: BuiltinToolName, params: unknown): URI[] {
-		const p = params as Record<string, URI | null | undefined>
-		const pick = (...uris: (URI | null | undefined)[]) => uris.filter((u): u is URI => !!u)
-		switch (builtinToolName) {
-			case 'Read':
-			case 'read_lint_errors':
-				return pick(p.uri)
-			case 'Write':
-			case 'StrReplace':
-				return pick(p.path)
-			case 'Grep':
-				return pick(p.path)
-			case 'Glob':
-				return pick(p.targetDirectory)
-			default:
-				return []
-		}
-	}
-
-	/** If a path tool targets a location outside the workspace or a credential-like path, returns a
-	 * human-readable reason the access needs explicit approval; otherwise undefined. This is the
-	 * workspace-confinement guard: Read/Grep/Glob otherwise have NO approval gate, so an agent could
-	 * read ~/.ssh/id_rsa or ~/.aws/credentials and ship them to the model. */
-	private _pathAccessApprovalReason(uris: URI[]): string | undefined {
-		for (const uri of uris) {
-			if (uri.scheme !== 'file' && uri.scheme !== 'vscode-remote') continue
-			const fsPath = uri.fsPath
-			if (SENSITIVE_PATH_RE.test(fsPath)) return `access to a sensitive path (${fsPath})`
-			if (!this._workspaceContextService.isInsideWorkspace(uri)) return `access to a path outside your workspace (${fsPath})`
-		}
-		return undefined
 	}
 
 	/** Store the most recent provider-reported usage for a thread (ignores empty/absent usage). */
@@ -1796,6 +1763,10 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 		this._invalidateActiveTurn(threadId)
 		// explicit stop cancels everything pending, including queued messages
 		this._clearQueuedUserMessages(threadId)
+		// A child that outlives a stopped parent can still mutate files or wake the parent loop when it
+		// completes. Cancel both foreground and background descendants as part of the same stop action.
+		this._subAgentService.cancelForegroundRunsForThread(threadId)
+		this._subAgentService.cancelBackgroundRunsForThread(threadId)
 
 		if (this._pendingLlmStreamStateByThread.has(threadId) || this.streamState[threadId]?.isRunning === 'LLM') {
 			this._applyPendingLlmStreamStateIfAny(threadId)
@@ -2007,7 +1978,7 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 			// requires explicit approval — even if auto-approve is on. Prevents silent exfiltration of
 			// secrets (e.g. ~/.ssh/id_rsa) to the model.
 			if (builtinToolName && !opts.preapproved) {
-				const pathReason = this._pathAccessApprovalReason(this._pathToolUris(builtinToolName, toolParams))
+				const pathReason = getPathAccessApprovalReason(builtinToolName, toolParams, uri => this._workspaceContextService.isInsideWorkspace(uri))
 				if (pathReason) {
 					this._updateLatestTool(threadId, { role: 'tool', type: 'tool_request', content: `(Awaiting user permission: ${pathReason})`, result: null, name: effectiveToolName, params: toolParams, id: toolId, rawParams: opts.unvalidatedToolParams, mcpServerName: effectiveMcpServerName })
 					return { awaitingUserApproval: true }
@@ -2605,7 +2576,7 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 
 						// Execute all tools in parallel. Buffer any vision image-messages so they're
 						// appended once, after the whole batch settles (see below).
-						const results = await Promise.all(parallelTools.map(async (tool) => {
+						const results = await mapWithConcurrency(parallelTools, MAX_PARALLEL_TOOL_CALLS, async (tool) => {
 							// Check if it's an MCP tool first (by name match), then fall back to builtin
 							const mcpTool = mcpToolByName.get(tool.name)
 							return this._runToolCall(threadId, tool.name, tool.id, mcpTool?.mcpServerName, {
@@ -2614,7 +2585,7 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 								executionContext: { modelSelection, modelSelectionOptions, turnSequence },
 								deferImageMessages: true,
 							})
-						}))
+						})
 
 						// Check if any tool was interrupted or awaiting approval
 						for (let idx = 0; idx < results.length; idx++) {
@@ -3227,20 +3198,18 @@ We only need to do it for files that were edited since `from`, ie files between 
 				return
 			}
 			// Q7: collapse an immediate exact-duplicate of the tail (double-Enter).
+			const queuedEntry: QueuedUserMessage = {
+				userMessage,
+				llmInstructions,
+				_chatSelections: _chatSelections ? _chatSelections.map(cloneStagingSelection) : undefined,
+				_images: _images ? [..._images] : undefined,
+			}
 			const tail = queue[queue.length - 1]
-			if (tail && tail.userMessage === userMessage && tail.llmInstructions === llmInstructions
-				&& (tail._chatSelections?.length ?? 0) === (_chatSelections?.length ?? 0)
-				&& (tail._images?.length ?? 0) === (_images?.length ?? 0)) {
+			if (tail && queuedUserMessagesEqual(tail, queuedEntry)) {
 				return
 			}
 			// Deep-copy the attachment snapshots so later staging edits (which replace the array
 			// reference on the thread) can never mutate an already-queued entry's context.
-			const queuedEntry: QueuedUserMessage = {
-				userMessage,
-				llmInstructions,
-				_chatSelections: _chatSelections ? _chatSelections.map(s => ({ ...s })) : undefined,
-				_images: _images ? [..._images] : undefined,
-			}
 			queue.push(queuedEntry)
 			this._queuedUserMessagesByThread.set(threadId, queue)
 			this._metricsService.capture('Message Queued', { depth: queue.length, whileRunning: isActivelyRunning }) // Q14
@@ -3673,8 +3642,7 @@ We only need to do it for files that were edited since `from`, ie files between 
 		this._clearLlmStreamThrottle(threadId);
 		this._planBuildStateByThread.delete(threadId);
 		this._latestUsageByThread.delete(threadId);
-		this._queuedUserMessagesByThread.delete(threadId); // Q6: don't leak the queue for a deleted thread
-		this._queuePausedByThread.delete(threadId);
+		this._clearQueuedUserMessages(threadId); // Q6: clear memory and the persisted queue entry
 
 		// Clean up the compaction history file for this thread
 		const folder = this._workspaceContextService.getWorkspace().folders[0];

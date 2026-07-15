@@ -8,7 +8,7 @@ import { isABuiltinToolName } from '../../../../../common/prompt/prompts.js';
 import { resolveLegacyToolName } from '../constants/legacyToolNameMap.js';
 
 /** Built-in tools grouped into the Cursor-style "Exploring" scroll block. */
-export const EXPLORATION_TOOL_NAMES = ['Read', 'Glob', 'Grep', 'read_lint_errors'] as const;
+export const EXPLORATION_TOOL_NAMES = ['Read', 'Glob', 'Grep', 'CodebaseSearch', 'read_lint_errors'] as const;
 export type ExplorationToolName = typeof EXPLORATION_TOOL_NAMES[number];
 
 const EXPLORATION_TOOL_SET = new Set<string>(EXPLORATION_TOOL_NAMES);
@@ -51,7 +51,7 @@ export const countExplorationToolStats = (
 
 		if (msg.name === 'Read' || msg.name === 'read_lint_errors') {
 			stats.files++;
-		} else if (msg.name === 'Glob' || msg.name === 'Grep') {
+		} else if (msg.name === 'Glob' || msg.name === 'Grep' || msg.name === 'CodebaseSearch') {
 			stats.searches++;
 		}
 

@@ -125,7 +125,7 @@ Orbit's subagent system lets the main agent delegate bounded tasks to isolated c
 | File | Role |
 |------|------|
 | `common/subAgentRegistry.ts` | Built-in subagent definitions |
-| `browser/subAgentOrchestratorService.ts` | Session management, LLM loop, tool execution |
+| `browser/subAgentService.ts` | Session management, LLM loop, tool execution, and cancellation |
 | `browser/projectAgentLoader.ts` | Loads custom agents from `.orbit/agents/` |
 
 Built-in subagents: `explore` (read-only), `plan` (read-only), `general` (full access). Custom agents live in `~/.orbit/agents/*.md` and `.orbit/agents/*.md`.

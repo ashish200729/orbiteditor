@@ -144,6 +144,9 @@ import { VoidSCMService } from '../../workbench/contrib/orbit/electron-main/orbi
 import { IVoidSCMService } from '../../workbench/contrib/orbit/common/orbitSCMTypes.js';
 import { MCPChannel } from '../../workbench/contrib/orbit/electron-main/mcpChannel.js';
 import { NativeNotificationChannel } from '../../workbench/contrib/orbit/electron-main/nativeNotificationChannel.js';
+import { SemanticEmbeddingChannel } from '../../workbench/contrib/orbit/electron-main/semanticEmbeddingChannel.js';
+import { SEMANTIC_EMBEDDING_CHANNEL } from '../../workbench/contrib/orbit/common/semanticEmbeddingProtocol.js';
+import { IRequestService } from '../../platform/request/common/request.js';
 import { OrbitBuiltinMcpRegistry } from '../../workbench/contrib/orbit/electron-main/builtinMcp/orbitBuiltinMcpRegistry.js';
 import { OrbitIdeBrowserMcpServer } from '../../workbench/contrib/orbit/electron-main/builtinMcp/orbitIdeBrowserMcpServer.js';
 /**
@@ -1354,6 +1357,9 @@ export class CodeApplication extends Disposable {
 
 		const sendLLMMessageChannel = new LLMMessageChannel(accessor.get(IMetricsService));
 		mainProcessElectronServer.registerChannel('void-channel-llmMessage', sendLLMMessageChannel);
+
+		const semanticEmbeddingChannel = new SemanticEmbeddingChannel(accessor.get(IRequestService));
+		mainProcessElectronServer.registerChannel(SEMANTIC_EMBEDDING_CHANNEL, semanticEmbeddingChannel);
 
 		// Void added this
 		const voidSCMChannel = ProxyChannel.fromService(accessor.get(IVoidSCMService), disposables);

@@ -66,6 +66,11 @@ suite('computeSubAgentExplorationStats', () => {
 		assert.deepStrictEqual(stats, { fileCount: 0, searchCount: 2, toolCount: 2 });
 	});
 
+	test('counts CodebaseSearch as a search', () => {
+		const stats = computeSubAgentExplorationStats([toolMsg({ name: 'CodebaseSearch' })]);
+		assert.strictEqual(stats.searchCount, 1);
+	});
+
 	test('counts other tools toward toolCount only', () => {
 		const stats = computeSubAgentExplorationStats([toolMsg({ name: 'Shell' })]);
 		assert.deepStrictEqual(stats, { fileCount: 0, searchCount: 0, toolCount: 1 });

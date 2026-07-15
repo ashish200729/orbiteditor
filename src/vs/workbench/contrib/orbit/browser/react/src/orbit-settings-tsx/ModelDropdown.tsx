@@ -103,6 +103,9 @@ const ModelSelectBox = ({ options, featureName, className }: { options: ModelOpt
 		className={className}
 		matchInputWidth={false}
 		opacity={75}
+		searchable
+		showCheckmarkOnSelected
+		highlightSelectedBg={false}
 	/>
 }
 

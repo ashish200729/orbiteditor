@@ -538,6 +538,25 @@ Find usages of "useState" with 2 lines of context:
 </Grep>`,
 	},
 
+	CodebaseSearch: {
+		name: 'CodebaseSearch',
+		description: `Search the indexed codebase by meaning. Use this when you need to find concepts, behavior, architecture, or implementations but do not know the exact identifier. Use Grep instead when you know the precise symbol or string. Results are read-only, include file paths and line ranges, and may be followed with Read for more context.`,
+		params: {
+			query: { description: 'A concise natural-language description of the code or behavior to find.' },
+			path: { description: 'Optional absolute workspace directory used to restrict results.' },
+			top_k: { description: 'Optional number of results from 1 to 20. Defaults to 8.' },
+		},
+		inputSchema: {
+			type: 'object',
+			properties: {
+				query: { type: 'string', description: 'A concise natural-language description of the code or behavior to find.' },
+				path: { type: 'string', description: 'Optional absolute workspace directory used to restrict results.' },
+				top_k: { type: 'integer', minimum: 1, maximum: 20, description: 'Maximum number of results. Defaults to 8.' },
+			},
+			required: ['query'],
+		},
+	},
+
 	read_lint_errors: {
 		name: 'read_lint_errors',
 		description: `Read and display linter errors from the current workspace. You can provide paths to specific files or directories, or omit the argument to get diagnostics for all files.
@@ -1271,6 +1290,7 @@ const agentModeToolNames: BuiltinToolName[] = [
 	'Read',
 	'Glob',
 	'Grep',
+	'CodebaseSearch',
 	'read_lint_errors',
 	'StrReplace',
 	'Write',

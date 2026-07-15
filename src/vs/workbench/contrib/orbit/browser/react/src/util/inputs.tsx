@@ -18,7 +18,7 @@ import { inputBackground, inputForeground } from '../../../../../../../platform/
 import { useFloating, autoUpdate, offset, flip, shift, size, autoPlacement } from '@floating-ui/react';
 import { URI } from '../../../../../../../base/common/uri.js';
 import { getBasename, getFolderName } from '../sidebar-tsx/SidebarChat.js';
-import { ChevronRight, File, Folder, FolderClosed, LucideProps } from 'lucide-react';
+import { Check, ChevronRight, File, Folder, FolderClosed, LucideIcon, LucideProps } from 'lucide-react';
 import { StagingSelectionItem } from '../../../../common/chatThreadServiceTypes.js';
 import { DiffEditorWidget } from '../../../../../../../editor/browser/widget/diffEditor/diffEditorWidget.js';
 import { extractSearchReplaceBlocks, ExtractedSearchReplaceBlock } from '../../../../common/helpers/extractCodeFromResult.js';
@@ -1419,6 +1419,10 @@ export const VoidCustomDropdownBox = <T extends NonNullable<any>>({
 	offsetPx = -6,
 	renderOption,
 	opacity = 70,
+	getOptionIcon,
+	showCheckmarkOnSelected = false,
+	searchable = false,
+	highlightSelectedBg = true,
 }: {
 	options: T[];
 	selectedOption: T | undefined;
@@ -1434,11 +1438,29 @@ export const VoidCustomDropdownBox = <T extends NonNullable<any>>({
 	offsetPx?: number;
 	renderOption?: (option: T, isSelected: boolean) => React.ReactNode;
 	opacity?: number;
+	getOptionIcon?: (option: T) => LucideIcon;
+	showCheckmarkOnSelected?: boolean;
+	searchable?: boolean;
+	highlightSelectedBg?: boolean;
 }) => {
 	const [isOpen, setIsOpen] = useState(false);
 	const [hoveredOption, setHoveredOption] = useState<T | null>(null);
 	const [hoverItemRef, setHoverItemRef] = useState<HTMLDivElement | null>(null);
+	const [searchQuery, setSearchQuery] = useState('');
 	const measureRef = useRef<HTMLDivElement>(null);
+
+	// Reset the search box each time the dropdown closes so it starts fresh next open.
+	useEffect(() => {
+		if (!isOpen) setSearchQuery('');
+	}, [isOpen]);
+
+	const visibleOptions = useMemo(() => {
+		if (!searchable || !searchQuery.trim()) return options;
+		const query = searchQuery.trim();
+		return options
+			.filter((option) => isSubsequence(getOptionDropdownName(option), query))
+			.sort((a, b) => scoreSubsequence(getOptionDropdownName(b), query) - scoreSubsequence(getOptionDropdownName(a), query));
+	}, [options, searchable, searchQuery, getOptionDropdownName]);
 
 	// Replace manual positioning with floating-ui
 	const {
@@ -1577,6 +1599,10 @@ export const VoidCustomDropdownBox = <T extends NonNullable<any>>({
 				style={{ opacity: opacity / 100 }}
 				onClick={() => setIsOpen(!isOpen)}
 			>
+				{getOptionIcon && (() => {
+					const Icon = getOptionIcon(selectedOption);
+					return <Icon size={13} className="flex-shrink-0 mr-1" />;
+				})()}
 				<span className={`truncate ${arrowTouchesText ? 'mr-1' : ''}`}>
 					{getOptionDisplayName(selectedOption)}
 				</span>
@@ -1599,7 +1625,7 @@ export const VoidCustomDropdownBox = <T extends NonNullable<any>>({
 			{isOpen && (
 				<div
 					ref={refs.setFloating}
-					className="z-[100] rounded border border-void-border-2 bg-void-bg-1 shadow-lg"
+					className="z-[100] rounded-lg border border-void-border-2 bg-void-bg-1 shadow-lg overflow-hidden"
 					style={{
 						position: strategy,
 						top: y ?? 0,
@@ -1608,14 +1634,27 @@ export const VoidCustomDropdownBox = <T extends NonNullable<any>>({
 							? (refs.reference.current instanceof HTMLElement ? refs.reference.current.offsetWidth : 'auto')
 							: 'max-content',
 						minWidth: refs.reference.current instanceof HTMLElement ? refs.reference.current.offsetWidth : 'auto',
-						maxWidth: '300px',
+						maxWidth: '260px',
 					}}
 					onWheel={(e) => e.stopPropagation()}
 				>
-					<div className="overflow-auto max-h-80 py-1">
-						{options.map((option) => {
+					{searchable && (
+						<input
+							type="text"
+							autoFocus
+							value={searchQuery}
+							onChange={(e) => setSearchQuery(e.target.value)}
+							placeholder="Search models..."
+							className="@@void-dropdown-search-input w-full px-2.5 py-1 bg-transparent outline-none text-[12px] text-void-fg-1 placeholder:text-void-fg-3 border-b border-void-border-2"
+						/>
+					)}
+					<div className="overflow-auto max-h-80 py-1 px-1">
+						{visibleOptions.length === 0 ? (
+							<div className="px-2 py-1 text-[12px] text-void-fg-3">No models found</div>
+						) : visibleOptions.map((option) => {
 							const thisOptionIsSelected = getOptionsEqual(option, selectedOption);
 							const optionName = getOptionDropdownName(option);
+							const Icon = getOptionIcon?.(option);
 
 							return (
 								<div
@@ -1626,11 +1665,11 @@ export const VoidCustomDropdownBox = <T extends NonNullable<any>>({
 										}
 									}}
 									className={`
-						flex items-center px-3 py-1.5 cursor-pointer
-						transition-colors
-						${thisOptionIsSelected
-											? "bg-void-toolbar-hover-bg text-void-fg-1"
-											: "text-void-fg-2 hover:bg-void-toolbar-hover-bg"
+						flex items-center px-2 py-1 rounded-md cursor-pointer
+						transition-colors text-xs
+						${thisOptionIsSelected && highlightSelectedBg
+											? "bg-[var(--void-dropdown-active-bg)]"
+											: "hover:bg-[var(--void-dropdown-hover-bg)]"
 										}
 						`}
 									onClick={() => {
@@ -1644,12 +1683,18 @@ export const VoidCustomDropdownBox = <T extends NonNullable<any>>({
 									{renderOption ? (
 										renderOption(option, thisOptionIsSelected)
 									) : (
-										<span
-											className={`truncate ${thisOptionIsSelected ? "text-white" : "text-void-fg-2"
-												}`}
-										>
-											{optionName}
-										</span>
+										<>
+											{Icon && <Icon size={12} className="flex-shrink-0 mr-2 opacity-80" />}
+											<span
+												className={`truncate flex-1 ${thisOptionIsSelected ? "text-void-fg-1" : "text-void-fg-2"
+													}`}
+											>
+												{optionName}
+											</span>
+											{showCheckmarkOnSelected && thisOptionIsSelected && (
+												<Check size={12} className="flex-shrink-0 ml-2 text-void-fg-1" />
+											)}
+										</>
 									)}
 								</div>
 							);
@@ -1821,7 +1866,7 @@ export const BlockCode = ({ initValue, language, maxHeight, showScrollbars }: Bl
 		if (language) modelRef.current?.setLanguage(language)
 	}, [language])
 
-	return <div ref={divRef} className='relative z-0 px-2 py-1 bg-void-bg-3'>
+	return <div ref={divRef} className='relative z-0 px-3 py-2 bg-void-bg-3'>
 		<WidgetComponent
 			className='@@bg-editor-style-override' // text-sm
 			ctor={useCallback((container) => {
