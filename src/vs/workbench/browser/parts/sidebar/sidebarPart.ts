@@ -199,12 +199,22 @@ export class SidebarPart extends AbstractPaneCompositePart {
 					}
 				}
 			},
-			compositeSize: 0,
+			// Fixed sizes for the top primary bar so overflow math matches CSS
+			// (28px hit target + 8px flex gap). When not on top, keep measuring
+			// from the DOM (compositeSize: 0) for title/bottom layouts.
+			compositeSize: this.getCompositeBarPosition() === CompositeBarPosition.TOP ? 36 : 0,
 			iconSize: 16,
-			overflowActionSize: 30,
+			overflowActionSize: this.getCompositeBarPosition() === CompositeBarPosition.TOP ? 36 : 30,
 			maximumVisibleComposites: this.getCompositeBarPosition() === CompositeBarPosition.TOP ? SidebarPart.MAX_TOP_ACTIVITY_ITEMS : undefined,
 			overflowActionIcon: this.getCompositeBarPosition() === CompositeBarPosition.TOP ? Codicon.chevronDown : undefined,
-			showAllCompositesInOverflow: this.getCompositeBarPosition() === CompositeBarPosition.TOP,
+			// Additional Views is a navigator for every currently registered primary
+			// sidebar container, not just the pinned items that ran out of room. This
+			// includes eligible view containers contributed by installed extensions.
+			showAllCompositesInOverflow: true,
+			// This is an Additional Views navigator, not merely an overflow fallback.
+			// Keep it available even when every pinned header item currently fits.
+			alwaysShowOverflowAction: this.getCompositeBarPosition() === CompositeBarPosition.TOP,
+			useCustomOverflowMenu: this.getCompositeBarPosition() === CompositeBarPosition.TOP,
 			colors: theme => ({
 				activeBackgroundColor: theme.getColor(SIDE_BAR_BACKGROUND),
 				inactiveBackgroundColor: theme.getColor(SIDE_BAR_BACKGROUND),

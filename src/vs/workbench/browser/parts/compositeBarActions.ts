@@ -5,7 +5,7 @@
 
 import { localize } from '../../../nls.js';
 import { Action, IAction, Separator } from '../../../base/common/actions.js';
-import { $, addDisposableListener, append, clearNode, EventHelper, EventType, getDomNodePagePosition, hide, show } from '../../../base/browser/dom.js';
+import { $, addDisposableListener, append, clearNode, EventHelper, EventType, getDomNodePagePosition, getWindow, hide, show } from '../../../base/browser/dom.js';
 import { ICommandService } from '../../../platform/commands/common/commands.js';
 import { toDisposable, DisposableStore, MutableDisposable } from '../../../base/common/lifecycle.js';
 import { IContextMenuService } from '../../../platform/contextview/browser/contextView.js';
@@ -29,6 +29,9 @@ import { Action2, IAction2Options } from '../../../platform/actions/common/actio
 import { ViewContainerLocation } from '../../common/views.js';
 import { IPaneCompositePartService } from '../../services/panecomposite/browser/panecomposite.js';
 import { createConfigureKeybindingAction } from '../../../platform/actions/common/menuService.js';
+import { StandardKeyboardEvent } from '../../../base/browser/keyboardEvent.js';
+import { KeyCode } from '../../../base/common/keyCodes.js';
+import { onUnexpectedError } from '../../../base/common/errors.js';
 
 export interface ICompositeBar {
 
@@ -468,12 +471,18 @@ export class CompositeOverflowActivityAction extends CompositeBarAction {
 
 export class CompositeOverflowActivityActionViewItem extends CompositeBarActionViewItem {
 
+	private overflowMenuElement: HTMLElement | undefined;
+	private readonly overflowMenuDisposables = this._register(new MutableDisposable<DisposableStore>());
+
 	constructor(
 		action: CompositeBarAction,
 		private getOverflowingComposites: () => { id: string; name?: string }[],
 		private getActiveCompositeId: () => string | undefined,
 		private getBadge: (compositeId: string) => IBadge,
 		private getCompositeOpenAction: (compositeId: string) => IAction,
+		private isCompositePinned: (compositeId: string) => boolean,
+		private toggleCompositePinned: (compositeId: string) => void,
+		private useCustomOverflowMenu: boolean,
 		colors: (theme: IColorTheme) => ICompositeBarColors,
 		hoverOptions: IActivityHoverOptions,
 		@IContextMenuService private readonly contextMenuService: IContextMenuService,
@@ -485,15 +494,273 @@ export class CompositeOverflowActivityActionViewItem extends CompositeBarActionV
 		super(action, { icon: true, colors, hasPopup: true, hoverOptions }, () => true, themeService, hoverService, configurationService, keybindingService);
 	}
 
+	override render(container: HTMLElement): void {
+		super.render(container);
+		container.setAttribute('aria-haspopup', 'menu');
+		container.setAttribute('aria-expanded', 'false');
+	}
+
+	override dispose(): void {
+		this.hideMenu();
+		super.dispose();
+	}
+
+	/**
+	 * Renders the top activity-bar overflow as a workbench-root overlay. A global
+	 * ContextView may flip above its anchor when its active window or zoomed title-bar
+	 * coordinate space differs from the sidebar. This menu must always open below the
+	 * activity bar, so it uses fixed viewport coordinates synchronized to the sidebar.
+	 */
 	showMenu(): void {
-		this.contextMenuService.showContextMenu({
-			getAnchor: () => this.container,
-			getActions: () => this.getActions(),
-			getCheckedActionsRepresentation: () => 'radio',
+		if (!this.useCustomOverflowMenu) {
+			this.contextMenuService.showContextMenu({
+				getAnchor: () => this.container,
+				getActions: () => this.getActions(),
+				getCheckedActionsRepresentation: () => 'radio',
+			});
+			return;
+		}
+
+		if (this.overflowMenuElement) {
+			this.hideMenu(true);
+			return;
+		}
+
+		const actions = this.getActions();
+		if (!actions.length || !this.container) {
+			return;
+		}
+
+		const anchorHost = this.container;
+		const sidebarPart = anchorHost.closest('.part.sidebar') as HTMLElement | null;
+		const header = (anchorHost.closest('.header-or-footer.header') as HTMLElement | null)
+			?? (anchorHost.closest('.composite-bar-container') as HTMLElement | null);
+
+		if (!sidebarPart || !header) {
+			return;
+		}
+
+		let rows: HTMLElement[] = [];
+		let focusedIndex = -1;
+		const setFocus = (index: number) => {
+			if (index < 0 || index >= rows.length) {
+				return;
+			}
+			if (focusedIndex >= 0 && rows[focusedIndex]) {
+				rows[focusedIndex].classList.remove('focused');
+			}
+			focusedIndex = index;
+			rows[index].classList.add('focused');
+			rows[index].focus();
+		};
+
+		const close = (focusAnchor = false) => {
+			this.hideMenu(focusAnchor);
+		};
+
+		const disposables = new DisposableStore();
+		// Register ownership before creating DOM/listeners. If pinning causes the
+		// overflow action to be synchronously rebuilt, disposal still reaches every
+		// resource created by this invocation.
+		this.overflowMenuDisposables.value = disposables;
+
+		const overlayParent = (sidebarPart.closest('.monaco-workbench') as HTMLElement | null) ?? sidebarPart;
+		const host = append(overlayParent, $('.activity-bar-overflow-menu-host'));
+		this.overflowMenuElement = host;
+
+		const menu = append(host, $('div.activity-bar-overflow-menu'));
+		menu.setAttribute('role', 'menu');
+		menu.setAttribute('aria-label', localize('additionalViews', "Additional Views"));
+		menu.tabIndex = 0;
+
+		const layoutMenu = () => {
+			const partRect = sidebarPart.getBoundingClientRect();
+			const headerRect = header.getBoundingClientRect();
+			if (!sidebarPart.isConnected || !header.isConnected || partRect.width <= 0 || partRect.height <= 0 || headerRect.height <= 0) {
+				close();
+				return;
+			}
+			const top = Math.max(0, Math.round(headerRect.bottom));
+			const viewportWidth = host.ownerDocument.documentElement.clientWidth || Math.round(partRect.right);
+			// Comfortable navigator width: at least the sidebar, never below a
+			// legible minimum, and never wider than the viewport. Matches the
+			// reference menu, which is wider than a narrow primary sidebar.
+			const width = Math.min(
+				Math.max(240, Math.floor(partRect.width)),
+				Math.max(200, viewportWidth - 16)
+			);
+			// Anchor to the sidebar's leading edge, but re-anchor to its trailing
+			// edge if growing rightward would run past the viewport (right-docked
+			// sidebar or a narrow window).
+			let left = Math.round(partRect.left);
+			if (left + width > viewportWidth - 8) {
+				left = Math.max(8, Math.round(partRect.right - width));
+			}
+			host.style.top = `${top}px`;
+			host.style.left = `${left}px`;
+			host.style.width = `${width}px`;
+			menu.style.maxHeight = `${Math.max(0, Math.floor(partRect.bottom - headerRect.bottom))}px`;
+		};
+		layoutMenu();
+
+		const updatePins: Array<() => void> = [];
+		const list = append(menu, $('.activity-overflow-list'));
+		actions.forEach((action, index) => {
+			const row = append(list, $('button.action-menu-item')) as HTMLButtonElement;
+			row.type = 'button';
+			row.setAttribute('role', 'menuitemradio');
+			row.setAttribute('aria-checked', String(!!action.checked));
+			row.tabIndex = -1;
+			if (action.checked) {
+				row.classList.add('checked');
+			}
+
+			const icon = append(row, $('span.menu-item-icon'));
+			this.applyCompositeIcon(icon, action);
+
+			const label = append(row, $('span.action-label'));
+			label.textContent = action.label || '';
+
+			const keybindingId = action instanceof CompositeBarAction ? action.compositeBarActionItem.keybindingId : action.id;
+			const keybindingLabel = keybindingId ? this.keybindingService.lookupKeybinding(keybindingId)?.getLabel() : undefined;
+			if (keybindingLabel) {
+				const kb = append(row, $('span.keybinding'));
+				kb.textContent = keybindingLabel;
+			}
+
+			const pin = append(row, $('span.activity-overflow-pin'));
+			pin.setAttribute('aria-hidden', 'true');
+			const pinIcon = append(pin, $('span.pin-icon'));
+			pinIcon.classList.add(...ThemeIcon.asClassNameArray(Codicon.pin));
+			const pinnedIcon = append(pin, $('span.pinned-icon'));
+			pinnedIcon.classList.add(...ThemeIcon.asClassNameArray(Codicon.pinned));
+			const updatePin = () => {
+				const pinned = this.isCompositePinned(action.id);
+				pin.classList.toggle('pinned', pinned);
+				row.setAttribute('aria-label', pinned
+					? localize('additionalViewPinned', "{0}, pinned. Press Right Arrow to unpin.", action.label || '')
+					: localize('additionalViewUnpinned', "{0}, not pinned. Press Right Arrow to pin.", action.label || ''));
+				pin.title = pinned ? localize('unpinFromPrimaryBar', "Unpin from Primary Bar") : localize('pinToPrimaryBar', "Pin to Primary Bar");
+			};
+			updatePin();
+			updatePins.push(updatePin);
+			disposables.add(addDisposableListener(pin, EventType.MOUSE_DOWN, e => EventHelper.stop(e, true)));
+			disposables.add(addDisposableListener(pin, EventType.CLICK, e => {
+				EventHelper.stop(e, true);
+				this.toggleCompositePinned(action.id);
+				updatePin();
+			}));
+
+			disposables.add(addDisposableListener(row, EventType.CLICK, e => {
+				EventHelper.stop(e, true);
+				close();
+				void Promise.resolve(action.run({ preserveFocus: false })).catch(onUnexpectedError);
+			}));
+			disposables.add(addDisposableListener(row, EventType.MOUSE_ENTER, () => setFocus(index)));
+			rows.push(row);
 		});
+
+		disposables.add(addDisposableListener(menu, EventType.KEY_DOWN, (e: KeyboardEvent) => {
+			const event = new StandardKeyboardEvent(e);
+			if (event.keyCode === KeyCode.Escape || event.keyCode === KeyCode.LeftArrow) {
+				EventHelper.stop(e, true);
+				close(true);
+			} else if (event.keyCode === KeyCode.DownArrow) {
+				EventHelper.stop(e, true);
+				setFocus(focusedIndex < rows.length - 1 ? focusedIndex + 1 : 0);
+			} else if (event.keyCode === KeyCode.UpArrow) {
+				EventHelper.stop(e, true);
+				setFocus(focusedIndex > 0 ? focusedIndex - 1 : rows.length - 1);
+			} else if (event.keyCode === KeyCode.Home) {
+				EventHelper.stop(e, true);
+				setFocus(0);
+			} else if (event.keyCode === KeyCode.End) {
+				EventHelper.stop(e, true);
+				setFocus(rows.length - 1);
+			} else if (event.keyCode === KeyCode.RightArrow && focusedIndex >= 0) {
+				EventHelper.stop(e, true);
+				this.toggleCompositePinned(actions[focusedIndex].id);
+				// Single source of truth for pin visuals: class + aria-label + title.
+				updatePins[focusedIndex]?.();
+			} else if (event.keyCode === KeyCode.Enter || event.keyCode === KeyCode.Space) {
+				EventHelper.stop(e, true);
+				rows[focusedIndex >= 0 ? focusedIndex : 0]?.click();
+			}
+		}));
+		disposables.add(addDisposableListener(menu, EventType.FOCUS_OUT, (e: FocusEvent) => {
+			const next = e.relatedTarget as Node | null;
+			if (next && !host.contains(next) && !anchorHost.contains(next)) {
+				close();
+			}
+		}));
+
+		const targetWindow = getWindow(sidebarPart);
+		disposables.add(addDisposableListener(targetWindow, EventType.BLUR, () => close()));
+		disposables.add(addDisposableListener(targetWindow, EventType.MOUSE_DOWN, e => {
+			const target = e.target as Node | null;
+			if (target && !host.contains(target) && !anchorHost.contains(target)) {
+				close();
+			}
+		}, true));
+
+		const resizeObserver = new targetWindow.ResizeObserver(layoutMenu);
+		resizeObserver.observe(sidebarPart);
+		resizeObserver.observe(header);
+		disposables.add(toDisposable(() => resizeObserver.disconnect()));
+		disposables.add(addDisposableListener(targetWindow, EventType.RESIZE, layoutMenu));
+		const positionObserver = new targetWindow.MutationObserver(layoutMenu);
+		positionObserver.observe(sidebarPart, { attributes: true, attributeFilter: ['class', 'style'] });
+		positionObserver.observe(overlayParent, { attributes: true, attributeFilter: ['class', 'style'] });
+		disposables.add(toDisposable(() => positionObserver.disconnect()));
+		disposables.add(toDisposable(() => host.remove()));
+		this.container.setAttribute('aria-expanded', 'true');
+		this.updateChevronIcon(true);
+		setFocus(Math.max(0, actions.findIndex(action => action.checked)));
+	}
+
+	private hideMenu(restoreFocus = false): void {
+		if (!this.overflowMenuElement) {
+			return;
+		}
+
+		this.overflowMenuElement = undefined;
+		this.overflowMenuDisposables.clear();
+		this.container?.setAttribute('aria-expanded', 'false');
+		this.updateChevronIcon(false);
+		if (restoreFocus && this.container?.isConnected) {
+			this.container.focus();
+		}
+	}
+
+	private applyCompositeIcon(target: HTMLElement, action: IAction): void {
+		if (action instanceof CompositeBarAction) {
+			const item = action.compositeBarActionItem;
+			if (item.classNames) {
+				target.classList.add(...item.classNames);
+			}
+		} else if (action.class) {
+			target.classList.add(...action.class.split(' ').filter(Boolean));
+		}
+	}
+
+	private updateChevronIcon(open: boolean): void {
+		if (!this.label) {
+			return;
+		}
+		for (const className of Array.from(this.label.classList)) {
+			if (className.startsWith('codicon-')) {
+				this.label.classList.remove(className);
+			}
+		}
+		// Use the class-name ARRAY: classList.add() throws on a token containing a
+		// space, and ThemeIcon.asClassName() returns "codicon codicon-<id>".
+		this.label.classList.add(...ThemeIcon.asClassNameArray(open ? Codicon.chevronUp : Codicon.chevronDown));
 	}
 
 	private getActions(): IAction[] {
+		// Preserve the natural primary-bar registration order (Explorer, Search,
+		// Source Control, Run and Debug, Extensions, …). Do NOT reorder by pin
+		// state — that makes the list jump around as items are pinned/unpinned.
 		return this.getOverflowingComposites().map(composite => {
 			const action = this.getCompositeOpenAction(composite.id);
 			action.checked = this.getActiveCompositeId() === action.id;

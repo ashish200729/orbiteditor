@@ -107,17 +107,411 @@
 	max-width: 150px;
 }
 
+/* ============================================================================
+   PRIMARY BAR (Activity Bar at Top) — centered, evenly spaced, premium
+   Icons are centered in the sidebar. Hit targets are sized so notification
+   badges sit fully inside the item (no clipping against .part overflow:hidden
+   and no overlap with neighboring icons). Active/hover use the same soft tint
+   without the contrast outline that reads as a mismatched border.
+   ============================================================================ */
+
+/* Keep badges inside the 35px header; do not rely on overflow:visible through .part */
+.monaco-workbench .part.sidebar.activity-bar-top > .header-or-footer.header {
+	padding-left: 2px;
+	padding-right: 2px;
+}
+
+.monaco-workbench .part.sidebar.activity-bar-top > .header-or-footer.header > .composite-bar-container {
+	flex: 1 1 auto;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	min-width: 0;
+	width: 100%;
+}
+
+.monaco-workbench .part.sidebar.activity-bar-top > .header-or-footer.header > .composite-bar-container > .composite-bar {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 100%;
+	height: 100%;
+}
+
+.monaco-workbench .part.sidebar.activity-bar-top > .header-or-footer.header > .composite-bar-container > .composite-bar > .monaco-action-bar {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 100%;
+	height: 100%;
+}
+
+/* Center the icon row with even spacing */
+.monaco-workbench .part.sidebar.activity-bar-top > .header-or-footer.header > .composite-bar-container > .composite-bar > .monaco-action-bar .actions-container {
+	display: flex !important;
+	width: 100%;
+	justify-content: center !important;
+	align-items: center;
+	gap: 8px;
+	/* 4px on each edge makes the real row width exactly N * 36px:
+		28px targets + 8px gaps, matching CompositeBar's sizing model. */
+	padding: 0 4px;
+	box-sizing: border-box;
+}
+
+/* Uniform hit target — override paneCompositePart height:35px / padding:0 3px */
 .monaco-workbench .part.sidebar.activity-bar-top > .header-or-footer.header > .composite-bar-container > .composite-bar > .monaco-action-bar .action-item.icon {
+	display: flex !important;
+	align-items: center;
+	justify-content: center;
+	position: relative;
+	flex: 0 0 28px;
+	width: 28px !important;
+	min-width: 28px !important;
+	max-width: 28px !important;
+	height: 28px !important;
+	margin: 0 !important;
+	padding: 0 !important;
 	border-radius: 6px;
+	overflow: visible;
+	box-sizing: border-box;
+	transition: background-color 120ms ease, color 120ms ease;
 }
 
+/* Label fills the item so the glyph stays optically centered */
+.monaco-workbench .part.sidebar.activity-bar-top > .header-or-footer.header > .composite-bar-container > .composite-bar > .monaco-action-bar .action-item.icon .action-label {
+	width: 100% !important;
+	height: 100% !important;
+	margin: 0 !important;
+	padding: 0 !important;
+	border-radius: 6px;
+	display: flex !important;
+	align-items: center;
+	justify-content: center;
+	font-size: 15px;
+	box-sizing: border-box;
+}
+
+/* Kill the left:5px glyph pin from the generic sidebar title-bar rule */
+.monaco-workbench .part.sidebar.activity-bar-top > .header-or-footer.header > .composite-bar-container > .composite-bar > .monaco-action-bar .action-item.icon .action-label::before {
+	position: static !important;
+	left: auto !important;
+}
+
+/* Drop contrast outline outside HC so active/hover share one clean treatment */
+.monaco-workbench:not(.hc-black):not(.hc-light) .part.sidebar.activity-bar-top > .header-or-footer.header > .composite-bar-container > .composite-bar > .monaco-action-bar .action-item.icon.checked .action-label,
+.monaco-workbench:not(.hc-black):not(.hc-light) .part.sidebar.activity-bar-top > .header-or-footer.header > .composite-bar-container > .composite-bar > .monaco-action-bar .action-item.icon:hover .action-label,
+.monaco-workbench:not(.hc-black):not(.hc-light) .part.sidebar.activity-bar-top > .header-or-footer.header > .composite-bar-container > .composite-bar > .monaco-action-bar .action-item.icon:focus .action-label,
+.monaco-workbench:not(.hc-black):not(.hc-light) .part.sidebar.activity-bar-top > .header-or-footer.header > .composite-bar-container > .composite-bar > .monaco-action-bar .action-item.icon:not(.checked):hover .action-label {
+	outline: none !important;
+}
+
+/* Premium active state */
 .monaco-workbench .part.sidebar.activity-bar-top > .header-or-footer.header > .composite-bar-container > .composite-bar > .monaco-action-bar .action-item.icon.checked {
-	background-color: var(--vscode-activityBarTop-activeBackground, var(--vscode-toolbar-hoverBackground));
+	background-color: var(--vscode-activityBarTop-activeBackground, color-mix(in srgb, var(--vscode-activityBarTop-foreground) 12%, transparent));
 }
 
+.monaco-workbench .part.sidebar.activity-bar-top > .header-or-footer.header > .composite-bar-container > .composite-bar > .monaco-action-bar .action-item.icon.checked:hover {
+	background-color: color-mix(in srgb, var(--vscode-activityBarTop-foreground) 16%, transparent);
+}
+
+/* Gentle hover/focus for non-active items — same language as active, quieter */
 .monaco-workbench .part.sidebar.activity-bar-top > .header-or-footer.header > .composite-bar-container > .composite-bar > .monaco-action-bar .action-item.icon:not(.checked):hover,
 .monaco-workbench .part.sidebar.activity-bar-top > .header-or-footer.header > .composite-bar-container > .composite-bar > .monaco-action-bar .action-item.icon:not(.checked):focus {
-	background-color: var(--vscode-toolbar-hoverBackground);
+	background-color: color-mix(in srgb, var(--vscode-activityBarTop-foreground) 8%, transparent);
+}
+
+/* Active underline indicator is redundant with the background treatment */
+.monaco-workbench .part.sidebar.activity-bar-top > .header-or-footer.header > .composite-bar-container > .composite-bar > .monaco-action-bar .action-item.icon .active-item-indicator,
+.monaco-workbench .part.sidebar.activity-bar-top > .header-or-footer.header > .composite-bar-container > .composite-bar > .monaco-action-bar .action-item.icon .active-item-indicator:before {
+	content: none !important;
+	display: none !important;
+	border: none !important;
+}
+
+/* ---- Badges: fit inside the 28px hit target (paneCompositePart uses top:17px for 35px items) ---- */
+.monaco-workbench .part.sidebar.activity-bar-top > .header-or-footer.header > .composite-bar-container > .composite-bar > .monaco-action-bar .action-item.icon .badge.compact {
+	position: absolute;
+	inset: 0;
+	margin: 0;
+	width: 100%;
+	height: 100%;
+	overflow: visible; /* allow 2-digit badges to sit on the corner without being clipped by the badge wrapper */
+	pointer-events: none;
+	z-index: 2;
+}
+
+.monaco-workbench .part.sidebar.activity-bar-top > .header-or-footer.header > .composite-bar-container > .composite-bar > .monaco-action-bar .action-item.icon .badge.compact .badge-content {
+	position: absolute;
+	top: auto;
+	bottom: 1px;
+	right: 1px;
+	left: auto;
+	min-width: 14px;
+	height: 12px;
+	line-height: 12px;
+	padding: 0 3px;
+	font-size: 9px;
+	font-weight: 600;
+	border-radius: 8px;
+	box-sizing: border-box;
+	/* Separate badge from the icon so it doesn't visually collide with neighbors */
+	box-shadow: 0 0 0 1.5px var(--vscode-activityBarTop-background, var(--vscode-sideBar-background));
+}
+
+.monaco-workbench .part.sidebar.activity-bar-top > .header-or-footer.header > .composite-bar-container > .composite-bar > .monaco-action-bar .action-item.icon .badge.compact.compact-content .badge-content {
+	font-size: 8px;
+	padding: 0 2px;
+	min-width: 12px;
+}
+
+/* Respect reduced-motion preferences */
+.monaco-workbench.reduce-motion .part.sidebar.activity-bar-top > .header-or-footer.header > .composite-bar-container > .composite-bar > .monaco-action-bar .action-item.icon {
+	transition: none;
+}
+
+/* ============================================================================
+   ADDITIONAL VIEWS — attached primary-sidebar navigator. Each row shows the
+   registered view-container icon, label, optional keybinding, and pin state.
+   ============================================================================ */
+
+/* Viewport-positioned host attached to the workbench root. Width and placement
+	are synchronized to the primary sidebar by CompositeOverflowActivityActionViewItem. */
+.monaco-workbench .activity-bar-overflow-menu-host {
+	position: fixed;
+	/* Match a layer-1 workbench context view: above editor chrome and sticky
+		content, while remaining below higher-layer modal and notification UI. */
+	z-index: 2576;
+	padding: 0;
+	border: none;
+	background: transparent;
+	box-shadow: none;
+}
+
+.monaco-workbench .activity-bar-overflow-menu {
+	display: flex;
+	flex-direction: column;
+	background-color: var(--vscode-sideBar-background);
+	color: var(--vscode-sideBar-foreground);
+	border: none;
+	border-radius: 0 0 8px 8px;
+	/* Premium elevation: soft ambient + tighter contact shadow, biased downward
+		so the panel reads as attached to the activity bar and floating over content. */
+	box-shadow:
+		0 12px 28px -6px rgba(0, 0, 0, 0.36),
+		0 4px 10px -4px rgba(0, 0, 0, 0.28),
+		0 0 0 1px var(--vscode-widget-border, transparent);
+	padding: 4px 0;
+	min-width: 0;
+	max-width: none;
+	/* The inner list scrolls while the attached surface remains fixed. */
+	overflow: hidden;
+	box-sizing: border-box;
+}
+
+.monaco-workbench.hc-black .activity-bar-overflow-menu,
+.monaco-workbench.hc-light .activity-bar-overflow-menu {
+	outline: 1px solid var(--vscode-contrastBorder);
+	outline-offset: -1px;
+}
+
+/* Keep long extension lists inside the available primary-sidebar height. */
+.monaco-workbench .activity-bar-overflow-menu .activity-overflow-list {
+	display: flex;
+	flex-direction: column;
+	align-items: stretch;
+	gap: 0;
+	width: 100%;
+	min-height: 0;
+	overflow-y: auto;
+	overflow-x: hidden;
+	/* Firefox */
+	scrollbar-width: thin;
+	scrollbar-color: var(--vscode-scrollbarSlider-background, rgba(121, 121, 121, 0.4)) transparent;
+}
+
+/* Themed, thin scrollbar so long lists don't show a raw OS scrollbar */
+.monaco-workbench .activity-bar-overflow-menu .activity-overflow-list::-webkit-scrollbar {
+	width: 10px;
+}
+
+.monaco-workbench .activity-bar-overflow-menu .activity-overflow-list::-webkit-scrollbar-track {
+	background: transparent;
+}
+
+.monaco-workbench .activity-bar-overflow-menu .activity-overflow-list::-webkit-scrollbar-thumb {
+	background-color: var(--vscode-scrollbarSlider-background, rgba(121, 121, 121, 0.4));
+	border: 2px solid transparent;
+	background-clip: content-box;
+	border-radius: 10px;
+}
+
+.monaco-workbench .activity-bar-overflow-menu .activity-overflow-list::-webkit-scrollbar-thumb:hover {
+	background-color: var(--vscode-scrollbarSlider-hoverBackground, rgba(100, 100, 100, 0.7));
+	background-clip: content-box;
+}
+
+.monaco-workbench .activity-bar-overflow-menu .activity-overflow-list::-webkit-scrollbar-thumb:active {
+	background-color: var(--vscode-scrollbarSlider-activeBackground, rgba(191, 191, 191, 0.4));
+	background-clip: content-box;
+}
+
+.monaco-workbench .activity-bar-overflow-menu .action-menu-item {
+	appearance: none;
+	font: inherit;
+	text-align: left;
+	border: 0;
+	background: transparent;
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	height: 30px;
+	min-height: 30px;
+	/* Full-bleed rows: selection/hover spans the whole panel width. The menu's
+		overflow:hidden clips against its rounded bottom corners. */
+	margin: 0;
+	padding: 0 12px;
+	border-radius: 0;
+	color: inherit;
+	font-size: 13px;
+	white-space: nowrap;
+	overflow: hidden;
+	box-sizing: border-box;
+	width: 100%;
+	cursor: pointer;
+	text-decoration: none;
+	outline: 0;
+	transition: background-color 100ms ease, color 100ms ease;
+}
+
+/* Hovered / keyboard-focused row */
+.monaco-workbench .activity-bar-overflow-menu .action-menu-item.focused,
+.monaco-workbench .activity-bar-overflow-menu .action-menu-item:hover {
+	background-color: var(--vscode-list-hoverBackground, var(--vscode-toolbar-hoverBackground));
+	color: var(--vscode-list-hoverForeground, var(--vscode-sideBar-foreground));
+}
+
+/* The active composite row gets the attached-panel selection treatment. */
+.monaco-workbench .activity-bar-overflow-menu .action-menu-item.checked:not(.focused):not(:hover) {
+	background-color: var(--vscode-list-inactiveSelectionBackground, var(--vscode-toolbar-hoverBackground));
+	color: var(--vscode-list-inactiveSelectionForeground, var(--vscode-sideBar-foreground));
+}
+
+/* Composite icon — supports both codicons (::before) and URL background icons */
+.monaco-workbench .activity-bar-overflow-menu .menu-item-icon {
+	width: 16px;
+	height: 16px;
+	flex-shrink: 0;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	font-size: 16px;
+	background-position: center center;
+	background-repeat: no-repeat;
+	background-size: 16px;
+	opacity: 0.9;
+}
+
+/* Full-strength glyph on the active/hovered/focused row */
+.monaco-workbench .activity-bar-overflow-menu .action-menu-item:hover .menu-item-icon,
+.monaco-workbench .activity-bar-overflow-menu .action-menu-item.focused .menu-item-icon,
+.monaco-workbench .activity-bar-overflow-menu .action-menu-item.checked .menu-item-icon {
+	opacity: 1;
+}
+
+/* URI icons are masks, so currentColor keeps them correct across theme changes
+	and menu selection states without rebuilding the open menu. */
+.monaco-workbench .activity-bar-overflow-menu .menu-item-icon.uri-icon {
+	background-color: currentColor;
+}
+
+.monaco-workbench .activity-bar-overflow-menu .action-label {
+	flex: 1 1 auto;
+	min-width: 0;
+	padding: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	letter-spacing: 0.1px;
+}
+
+/* Keybinding hint — quiet, right-aligned, sits between label and the pin */
+.monaco-workbench .activity-bar-overflow-menu .keybinding {
+	flex-shrink: 0;
+	margin-left: auto;
+	padding-left: 12px;
+	color: var(--vscode-descriptionForeground, currentColor);
+	opacity: 0.85;
+	font-size: 11px;
+	letter-spacing: 0.4px;
+	font-variant-numeric: tabular-nums;
+}
+
+.monaco-workbench .activity-bar-overflow-menu .action-menu-item:hover .keybinding,
+.monaco-workbench .activity-bar-overflow-menu .action-menu-item.focused .keybinding {
+	color: inherit;
+	opacity: 0.75;
+}
+
+/* Pin toggle on the far right. Two glyphs (outline / filled) swap on pin state,
+	mirroring the pin affordance in the reference primary-bar navigator. */
+.monaco-workbench .activity-bar-overflow-menu .activity-overflow-pin {
+	flex-shrink: 0;
+	width: 22px;
+	height: 22px;
+	margin-left: 6px;
+	margin-right: -2px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	border-radius: 5px;
+	font-size: 14px;
+	cursor: pointer;
+	/* Hidden on unpinned rows until the row is hovered/focused; pinned rows show
+		it permanently (rule below). Matches the target navigator exactly. */
+	opacity: 0;
+	transition: opacity 120ms ease, background-color 120ms ease;
+}
+
+.monaco-workbench .activity-bar-overflow-menu .activity-overflow-pin .pin-icon,
+.monaco-workbench .activity-bar-overflow-menu .activity-overflow-pin .pinned-icon {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+}
+
+/* Outline pin when unpinned, filled pin when pinned */
+.monaco-workbench .activity-bar-overflow-menu .activity-overflow-pin .pinned-icon {
+	display: none;
+}
+
+.monaco-workbench .activity-bar-overflow-menu .activity-overflow-pin.pinned .pin-icon {
+	display: none;
+}
+
+.monaco-workbench .activity-bar-overflow-menu .activity-overflow-pin.pinned .pinned-icon {
+	display: inline-flex;
+}
+
+/* Reveal on row hover/focus (unpinned rows), and keep pinned rows always marked */
+.monaco-workbench .activity-bar-overflow-menu .action-menu-item:hover .activity-overflow-pin,
+.monaco-workbench .activity-bar-overflow-menu .action-menu-item.focused .activity-overflow-pin {
+	opacity: 0.65;
+}
+
+/* Pinned: always visible, neutral (matches the target — pins read as gray glyphs) */
+.monaco-workbench .activity-bar-overflow-menu .activity-overflow-pin.pinned {
+	opacity: 0.9;
+	color: inherit;
+}
+
+.monaco-workbench .activity-bar-overflow-menu .activity-overflow-pin:hover {
+	opacity: 1 !important;
+	background-color: color-mix(in srgb, currentColor 14%, transparent);
+}
+
+/* Respect reduced-motion preferences */
+.monaco-workbench.reduce-motion .activity-bar-overflow-menu .activity-overflow-pin {
+	transition: none;
 }
 
 /* ============================================================================

@@ -75,7 +75,10 @@ const viewContainer = Registry.as<IViewContainersRegistry>(ViewContainerExtensio
 		order: 4,
 	},
 	hideIfEmpty: true,
-}, ViewContainerLocation.Sidebar);
+	// Orbit: Testing lives in the bottom panel (bottom-right), not the primary
+	// activity bar. Keeps the primary-bar Additional Views list focused on the
+	// core navigators (Explorer/Search/SCM/Run/Extensions/…) like the reference UI.
+}, ViewContainerLocation.Panel);
 
 
 const testResultsViewContainer = Registry.as<IViewContainersRegistry>(ViewContainerExtensions.ViewContainersRegistry).registerViewContainer({

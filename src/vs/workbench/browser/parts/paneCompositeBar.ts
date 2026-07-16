@@ -82,6 +82,8 @@ export interface IPaneCompositeBarOptions {
 	readonly maximumVisibleComposites?: number;
 	readonly overflowActionIcon?: ThemeIcon;
 	readonly showAllCompositesInOverflow?: boolean;
+	readonly alwaysShowOverflowAction?: boolean;
+	readonly useCustomOverflowMenu?: boolean;
 	readonly preventLoopNavigation?: boolean;
 	readonly activityHoverOptions: IActivityHoverOptions;
 	readonly fillExtraContextMenuActions: (actions: IAction[], e?: MouseEvent | GestureEvent) => void;
@@ -159,6 +161,18 @@ export class PaneCompositeBar extends Disposable {
 			maximumVisibleComposites: this.options.maximumVisibleComposites,
 			overflowActionIcon: this.options.overflowActionIcon,
 			showAllCompositesInOverflow: this.options.showAllCompositesInOverflow,
+			alwaysShowOverflowAction: this.options.alwaysShowOverflowAction,
+			// Additional Views lists the real primary navigators only. Exclude
+			// contextual/empty containers (hideIfEmpty and currently inactive, e.g.
+			// the References peek container) using the same rule the bar itself uses
+			// to decide composite visibility.
+			getOverflowMenuComposites: () => this.getViewContainers()
+				.filter(viewContainer => !this.shouldBeHidden(viewContainer))
+				.map(viewContainer => ({
+					id: viewContainer.id,
+					name: typeof viewContainer.title === 'string' ? viewContainer.title : (viewContainer.title?.value ?? viewContainer.id),
+				})),
+			useCustomOverflowMenu: this.options.useCustomOverflowMenu,
 			colors: theme => this.options.colors(theme),
 		}));
 	}
@@ -403,7 +417,7 @@ export class PaneCompositeBar extends Disposable {
 				const hash = new StringSHA1();
 				hash.update(cssUrl);
 				const iconId = `activity-${id.replace(/\./g, '-')}-${hash.digest()}`;
-				const iconClass = `.monaco-workbench .${this.options.partContainerClass} .monaco-action-bar .action-label.${iconId}`;
+				const iconClass = `.monaco-workbench .${this.options.partContainerClass} .monaco-action-bar .action-label.${iconId}, .monaco-workbench .activity-bar-overflow-menu .menu-item-icon.${iconId}`;
 				classNames = [iconId, 'uri-icon'];
 				createCSSRule(iconClass, `
 				mask: ${cssUrl} no-repeat 50% 50%;

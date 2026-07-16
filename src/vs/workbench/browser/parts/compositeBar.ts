@@ -148,6 +148,9 @@ export interface ICompositeBarOptions {
 	readonly maximumVisibleComposites?: number;
 	readonly overflowActionIcon?: ThemeIcon;
 	readonly showAllCompositesInOverflow?: boolean;
+	readonly alwaysShowOverflowAction?: boolean;
+	readonly getOverflowMenuComposites?: () => { id: string; name?: string }[];
+	readonly useCustomOverflowMenu?: boolean;
 	readonly dndHandler: ICompositeDragAndDrop;
 	readonly activityHoverOptions: IActivityHoverOptions;
 	readonly preventLoopNavigation?: boolean;
@@ -533,7 +536,15 @@ export class CompositeBar extends Widget implements ICompositeBar {
 		).map(item => item.id);
 
 		// Ensure we are not showing more composites than we have height for
+		// Keep sizing based on the composites that can actually be rendered in the
+		// bar. `showAllCompositesInOverflow` only changes the contents/presence of
+		// the overflow menu; using that larger count to index `compositesToShow`
+		// produces undefined sizes (and eventually NaN layout state) for unpinned
+		// composites.
 		const totalComposites = compositesToShow.length;
+		const totalOverflowComposites = this.options.showAllCompositesInOverflow
+			? Math.max(this.model.visibleItems.length, this.options.getOverflowMenuComposites?.().length ?? 0)
+			: totalComposites;
 		const maximumVisibleComposites = Math.max(0, this.options.maximumVisibleComposites ?? totalComposites);
 		let maxVisible = Math.min(totalComposites, maximumVisibleComposites);
 		let size = 0;
@@ -570,8 +581,13 @@ export class CompositeBar extends Widget implements ICompositeBar {
 			size -= this.compositeSizeInBar.get(removedComposite!)!;
 		}
 
+		// Determine this only after fitting and active-item restoration: a bar that
+		// initially fit every item may still need its overflow action after sizing.
+		const shouldShowOverflowAction = totalOverflowComposites > 0
+			&& (this.options.alwaysShowOverflowAction === true || totalOverflowComposites > compositesToShow.length);
+
 		// We are overflowing, add the overflow size
-		if (totalComposites > compositesToShow.length) {
+		if (shouldShowOverflowAction) {
 			size += this.options.overflowActionSize;
 		}
 
@@ -583,7 +599,7 @@ export class CompositeBar extends Widget implements ICompositeBar {
 		}
 
 		// Remove the overflow action if there are no overflows
-		if (totalComposites === compositesToShow.length && this.compositeOverflowAction) {
+		if (!shouldShowOverflowAction && this.compositeOverflowAction) {
 			compositeSwitcherBar.pull(compositeSwitcherBar.length() - 1);
 
 			this.compositeOverflowAction.dispose();
@@ -620,7 +636,7 @@ export class CompositeBar extends Widget implements ICompositeBar {
 		});
 
 		// Add overflow action as needed
-		if (totalComposites > compositesToShow.length && !this.compositeOverflowAction) {
+		if (shouldShowOverflowAction && !this.compositeOverflowAction) {
 			this.compositeOverflowAction = this._register(this.instantiationService.createInstance(CompositeOverflowActivityAction, () => {
 				this.compositeOverflowActionViewItem?.showMenu();
 			}, this.options.overflowActionIcon));
@@ -634,6 +650,15 @@ export class CompositeBar extends Widget implements ICompositeBar {
 					return item?.activity[0]?.badge;
 				},
 				this.options.getOnCompositeClickAction,
+				compositeId => this.isPinned(compositeId),
+				compositeId => {
+					if (this.isPinned(compositeId)) {
+						this.unpin(compositeId);
+					} else {
+						this.pin(compositeId);
+					}
+				},
+				this.options.useCustomOverflowMenu === true,
 				this.options.colors,
 				this.options.activityHoverOptions
 			));
@@ -648,6 +673,9 @@ export class CompositeBar extends Widget implements ICompositeBar {
 
 	private getOverflowMenuComposites(): { id: string; name?: string }[] {
 		if (this.options.showAllCompositesInOverflow) {
+			if (this.options.getOverflowMenuComposites) {
+				return this.options.getOverflowMenuComposites();
+			}
 			return this.model.visibleItems.map(item => ({ id: item.id, name: this.getAction(item.id)?.label || item.name }));
 		}
 
