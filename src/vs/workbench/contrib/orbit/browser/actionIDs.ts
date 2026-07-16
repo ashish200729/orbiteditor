@@ -29,6 +29,12 @@ export const VOID_OPENAI_CODEX_SIGN_IN_ACTION_ID = 'void.openAiCodexSignIn'
 
 export const VOID_OPENAI_CODEX_SIGN_OUT_ACTION_ID = 'void.openAiCodexSignOut'
 
+export const VOID_XAI_GROK_SIGN_IN_ACTION_ID = 'void.xAiGrokSignIn'
+
+export const VOID_XAI_GROK_DEVICE_SIGN_IN_ACTION_ID = 'void.xAiGrokDeviceSignIn'
+
+export const VOID_XAI_GROK_SIGN_OUT_ACTION_ID = 'void.xAiGrokSignOut'
+
 export const VOID_GITHUB_SIGN_IN_ACTION_ID = 'void.githubSignIn'
 
 export const VOID_GITHUB_SIGN_OUT_ACTION_ID = 'void.githubSignOut'

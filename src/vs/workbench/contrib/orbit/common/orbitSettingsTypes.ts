@@ -69,6 +69,9 @@ export const displayInfoOfProviderName = (providerName: ProviderName): DisplayIn
 	else if (providerName === 'openAICodex') {
 		return { title: 'OpenAI - ChatGPT Plus/Pro', }
 	}
+	else if (providerName === 'xAISuperGrok') {
+		return { title: 'xAI - SuperGrok Subscription', }
+	}
 	else if (providerName === 'orbit') {
 		return { title: 'Orbit', }
 	}
@@ -123,6 +126,7 @@ export const subTextMdOfProviderName = (providerName: ProviderName): string => {
 	if (providerName === 'anthropic') return 'Get your [API Key here](https://console.anthropic.com/settings/keys).'
 	if (providerName === 'openAI') return 'Get your [API Key here](https://platform.openai.com/api-keys).'
 	if (providerName === 'openAICodex') return 'Sign in with your ChatGPT Plus/Pro subscription to use Codex.'
+	if (providerName === 'xAISuperGrok') return 'Sign in with a SuperGrok or eligible X Premium subscription. No xAI API key is required.'
 	if (providerName === 'orbit') return 'Sign in with GitHub to use Orbit models. No API key required.'
 	if (providerName === 'deepseek') return 'Get your [API Key here](https://platform.deepseek.com/api_keys).'
 	if (providerName === 'openRouter') return 'Get your [API Key here](https://openrouter.ai/settings/keys). Read about [rate limits here](https://openrouter.ai/docs/api-reference/limits).'
@@ -282,6 +286,12 @@ export const defaultSettingsOfProvider: SettingsOfProvider = {
 		...defaultCustomSettings,
 		...defaultProviderSettings.openAICodex,
 		...modelInfoOfDefaultModelNames(defaultModelsOfProvider.openAICodex),
+		_didFillInProviderSettings: undefined,
+	},
+	xAISuperGrok: {
+		...defaultCustomSettings,
+		...defaultProviderSettings.xAISuperGrok,
+		...modelInfoOfDefaultModelNames(defaultModelsOfProvider.xAISuperGrok),
 		_didFillInProviderSettings: undefined,
 	},
 	orbit: {

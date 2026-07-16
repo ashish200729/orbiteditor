@@ -43,6 +43,7 @@ import { IHistoryService } from '../../../../../../services/history/common/histo
 import { IOpenerService } from '../../../../../../../platform/opener/common/opener.js'
 import { IMetricsService } from '../../../../common/metricsService.js'
 import { IOpenAiCodexAuthService, OpenAiCodexAuthState } from '../../../../common/openAiCodexAuthService.js'
+import { IXAiGrokAuthService, XAiGrokAuthState } from '../../../../common/xAiGrokAuthService.js'
 import { IGitHubAuthService, GitHubAuthState } from '../../../../common/githubAuthService.js'
 import { IOrbitProviderAuthService, OrbitProviderAuthState } from '../../../../common/orbitProviderAuthService.js'
 import type { OrbitUsageStats } from '../../../../common/orbitUsageTypes.js'
@@ -141,6 +142,9 @@ const colorThemeSettingsIdListeners: Set<(s: string) => void> = new Set()
 let openAiCodexAuthState: OpenAiCodexAuthState = { isAuthenticated: false }
 const openAiCodexAuthStateListeners: Set<(s: OpenAiCodexAuthState) => void> = new Set()
 
+let xAiGrokAuthState: XAiGrokAuthState = { isAuthenticated: false, isAuthorizing: false }
+const xAiGrokAuthStateListeners: Set<(s: XAiGrokAuthState) => void> = new Set()
+
 let gitHubAuthState: GitHubAuthState = { isAuthenticated: false }
 const gitHubAuthStateListeners: Set<(s: GitHubAuthState) => void> = new Set()
 
@@ -173,11 +177,12 @@ export const _registerServices = (accessor: ServicesAccessor) => {
 		modelService: accessor.get(IModelService),
 		mcpService: accessor.get(IMCPService),
 		openAiCodexAuthService: accessor.get(IOpenAiCodexAuthService),
+		xAiGrokAuthService: accessor.get(IXAiGrokAuthService),
 		gitHubAuthService: accessor.get(IGitHubAuthService),
 		orbitProviderAuthService: accessor.get(IOrbitProviderAuthService),
 	}
 
-	const { settingsStateService, chatThreadsStateService, refreshModelService, themeService, workbenchThemeService, editCodeService, voidCommandBarService, modelService, mcpService, openAiCodexAuthService, gitHubAuthService, orbitProviderAuthService } = stateServices
+	const { settingsStateService, chatThreadsStateService, refreshModelService, themeService, workbenchThemeService, editCodeService, voidCommandBarService, modelService, mcpService, openAiCodexAuthService, xAiGrokAuthService, gitHubAuthService, orbitProviderAuthService } = stateServices
 	chatThreadsStateServiceRef = chatThreadsStateService
 
 
@@ -270,6 +275,19 @@ export const _registerServices = (accessor: ServicesAccessor) => {
 		openAiCodexAuthService.onDidChangeState((state) => {
 			openAiCodexAuthState = state
 			openAiCodexAuthStateListeners.forEach(l => l(openAiCodexAuthState))
+		})
+	)
+
+	xAiGrokAuthService.getState().then(state => {
+		xAiGrokAuthState = state
+		xAiGrokAuthStateListeners.forEach(listener => listener(xAiGrokAuthState))
+	}).catch(() => {
+		xAiGrokAuthState = { isAuthenticated: false, isAuthorizing: false }
+	})
+	disposables.push(
+		xAiGrokAuthService.onDidChangeState((state) => {
+			xAiGrokAuthState = state
+			xAiGrokAuthStateListeners.forEach(listener => listener(xAiGrokAuthState))
 		})
 	)
 
@@ -371,6 +389,7 @@ const getReactAccessor = (accessor: ServicesAccessor) => {
 		ITextModelService: accessor.get(ITextModelService),
 		IWorkspaceContextService: accessor.get(IWorkspaceContextService),
 		IOpenAiCodexAuthService: accessor.get(IOpenAiCodexAuthService),
+		IXAiGrokAuthService: accessor.get(IXAiGrokAuthService),
 		IGitHubAuthService: accessor.get(IGitHubAuthService),
 		IOrbitProviderAuthService: accessor.get(IOrbitProviderAuthService),
 
@@ -734,6 +753,16 @@ export const useOpenAiCodexAuthState = () => {
 		return () => { openAiCodexAuthStateListeners.delete(ss) }
 	}, [ss])
 	return s
+}
+
+export const useXAiGrokAuthState = () => {
+	const [state, setState] = useState(xAiGrokAuthState)
+	useEffect(() => {
+		setState(xAiGrokAuthState)
+		xAiGrokAuthStateListeners.add(setState)
+		return () => { xAiGrokAuthStateListeners.delete(setState) }
+	}, [])
+	return state
 }
 
 export const useGitHubAuthState = () => {

@@ -3,13 +3,14 @@
  *  Licensed under the Apache License, Version 2.0. See LICENSE.txt for more information.
  *--------------------------------------------------------------------------------------*/
 
-import React, { useCallback, useMemo, useState } from 'react'
-import { ChevronDown, Eye, EyeOff } from 'lucide-react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { ChevronDown, Eye, EyeOff, RefreshCw } from 'lucide-react'
 import ErrorBoundary from '../sidebar-tsx/ErrorBoundary.js'
 import { VoidButtonBgDarken, VoidSimpleInputBox } from '../util/inputs.js'
-import { useAccessor, useOpenAiCodexAuthState, useSettingsState } from '../util/services.js'
+import { useAccessor, useOpenAiCodexAuthState, useSettingsState, useXAiGrokAuthState } from '../util/services.js'
 import { ChatMarkdownRender } from '../markdown/ChatMarkdownRender.js'
 import { WarningBox } from './WarningBox.js'
+import type { XAiGrokUsage } from '../../../../common/xAiGrokAuthService.js'
 import {
 	ProviderName,
 	SettingName,
@@ -24,6 +25,9 @@ import {
 import {
 	VOID_OPENAI_CODEX_SIGN_IN_ACTION_ID,
 	VOID_OPENAI_CODEX_SIGN_OUT_ACTION_ID,
+	VOID_XAI_GROK_DEVICE_SIGN_IN_ACTION_ID,
+	VOID_XAI_GROK_SIGN_IN_ACTION_ID,
+	VOID_XAI_GROK_SIGN_OUT_ACTION_ID,
 } from '../../../actionIDs.js'
 
 const cloudProviderNames = nonlocalProviderNames
@@ -40,9 +44,13 @@ const providerStatusLabel = (
 	providerName: ProviderName,
 	isConfigured: boolean,
 	codexAuthenticated: boolean,
+	xAiAuthenticated: boolean,
 ): string => {
 	if (providerName === 'openAICodex') {
 		return codexAuthenticated ? 'Connected' : 'Not connected'
+	}
+	if (providerName === 'xAISuperGrok') {
+		return xAiAuthenticated ? 'Connected' : 'Not connected'
 	}
 	return isConfigured ? 'Configured' : 'Not configured'
 }
@@ -50,6 +58,9 @@ const providerStatusLabel = (
 const providerSubtitle = (providerName: ProviderName): string => {
 	if (providerName === 'openAICodex') {
 		return 'ChatGPT Plus or Pro subscription'
+	}
+	if (providerName === 'xAISuperGrok') {
+		return 'SuperGrok or eligible X Premium subscription'
 	}
 	if ((localProviderNames as readonly string[]).includes(providerName)) {
 		return 'Local endpoint · auto-detected models'
@@ -191,6 +202,137 @@ const OpenAICodexProviderPanel = () => {
 	)
 }
 
+const XAiSuperGrokProviderPanel = () => {
+	const authState = useXAiGrokAuthState()
+	const accessor = useAccessor()
+	const commandService = accessor.get('ICommandService')
+	const authService = accessor.get('IXAiGrokAuthService')
+	const [usage, setUsage] = useState<XAiGrokUsage>()
+	const [usageError, setUsageError] = useState<string>()
+	const [isLoadingUsage, setIsLoadingUsage] = useState(false)
+	const usageRequest = useRef(0)
+
+	const loadUsage = useCallback(async (forceRefresh = false) => {
+		const request = ++usageRequest.current
+		setIsLoadingUsage(true)
+		setUsageError(undefined)
+		try {
+			const nextUsage = await authService.getUsage(forceRefresh)
+			if (request === usageRequest.current) setUsage(nextUsage)
+		} catch (error) {
+			if (request === usageRequest.current) {
+				setUsage(undefined)
+				setUsageError(error instanceof Error ? error.message : 'Subscription usage is unavailable.')
+			}
+		} finally {
+			if (request === usageRequest.current) setIsLoadingUsage(false)
+		}
+	}, [authService])
+
+	useEffect(() => {
+		if (!authState.isAuthenticated) {
+			usageRequest.current++
+			setUsage(undefined)
+			setUsageError(undefined)
+			setIsLoadingUsage(false)
+			return
+		}
+		void loadUsage()
+	}, [authState.isAuthenticated, loadUsage])
+
+	const formatReset = (value: string) => {
+		const date = new Date(value)
+		if (!Number.isFinite(date.getTime())) return undefined
+		return date.toLocaleString(undefined, {
+			month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
+		})
+	}
+	const monthlyPercent = usage
+		? Math.min(100, Math.max(0, Math.round((usage.monthly.used / usage.monthly.limit) * 100)))
+		: 0
+	const weeklyPercent = usage?.weekly
+		? Math.min(100, Math.max(0, Math.round(usage.weekly.usedPercent)))
+		: 0
+	const monthlyReset = usage ? formatReset(usage.monthly.resetsAt) : undefined
+	const weeklyReset = usage?.weekly ? formatReset(usage.weekly.resetsAt) : undefined
+
+	return (
+		<div className='@@provider-auth-panel'>
+			<p className='@@provider-auth-desc'>
+				Use Composer 2.5 and Grok 4.5 through your SuperGrok or X Premium subscription. No xAI API key needed.
+			</p>
+			{authState.isAuthenticated ? (
+				<div className='flex flex-col gap-3'>
+					<div className='@@provider-auth-row'>
+						<span className='@@settings-profile-name'>{authState.email ?? 'SuperGrok connected'}</span>
+						<VoidButtonBgDarken
+							className='px-3 py-1 text-xs shrink-0'
+							disabled={authState.isAuthorizing}
+							onClick={() => commandService.executeCommand(VOID_XAI_GROK_SIGN_OUT_ACTION_ID)}
+						>
+							Sign out
+						</VoidButtonBgDarken>
+					</div>
+					<div className='@@provider-usage' aria-live='polite'>
+						<div className='@@provider-usage-heading'>
+							<span>Subscription usage</span>
+							<button
+								type='button'
+								className='@@provider-usage-refresh'
+								disabled={isLoadingUsage}
+								onClick={() => void loadUsage(true)}
+								aria-label='Refresh SuperGrok usage'
+								title='Refresh usage'
+							>
+								<RefreshCw size={13} className={isLoadingUsage ? 'animate-spin' : undefined} />
+							</button>
+						</div>
+						{usage ? (
+							<>
+								<div className='@@provider-usage-row'>
+									<span>Monthly credits</span>
+									<strong>{usage.monthly.used.toLocaleString()} / {usage.monthly.limit.toLocaleString()} · {monthlyPercent}%</strong>
+								</div>
+								<div className='@@provider-usage-track' aria-hidden='true'>
+									<span style={{ width: `${monthlyPercent}%` }} />
+								</div>
+								<div className='@@provider-usage-reset'>{monthlyReset ? `Resets ${monthlyReset}` : 'Reset time unavailable'}</div>
+								{usage.weekly && (
+									<div className='@@provider-usage-row @@provider-usage-row--weekly'>
+										<span>Weekly limit</span>
+										<strong>{weeklyPercent}% used · {weeklyReset ? `resets ${weeklyReset}` : 'reset time unavailable'}</strong>
+									</div>
+								)}
+							</>
+						) : (
+							<div className='@@provider-usage-status'>
+								{isLoadingUsage ? 'Loading usage…' : usageError ?? 'Usage data is unavailable for this plan.'}
+							</div>
+						)}
+					</div>
+				</div>
+			) : (
+				<div className='flex flex-col gap-2'>
+					<VoidButtonBgDarken
+						className='w-full px-3 py-1.5 text-xs'
+						disabled={authState.isAuthorizing}
+						onClick={() => commandService.executeCommand(VOID_XAI_GROK_SIGN_IN_ACTION_ID)}
+					>
+						{authState.isAuthorizing ? 'Waiting for xAI…' : 'Sign in with browser'}
+					</VoidButtonBgDarken>
+					<VoidButtonBgDarken
+						className='w-full px-3 py-1.5 text-xs'
+						disabled={authState.isAuthorizing}
+						onClick={() => commandService.executeCommand(VOID_XAI_GROK_DEVICE_SIGN_IN_ACTION_ID)}
+					>
+						Use a device code
+					</VoidButtonBgDarken>
+				</div>
+			)}
+		</div>
+	)
+}
+
 const ProviderAccordionPanel = ({ providerName }: { providerName: ProviderName }) => {
 	const voidSettingsState = useSettingsState()
 	const needsModel = isProviderNameDisabled(providerName, voidSettingsState) === 'addModel'
@@ -199,6 +341,9 @@ const ProviderAccordionPanel = ({ providerName }: { providerName: ProviderName }
 
 	if (providerName === 'openAICodex') {
 		return <OpenAICodexProviderPanel />
+	}
+	if (providerName === 'xAISuperGrok') {
+		return <XAiSuperGrokProviderPanel />
 	}
 
 	return (
@@ -236,14 +381,17 @@ const ProviderAccordionItem = ({
 }) => {
 	const voidSettingsState = useSettingsState()
 	const authState = useOpenAiCodexAuthState()
+	const xAiAuthState = useXAiGrokAuthState()
 
 	const { title: providerTitle } = displayInfoOfProviderName(providerName)
 	const isConfigured = voidSettingsState.settingsOfProvider[providerName]._didFillInProviderSettings
 	const isConnected = providerName === 'openAICodex'
 		? authState.isAuthenticated
+		: providerName === 'xAISuperGrok'
+			? xAiAuthState.isAuthenticated
 		: !!isConfigured
 
-	const statusLabel = providerStatusLabel(providerName, !!isConfigured, authState.isAuthenticated)
+	const statusLabel = providerStatusLabel(providerName, !!isConfigured, authState.isAuthenticated, xAiAuthState.isAuthenticated)
 
 	return (
 		<div className={`@@provider-accordion${isOpen ? ' @@provider-accordion--open' : ''}${isConnected ? ' @@provider-accordion--connected' : ''}`}>

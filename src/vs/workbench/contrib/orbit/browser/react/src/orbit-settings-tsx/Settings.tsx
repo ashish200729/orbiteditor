@@ -8,7 +8,7 @@ import '../styles.css';
 import { ProviderName, providerNames, VoidStatefulModelInfo, RefreshableProviderName, refreshableProviderNames, displayInfoOfProviderName, GlobalSettingName, displayInfoOfFeatureName } from '../../../../common/orbitSettingsTypes.js'
 import ErrorBoundary from '../sidebar-tsx/ErrorBoundary.js'
 import { VoidButtonBgDarken, VoidCustomDropdownBox, VoidInputBox2, VoidSimpleInputBox, VoidSwitch } from '../util/inputs.js'
-import { useAccessor, useIsDark, useIsOptedOut, useRefreshModelListener, useRefreshModelState, useSettingsState, useOpenAiCodexAuthState, useOrbitProviderAuthState, useOrbitUsageStats } from '../util/services.js'
+import { useAccessor, useIsDark, useIsOptedOut, useRefreshModelListener, useRefreshModelState, useSettingsState, useOpenAiCodexAuthState, useOrbitProviderAuthState, useOrbitUsageStats, useXAiGrokAuthState } from '../util/services.js'
 import { X, RefreshCw, Loader2, Check, Asterisk, Plus, Boxes, Cloud, Sparkles, Settings2, Puzzle, LayoutList, BookOpen, Bot, Trash2, Download, Search, Pause, Play, AlertTriangle, Database, type LucideIcon } from 'lucide-react'
 import { listSkills, onSkillsChanged, type SkillDefinition } from '../../../../common/skillRegistry.js'
 import { listSubAgents, type ResolvedSubAgentDefinition } from '../../../../common/subAgentRegistry.js'
@@ -352,6 +352,7 @@ export const ModelDump = ({ filteredProviders }: { filteredProviders?: ProviderN
 	const settingsStateService = accessor.get('IVoidSettingsService')
 	const settingsState = useSettingsState()
 	const authState = useOpenAiCodexAuthState()
+	const xAiAuthState = useXAiGrokAuthState()
 
 	// State to track which model's settings dialog is open
 	const [openSettingsModel, setOpenSettingsModel] = useState<{
@@ -376,6 +377,7 @@ export const ModelDump = ({ filteredProviders }: { filteredProviders?: ProviderN
 	// Use either filtered providers or all providers
 	const providersToShow = (filteredProviders || providerNames).filter((provider) => {
 		if (provider === 'openAICodex' && !authState.isAuthenticated) return false
+		if (provider === 'xAISuperGrok' && !xAiAuthState.isAuthenticated) return false
 		if (provider === 'orbit') return false // Orbit is hidden from settings UI, same as the Providers tab (nonlocalProviderNames excludes it)
 		return true
 	});

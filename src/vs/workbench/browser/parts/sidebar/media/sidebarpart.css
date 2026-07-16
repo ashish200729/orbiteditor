@@ -107,6 +107,19 @@
 	max-width: 150px;
 }
 
+.monaco-workbench .part.sidebar.activity-bar-top > .header-or-footer.header > .composite-bar-container > .composite-bar > .monaco-action-bar .action-item.icon {
+	border-radius: 6px;
+}
+
+.monaco-workbench .part.sidebar.activity-bar-top > .header-or-footer.header > .composite-bar-container > .composite-bar > .monaco-action-bar .action-item.icon.checked {
+	background-color: var(--vscode-activityBarTop-activeBackground, var(--vscode-toolbar-hoverBackground));
+}
+
+.monaco-workbench .part.sidebar.activity-bar-top > .header-or-footer.header > .composite-bar-container > .composite-bar > .monaco-action-bar .action-item.icon:not(.checked):hover,
+.monaco-workbench .part.sidebar.activity-bar-top > .header-or-footer.header > .composite-bar-container > .composite-bar > .monaco-action-bar .action-item.icon:not(.checked):focus {
+	background-color: var(--vscode-toolbar-hoverBackground);
+}
+
 /* ============================================================================
    SIDEBAR TOGGLE ICONS - Based on reference design
    Reference: outer x=0.5, y=2.5, w=15, h=11, rx=2, stroke=1

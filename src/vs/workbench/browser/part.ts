@@ -105,6 +105,15 @@ export abstract class Part extends Component implements ISerializableView {
 		return this.titleArea;
 	}
 
+	protected setTitleAreaVisibility(visible: boolean): void {
+		if (this.partLayout?.setTitleVisibility(visible)) {
+			if (this.titleArea) {
+				this.titleArea.style.display = visible ? '' : 'none';
+			}
+			this.relayout();
+		}
+	}
+
 	/**
 	 * Subclasses override to provide a content area implementation.
 	 */
@@ -232,15 +241,18 @@ class PartLayout {
 	private static readonly Footer_HEIGHT = 35;
 
 	private headerVisible: boolean = false;
+	private titleVisible: boolean;
 	private footerVisible: boolean = false;
 
-	constructor(private options: IPartOptions, private contentArea: HTMLElement | undefined) { }
+	constructor(private options: IPartOptions, private contentArea: HTMLElement | undefined) {
+		this.titleVisible = !!options.hasTitle;
+	}
 
 	layout(width: number, height: number): ILayoutContentResult {
 
 		// Title Size: Width (Fill), Height (Variable)
 		let titleSize: Dimension;
-		if (this.options.hasTitle) {
+		if (this.titleVisible) {
 			titleSize = new Dimension(width, Math.min(height, PartLayout.TITLE_HEIGHT));
 		} else {
 			titleSize = Dimension.None;
@@ -280,6 +292,15 @@ class PartLayout {
 
 	setFooterVisibility(visible: boolean): void {
 		this.footerVisible = visible;
+	}
+
+	setTitleVisibility(visible: boolean): boolean {
+		if (this.titleVisible === visible) {
+			return false;
+		}
+
+		this.titleVisible = visible;
+		return true;
 	}
 
 	setHeaderVisibility(visible: boolean): void {

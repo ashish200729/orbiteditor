@@ -4,13 +4,13 @@
  *--------------------------------------------------------------------------------------*/
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useAccessor, useIsDark, useSettingsState, useOpenAiCodexAuthState, useOrbitProviderAuthState } from '../util/services.js';
+import { useAccessor, useIsDark, useSettingsState, useOpenAiCodexAuthState, useOrbitProviderAuthState, useXAiGrokAuthState } from '../util/services.js';
 import { Check, ChevronRight } from 'lucide-react';
 import { ColorScheme } from '../../../../../../../platform/theme/common/theme.js';
 import { ConfigurationTarget } from '../../../../../../../platform/configuration/common/configuration.js';
 import ErrorBoundary from '../sidebar-tsx/ErrorBoundary.js';
 import { isLinux } from '../../../../../../../base/common/platform.js';
-import { VOID_OPENAI_CODEX_SIGN_IN_ACTION_ID, VOID_ORBIT_PROVIDER_SIGN_IN_ACTION_ID } from '../../../actionIDs.js';
+import { VOID_OPENAI_CODEX_SIGN_IN_ACTION_ID, VOID_ORBIT_PROVIDER_SIGN_IN_ACTION_ID, VOID_XAI_GROK_SIGN_IN_ACTION_ID } from '../../../actionIDs.js';
 import { VOID_OPEN_SETTINGS_ACTION_ID } from '../../../orbitSettingsPane.js';
 
 const OVERRIDE_VALUE = false
@@ -349,7 +349,8 @@ const ProviderConnectPage = ({ setPageIndex }: { pageIndex: number; setPageIndex
 	const commandService = accessor.get('ICommandService')
 	const orbitAuth = useOrbitProviderAuthState()
 	const codexAuth = useOpenAiCodexAuthState()
-	const anyConnected = orbitAuth.isAuthenticated || codexAuth.isAuthenticated
+	const xAiAuth = useXAiGrokAuthState()
+	const anyConnected = orbitAuth.isAuthenticated || codexAuth.isAuthenticated || xAiAuth.isAuthenticated
 
 	return (
 		<div className="flex flex-col items-center gap-6 px-4 w-full max-w-md mx-auto text-center">
@@ -369,6 +370,12 @@ const ProviderConnectPage = ({ setPageIndex }: { pageIndex: number; setPageIndex
 					sublabel="Use your ChatGPT Plus or Pro subscription"
 					connected={codexAuth.isAuthenticated}
 					onClick={() => { void commandService.executeCommand(VOID_OPENAI_CODEX_SIGN_IN_ACTION_ID) }}
+				/>
+				<ProviderOptionButton
+					label="Sign in with SuperGrok"
+					sublabel="Use Composer 2.5 and Grok 4.5 with your xAI subscription"
+					connected={xAiAuth.isAuthenticated}
+					onClick={() => { void commandService.executeCommand(VOID_XAI_GROK_SIGN_IN_ACTION_ID) }}
 				/>
 				<ProviderOptionButton
 					label="Add an API key"

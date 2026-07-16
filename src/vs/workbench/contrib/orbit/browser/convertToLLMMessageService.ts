@@ -24,7 +24,7 @@ export const EMPTY_MESSAGE = '(empty message)'
 // Shared list of providers that use OpenAI-compatible API format.
 // Used to default specialToolFormat to 'openai-style' when the caller doesn't specify one.
 const openAICompatibleProviders: ProviderName[] = [
-	'openAI', 'openAICodex', 'openRouter', 'openAICompatible', 'deepseek', 'groq', 'xAI', 'mistral',
+	'openAI', 'openAICodex', 'xAISuperGrok', 'openRouter', 'openAICompatible', 'deepseek', 'groq', 'xAI', 'mistral',
 	'ollama', 'vLLM', 'lmStudio', 'liteLLM'
 ]
 

@@ -5,11 +5,11 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { FeatureName, featureNames, isFeatureNameDisabled, ModelSelection, modelSelectionsEqual, ProviderName, providerNames, SettingsOfProvider } from '../../../../common/orbitSettingsTypes.js'
-import { useSettingsState, useRefreshModelState, useAccessor, useOpenAiCodexAuthState, useOrbitProviderAuthState } from '../util/services.js'
+import { useSettingsState, useRefreshModelState, useAccessor, useOpenAiCodexAuthState, useOrbitProviderAuthState, useXAiGrokAuthState } from '../util/services.js'
 import { _VoidSelectBox, VoidCustomDropdownBox } from '../util/inputs.js'
 import { SelectBox } from '../../../../../../../base/browser/ui/selectBox/selectBox.js'
 import { VOID_OPEN_SETTINGS_ACTION_ID, VOID_TOGGLE_SETTINGS_ACTION_ID } from '../../../orbitSettingsPane.js'
-import { VOID_OPENAI_CODEX_SIGN_IN_ACTION_ID, VOID_ORBIT_PROVIDER_SIGN_IN_ACTION_ID } from '../../../actionIDs.js'
+import { VOID_OPENAI_CODEX_SIGN_IN_ACTION_ID, VOID_ORBIT_PROVIDER_SIGN_IN_ACTION_ID, VOID_XAI_GROK_SIGN_IN_ACTION_ID } from '../../../actionIDs.js'
 import { modelFilterOfFeatureName, ModelOption } from '../../../../common/orbitSettingsService.js'
 import { WarningBox } from './WarningBox.js'
 import ErrorBoundary from '../sidebar-tsx/ErrorBoundary.js'
@@ -113,6 +113,7 @@ const ModelSelectBox = ({ options, featureName, className }: { options: ModelOpt
 const MemoizedModelDropdown = ({ featureName, className }: { featureName: FeatureName, className: string }) => {
 	const settingsState = useSettingsState()
 	const authState = useOpenAiCodexAuthState()
+	const xAiAuthState = useXAiGrokAuthState()
 	const orbitAuth = useOrbitProviderAuthState()
 	const accessor = useAccessor()
 	const commandService = accessor.get('ICommandService')
@@ -126,21 +127,29 @@ const MemoizedModelDropdown = ({ featureName, className }: { featureName: Featur
 		const newOptions = settingsState._modelOptions
 			.filter((o) => filter(o.selection, { chatMode: settingsState.globalSettings.chatMode, overridesOfModel: settingsState.overridesOfModel }))
 			.filter((o) => authState.isAuthenticated || o.selection.providerName !== 'openAICodex')
+			.filter((o) => xAiAuthState.isAuthenticated || o.selection.providerName !== 'xAISuperGrok')
 			.filter((o) => orbitAuth.isAuthenticated || o.selection.providerName !== 'orbit')
 
 		if (!optionsEqual(oldOptions, newOptions)) {
 			setMemoizedOptions(newOptions)
 		}
 		oldOptionsRef.current = newOptions
-	}, [settingsState._modelOptions, settingsState.globalSettings.chatMode, settingsState.overridesOfModel, filter, authState.isAuthenticated, orbitAuth.isAuthenticated])
+	}, [settingsState._modelOptions, settingsState.globalSettings.chatMode, settingsState.overridesOfModel, filter, authState.isAuthenticated, xAiAuthState.isAuthenticated, orbitAuth.isAuthenticated])
 
 	if (memoizedOptions.length === 0) {
 		const hasCodexModels = settingsState._modelOptions.some((o) => o.selection.providerName === 'openAICodex')
+		const hasXAiModels = settingsState._modelOptions.some((o) => o.selection.providerName === 'xAISuperGrok')
 		const hasOrbitModels = settingsState._modelOptions.some((o) => o.selection.providerName === 'orbit')
 		if (!authState.isAuthenticated && hasCodexModels) {
 			return <WarningBox
 				onClick={() => commandService.executeCommand(VOID_OPENAI_CODEX_SIGN_IN_ACTION_ID)}
 				text='Sign in to use OpenAI Codex'
+			/>
+		}
+		if (!xAiAuthState.isAuthenticated && hasXAiModels) {
+			return <WarningBox
+				onClick={() => commandService.executeCommand(VOID_XAI_GROK_SIGN_IN_ACTION_ID)}
+				text='Sign in with SuperGrok to use Grok models'
 			/>
 		}
 		if (!orbitAuth.isAuthenticated && hasOrbitModels) {
@@ -159,6 +168,7 @@ const MemoizedModelDropdown = ({ featureName, className }: { featureName: Featur
 export const ModelDropdown = ({ featureName, className }: { featureName: FeatureName, className: string }) => {
 	const settingsState = useSettingsState()
 	const authState = useOpenAiCodexAuthState()
+	const xAiAuthState = useXAiGrokAuthState()
 	const orbitAuth = useOrbitProviderAuthState()
 
 	const accessor = useAccessor()
@@ -174,14 +184,14 @@ export const ModelDropdown = ({ featureName, className }: { featureName: Feature
 	useEffect(() => {
 		if (!orbitAuth.isAuthenticated && selection?.providerName === 'orbit') {
 			const { filter } = modelFilterOfFeatureName[featureName]
-			const fallbackOptions = settingsState._modelOptions
-				.filter((o) => filter(o.selection, { chatMode: settingsState.globalSettings.chatMode, overridesOfModel: settingsState.overridesOfModel }))
-				.filter((o) => o.selection.providerName !== 'orbit')
-			if (fallbackOptions.length > 0) {
-				voidSettingsService.setModelSelectionOfFeature(featureName, fallbackOptions[0].selection)
-			}
+		const fallbackOptions = settingsState._modelOptions
+			.filter((o) => filter(o.selection, { chatMode: settingsState.globalSettings.chatMode, overridesOfModel: settingsState.overridesOfModel }))
+			.filter((o) => o.selection.providerName !== 'orbit')
+			.filter((o) => authState.isAuthenticated || o.selection.providerName !== 'openAICodex')
+			.filter((o) => xAiAuthState.isAuthenticated || o.selection.providerName !== 'xAISuperGrok')
+			voidSettingsService.setModelSelectionOfFeature(featureName, fallbackOptions[0]?.selection ?? null)
 		}
-	}, [orbitAuth.isAuthenticated, selection?.providerName, settingsState._modelOptions, settingsState.globalSettings.chatMode, settingsState.overridesOfModel, featureName, voidSettingsService])
+	}, [orbitAuth.isAuthenticated, authState.isAuthenticated, xAiAuthState.isAuthenticated, selection?.providerName, settingsState._modelOptions, settingsState.globalSettings.chatMode, settingsState.overridesOfModel, featureName, voidSettingsService])
 
 	useEffect(() => {
 		if (authState.isAuthenticated) return
@@ -190,10 +200,22 @@ export const ModelDropdown = ({ featureName, className }: { featureName: Feature
 		const fallbackOptions = settingsState._modelOptions
 			.filter((o) => filter(o.selection, { chatMode: settingsState.globalSettings.chatMode, overridesOfModel: settingsState.overridesOfModel }))
 			.filter((o) => o.selection.providerName !== 'openAICodex')
-		if (fallbackOptions.length > 0) {
-			voidSettingsService.setModelSelectionOfFeature(featureName, fallbackOptions[0].selection)
-		}
-	}, [authState.isAuthenticated, selection?.providerName, settingsState._modelOptions, settingsState.globalSettings.chatMode, settingsState.overridesOfModel, featureName, voidSettingsService])
+			.filter((o) => xAiAuthState.isAuthenticated || o.selection.providerName !== 'xAISuperGrok')
+			.filter((o) => orbitAuth.isAuthenticated || o.selection.providerName !== 'orbit')
+		voidSettingsService.setModelSelectionOfFeature(featureName, fallbackOptions[0]?.selection ?? null)
+	}, [authState.isAuthenticated, xAiAuthState.isAuthenticated, orbitAuth.isAuthenticated, selection?.providerName, settingsState._modelOptions, settingsState.globalSettings.chatMode, settingsState.overridesOfModel, featureName, voidSettingsService])
+
+	useEffect(() => {
+		if (xAiAuthState.isAuthenticated) return
+		if (selection?.providerName !== 'xAISuperGrok') return
+		const { filter } = modelFilterOfFeatureName[featureName]
+		const fallbackOptions = settingsState._modelOptions
+			.filter((o) => filter(o.selection, { chatMode: settingsState.globalSettings.chatMode, overridesOfModel: settingsState.overridesOfModel }))
+			.filter((o) => o.selection.providerName !== 'xAISuperGrok')
+			.filter((o) => authState.isAuthenticated || o.selection.providerName !== 'openAICodex')
+			.filter((o) => orbitAuth.isAuthenticated || o.selection.providerName !== 'orbit')
+		voidSettingsService.setModelSelectionOfFeature(featureName, fallbackOptions[0]?.selection ?? null)
+	}, [xAiAuthState.isAuthenticated, authState.isAuthenticated, orbitAuth.isAuthenticated, selection?.providerName, settingsState._modelOptions, settingsState.globalSettings.chatMode, settingsState.overridesOfModel, featureName, voidSettingsService])
 
 	const isDisabled = isFeatureNameDisabled(featureName, settingsState)
 	if (isDisabled)

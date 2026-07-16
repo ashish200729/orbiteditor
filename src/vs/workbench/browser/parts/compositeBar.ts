@@ -21,6 +21,7 @@ import { IPaneComposite } from '../../common/panecomposite.js';
 import { IComposite } from '../../common/composite.js';
 import { CompositeDragAndDropData, CompositeDragAndDropObserver, IDraggedCompositeData, ICompositeDragAndDrop, Before2D, toggleDropEffect, ICompositeDragAndDropObserverCallbacks } from '../dnd.js';
 import { Gesture, EventType as TouchEventType, GestureEvent } from '../../../base/browser/touch.js';
+import { ThemeIcon } from '../../../base/common/themables.js';
 
 export interface ICompositeBarItem {
 
@@ -144,6 +145,9 @@ export interface ICompositeBarOptions {
 	readonly compact?: boolean;
 	readonly compositeSize: number;
 	readonly overflowActionSize: number;
+	readonly maximumVisibleComposites?: number;
+	readonly overflowActionIcon?: ThemeIcon;
+	readonly showAllCompositesInOverflow?: boolean;
 	readonly dndHandler: ICompositeDragAndDrop;
 	readonly activityHoverOptions: IActivityHoverOptions;
 	readonly preventLoopNavigation?: boolean;
@@ -529,13 +533,14 @@ export class CompositeBar extends Widget implements ICompositeBar {
 		).map(item => item.id);
 
 		// Ensure we are not showing more composites than we have height for
-		let maxVisible = compositesToShow.length;
 		const totalComposites = compositesToShow.length;
+		const maximumVisibleComposites = Math.max(0, this.options.maximumVisibleComposites ?? totalComposites);
+		let maxVisible = Math.min(totalComposites, maximumVisibleComposites);
 		let size = 0;
 		const limit = this.options.orientation === ActionsOrientation.VERTICAL ? this.dimension.height : this.dimension.width;
 
 		// Add composites while they fit
-		for (let i = 0; i < compositesToShow.length; i++) {
+		for (let i = 0; i < maxVisible; i++) {
 			const compositeSize = this.compositeSizeInBar.get(compositesToShow[i])!;
 			// Adding this composite will overflow available size, so don't
 			if (size + compositeSize > limit) {
@@ -560,7 +565,7 @@ export class CompositeBar extends Widget implements ICompositeBar {
 		// The active composite might have pushed us over the limit
 		// Keep popping the composite before the active one until it fits
 		// If even the active one doesn't fit, we will resort to overflow
-		while (size > limit && compositesToShow.length) {
+		while ((size > limit || compositesToShow.length > maximumVisibleComposites) && compositesToShow.length) {
 			const removedComposite = compositesToShow.length > 1 ? compositesToShow.splice(compositesToShow.length - 2, 1)[0] : compositesToShow.pop();
 			size -= this.compositeSizeInBar.get(removedComposite!)!;
 		}
@@ -618,11 +623,11 @@ export class CompositeBar extends Widget implements ICompositeBar {
 		if (totalComposites > compositesToShow.length && !this.compositeOverflowAction) {
 			this.compositeOverflowAction = this._register(this.instantiationService.createInstance(CompositeOverflowActivityAction, () => {
 				this.compositeOverflowActionViewItem?.showMenu();
-			}));
+			}, this.options.overflowActionIcon));
 			this.compositeOverflowActionViewItem = this._register(this.instantiationService.createInstance(
 				CompositeOverflowActivityActionViewItem,
 				this.compositeOverflowAction,
-				() => this.getOverflowingComposites(),
+				() => this.getOverflowMenuComposites(),
 				() => this.model.activeItem ? this.model.activeItem.id : undefined,
 				compositeId => {
 					const item = this.model.findItem(compositeId);
@@ -641,7 +646,11 @@ export class CompositeBar extends Widget implements ICompositeBar {
 		}
 	}
 
-	private getOverflowingComposites(): { id: string; name?: string }[] {
+	private getOverflowMenuComposites(): { id: string; name?: string }[] {
+		if (this.options.showAllCompositesInOverflow) {
+			return this.model.visibleItems.map(item => ({ id: item.id, name: this.getAction(item.id)?.label || item.name }));
+		}
+
 		let overflowingIds = this.model.visibleItems.filter(item => item.pinned).map(item => item.id);
 
 		// Show the active composite even if it is not pinned

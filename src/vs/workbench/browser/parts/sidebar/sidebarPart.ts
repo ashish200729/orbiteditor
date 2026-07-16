@@ -32,10 +32,12 @@ import { Separator } from '../../../../base/common/actions.js';
 import { ToggleActivityBarVisibilityActionId } from '../../actions/layoutActions.js';
 import { localize2 } from '../../../../nls.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
+import { Codicon } from '../../../../base/common/codicons.js';
 
 export class SidebarPart extends AbstractPaneCompositePart {
 
 	static readonly activeViewletSettingsKey = 'workbench.sidebar.activeviewletid';
+	private static readonly MAX_TOP_ACTIVITY_ITEMS = 4;
 
 	//#region IView
 
@@ -119,6 +121,7 @@ export class SidebarPart extends AbstractPaneCompositePart {
 		this.activityBarPart.hide();
 
 		this.updateCompositeBar();
+		this.updateActivityBarPresentation();
 
 		const id = this.getActiveComposite()?.getId();
 		if (id) {
@@ -149,6 +152,14 @@ export class SidebarPart extends AbstractPaneCompositePart {
 		container.style.borderLeftStyle = borderColor && !isPositionLeft ? 'solid' : '';
 		container.style.borderLeftColor = !isPositionLeft ? borderColor || '' : '';
 		container.style.outlineColor = this.getColor(SIDE_BAR_DRAG_AND_DROP_BACKGROUND) ?? '';
+
+		this.updateActivityBarPresentation();
+	}
+
+	private updateActivityBarPresentation(): void {
+		const isActivityBarTop = this.configurationService.getValue<ActivityBarPosition>(LayoutSettings.ACTIVITY_BAR_LOCATION) === ActivityBarPosition.TOP;
+		this.getContainer()?.classList.toggle('activity-bar-top', isActivityBarTop);
+		this.setTitleAreaVisibility(!isActivityBarTop);
 	}
 
 	override layout(width: number, height: number, top: number, left: number): void {
@@ -191,6 +202,9 @@ export class SidebarPart extends AbstractPaneCompositePart {
 			compositeSize: 0,
 			iconSize: 16,
 			overflowActionSize: 30,
+			maximumVisibleComposites: this.getCompositeBarPosition() === CompositeBarPosition.TOP ? SidebarPart.MAX_TOP_ACTIVITY_ITEMS : undefined,
+			overflowActionIcon: this.getCompositeBarPosition() === CompositeBarPosition.TOP ? Codicon.chevronDown : undefined,
+			showAllCompositesInOverflow: this.getCompositeBarPosition() === CompositeBarPosition.TOP,
 			colors: theme => ({
 				activeBackgroundColor: theme.getColor(SIDE_BAR_BACKGROUND),
 				inactiveBackgroundColor: theme.getColor(SIDE_BAR_BACKGROUND),

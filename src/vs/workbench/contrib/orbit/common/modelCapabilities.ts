@@ -18,6 +18,8 @@ export const defaultProviderSettings = {
 	},
 	openAICodex: {
 	},
+	xAISuperGrok: {
+	},
 	orbit: {
 	},
 	deepseek: {
@@ -105,6 +107,10 @@ export const defaultModelsOfProvider = {
 		'gpt-5-codex-mini',
 		'gpt-5.1-codex-mini',
 		'gpt-5.2',
+	],
+	xAISuperGrok: [
+		'grok-composer-2.5-fast',
+		'grok-4.5',
 	],
 	anthropic: [ // https://platform.claude.com/docs/en/about-claude/models/overview
 		'claude-fable-5',
@@ -974,6 +980,28 @@ const openAISettings: VoidStaticProviderInfo = {
 // ---------------- XAI ----------------
 const xAIModelOptions = {
 	// https://docs.x.ai/developers/models
+	'grok-composer-2.5-fast': {
+		// Composer 2.5 is a SuperGrok/Grok Build subscription model. xAI does not
+		// publish a metered API price for it, so cost estimation remains disabled.
+		contextWindow: 200_000,
+		reservedOutputTokenSpace: null,
+		cost: { input: 0, output: 0 },
+		downloadable: false,
+		supportsFIM: false,
+		supportsSystemMessage: 'system-role',
+		specialToolFormat: 'openai-style',
+		reasoningCapabilities: false,
+	},
+	'grok-4.5': {
+		contextWindow: 500_000,
+		reservedOutputTokenSpace: null,
+		cost: { input: 2.00, output: 6.00, cache_read: 0.50 },
+		downloadable: false,
+		supportsFIM: false,
+		supportsSystemMessage: 'system-role',
+		specialToolFormat: 'openai-style',
+		reasoningCapabilities: { supportsReasoning: true, canTurnOffReasoning: false, canIOReasoning: false, reasoningSlider: { type: 'effort_slider', values: ['low', 'medium', 'high'], default: 'high' } },
+	},
 	'grok-4.3': {
 		contextWindow: 1_000_000,
 		reservedOutputTokenSpace: null,
@@ -1076,8 +1104,10 @@ const xAISettings: VoidStaticProviderInfo = {
 		if (lower.includes('grok-2')) fallbackName = 'grok-2'
 		if (lower.includes('grok-3')) fallbackName = 'grok-3'
 		if (lower.includes('build')) fallbackName = 'grok-build-0.1'
+		if (lower.includes('composer-2.5')) fallbackName = 'grok-composer-2.5-fast'
 		if (lower.includes('grok-4.20') || lower.includes('grok-4-20')) fallbackName = lower.includes('non-reasoning') ? 'grok-4.20-0309-non-reasoning' : 'grok-4.20-0309-reasoning'
-		if (lower.includes('grok-4')) fallbackName = 'grok-4.3'
+		if (lower.includes('grok-4.5') || lower.includes('grok-4-5')) fallbackName = 'grok-4.5'
+		if (lower.includes('grok-4') && !fallbackName) fallbackName = 'grok-4.3'
 		if (lower.includes('grok') && !fallbackName) fallbackName = 'grok-4.3'
 		if (fallbackName) return { modelName: fallbackName, recognizedModelName: fallbackName, ...xAIModelOptions[fallbackName] }
 		return null
@@ -1973,6 +2003,7 @@ const orbitProviderSettings: VoidStaticProviderInfo = {
 const modelSettingsOfProvider: { [providerName in ProviderName]: VoidStaticProviderInfo } = {
 	openAI: openAISettings,
 	openAICodex: openAISettings,
+	xAISuperGrok: xAISettings,
 	orbit: orbitProviderSettings,
 	anthropic: anthropicSettings,
 	xAI: xAISettings,

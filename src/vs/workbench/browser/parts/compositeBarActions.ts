@@ -451,12 +451,13 @@ export class CompositeBarActionViewItem extends BaseActionViewItem {
 export class CompositeOverflowActivityAction extends CompositeBarAction {
 
 	constructor(
-		private showMenu: () => void
+		private showMenu: () => void,
+		icon: ThemeIcon = Codicon.more,
 	) {
 		super({
 			id: 'additionalComposites.action',
 			name: localize('additionalViews', "Additional Views"),
-			classNames: ThemeIcon.asClassNameArray(Codicon.more)
+			classNames: ThemeIcon.asClassNameArray(icon)
 		});
 	}
 

@@ -23,6 +23,8 @@ import { availableTools, InternalToolInfo } from '../../common/prompt/prompts.js
 import { generateUuid } from '../../../../../base/common/uuid.js';
 import { getOpenAiCodexOAuthManager } from '../openai-codex/oauthManager.js';
 import { OPENAI_CODEX_OAUTH_CONFIG } from '../openai-codex/oauthConfig.js';
+import { getXAiGrokOAuthManager } from '../xai-grok/oauthManager.js';
+import { XAI_GROK_OAUTH_CONFIG } from '../xai-grok/oauthConfig.js';
 import { sendOrbitProviderChat } from './orbitProviderChat.js';
 import { orbitProviderList } from './orbitProviderList.js';
 
@@ -804,6 +806,7 @@ const buildOpenAiCodexInput = (
 const sendOpenAICodexChat = async ({ messages, onText, onFinalMessage, onError, modelSelectionOptions, modelName: modelName_, _setAborter, providerName, chatMode, separateSystemMessage, overridesOfModel, mcpTools, toolPolicy }: SendChatParams_Internal) => {
 	// So a real MCP tool named e.g. `read_file` isn't misrouted through builtin-Read param normalization.
 	const mcpToolNames = mcpTools?.map(t => t.name)
+	const isXAiSuperGrok = providerName === 'xAISuperGrok'
 	const {
 		modelName,
 		specialToolFormat,
@@ -817,10 +820,30 @@ const sendOpenAICodexChat = async ({ messages, onText, onFinalMessage, onError, 
 	const toolNameSet = new Set<string>(tools?.map(tool => tool.name) ?? [])
 
 	const { input, instructions } = buildOpenAiCodexInput(messages, separateSystemMessage, true)
+	// xAI follows the public OpenResponses shape where input_image.image_url is a string.
+	// ChatGPT's private Codex endpoint retains its existing nested URL payload.
+	const isXAiComposer = isXAiSuperGrok && modelName === 'grok-composer-2.5-fast'
+	const hasImageInput = input.some(item => 'content' in item && item.content.some(content => content.type === 'input_image'))
+	if (isXAiComposer && hasImageInput) {
+		onError({
+			message: 'Composer 2.5 does not support image input. Remove the attached image or switch to Grok 4.5.',
+			fullError: null,
+		})
+		return
+	}
+	const providerInput = isXAiSuperGrok ? input.map(item => {
+		if (!('content' in item)) return item
+		return {
+			...item,
+			content: item.content.map(content => content.type === 'input_image'
+				? { type: 'input_image', image_url: content.image_url.url, detail: 'auto' }
+				: content),
+		}
+	}) : input
 
 	const payload: Record<string, unknown> = {
 		model: modelName,
-		input,
+		input: providerInput,
 		stream: true,
 		store: false,
 		...toolPayload,
@@ -832,17 +855,25 @@ const sendOpenAICodexChat = async ({ messages, onText, onFinalMessage, onError, 
 
 	if (reasoningInfo?.isReasoningEnabled) {
 		if (reasoningInfo.type === 'effort_slider_value') {
-			payload.reasoning = { effort: reasoningInfo.reasoningEffort, summary: 'auto' }
+			payload.reasoning = isXAiSuperGrok
+				? { effort: reasoningInfo.reasoningEffort }
+				: { effort: reasoningInfo.reasoningEffort, summary: 'auto' }
 		}
 		if (reasoningInfo.type === 'budget_slider_value') {
 			payload.reasoning = { max_tokens: reasoningInfo.reasoningBudget, summary: 'auto' }
 		}
-		payload.include = ['reasoning.encrypted_content']
+		if (!isXAiSuperGrok) payload.include = ['reasoning.encrypted_content']
 	}
 
-	let oauthManager: ReturnType<typeof getOpenAiCodexOAuthManager>
+	const providerLabel = isXAiSuperGrok ? 'SuperGrok' : 'OpenAI Codex'
+	let oauthManager: {
+		getAccessToken(): Promise<string>
+		forceRefreshAccessToken(): Promise<string>
+		clearCredentials(): Promise<void>
+		getAccountId?(): string | undefined
+	}
 	try {
-		oauthManager = getOpenAiCodexOAuthManager()
+		oauthManager = isXAiSuperGrok ? getXAiGrokOAuthManager() : getOpenAiCodexOAuthManager()
 	} catch (error) {
 		const message = error instanceof Error ? error.message : `Authentication failed: ${error}`
 		onError({ message, fullError: error instanceof Error ? error : null })
@@ -858,7 +889,7 @@ const sendOpenAICodexChat = async ({ messages, onText, onFinalMessage, onError, 
 		return
 	}
 
-	let accountId = oauthManager.getAccountId()
+	let accountId = oauthManager.getAccountId?.()
 
 	const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 
@@ -899,15 +930,17 @@ const sendOpenAICodexChat = async ({ messages, onText, onFinalMessage, onError, 
 
 		let response: Response
 		try {
-			response = await fetch('https://chatgpt.com/backend-api/codex/responses', {
+			response = await fetch(isXAiSuperGrok ? `${XAI_GROK_OAUTH_CONFIG.apiBaseUrl}/responses` : 'https://chatgpt.com/backend-api/codex/responses', {
 				method: 'POST',
 				headers: {
 					Authorization: `Bearer ${accessToken}`,
 					'Content-Type': 'application/json',
 					Accept: 'text/event-stream',
-					originator: OPENAI_CODEX_OAUTH_CONFIG.originatorHeader,
-					session_id: generateUuid(),
-					...(accountId ? { 'ChatGPT-Account-Id': accountId } : {}),
+					...(!isXAiSuperGrok ? {
+						originator: OPENAI_CODEX_OAUTH_CONFIG.originatorHeader,
+						session_id: generateUuid(),
+						...(accountId ? { 'ChatGPT-Account-Id': accountId } : {}),
+					} : {}),
 					'User-Agent': 'orbit-editor',
 				},
 				body: JSON.stringify(payload),
@@ -918,7 +951,7 @@ const sendOpenAICodexChat = async ({ messages, onText, onFinalMessage, onError, 
 				throw new Error('Request was cancelled')
 			}
 			if (fetchError instanceof TypeError && fetchError.message.includes('fetch')) {
-				throw new Error('Network error: Unable to connect to OpenAI Codex. Please check your internet connection.')
+				throw new Error(`Network error: Unable to connect to ${providerLabel}. Please check your internet connection.`)
 			}
 			throw new Error(`Request failed: ${fetchError instanceof Error ? fetchError.message : String(fetchError)}`)
 		}
@@ -927,7 +960,7 @@ const sendOpenAICodexChat = async ({ messages, onText, onFinalMessage, onError, 
 			if (allowRefresh) {
 				try {
 					accessToken = await oauthManager.forceRefreshAccessToken()
-					accountId = oauthManager.getAccountId()
+					accountId = oauthManager.getAccountId?.()
 					return sendRequest(false)
 				} catch (refreshError) {
 					await oauthManager.clearCredentials()
@@ -935,39 +968,43 @@ const sendOpenAICodexChat = async ({ messages, onText, onFinalMessage, onError, 
 				}
 			}
 			await oauthManager.clearCredentials()
-			throw new Error('OpenAI Codex authentication expired. Sign in again.')
+			throw new Error(`${providerLabel} authentication expired. Sign in again.`)
 		}
 
 		if (response.status === 402 || response.status === 403) {
 			const detail = await readErrorPayload(response)
 			if (detail && detail.toLowerCase().includes('not included in your plan')) {
-				throw new Error('OpenAI Codex usage is not enabled for this workspace or plan. Select a workspace with Codex access or upgrade your plan.')
+				throw new Error(isXAiSuperGrok
+					? 'Grok API access is not included in this xAI plan. Use an eligible SuperGrok or X Premium plan, or connect an xAI API key instead.'
+					: 'OpenAI Codex usage is not enabled for this workspace or plan. Select a workspace with Codex access or upgrade your plan.')
 			}
-			throw new Error(`OpenAI Codex access is unavailable for this account.${detail ? ` ${detail}` : ''}`.trim())
+			throw new Error(`${providerLabel} access is unavailable for this account.${detail ? ` ${detail}` : ''}`.trim())
 		}
 
 		if (response.status === 429) {
 			const retryAfterMs = parseRetryAfterMs(response)
 			const detail = await readErrorPayload(response)
 			if (detail && detail.toLowerCase().includes('not included in your plan')) {
-				throw new Error('OpenAI Codex usage is not enabled for this workspace or plan. Select a workspace with Codex access or upgrade your plan.')
+				throw new Error(isXAiSuperGrok
+					? 'Grok API access is not included in this xAI plan. Use an eligible SuperGrok or X Premium plan, or connect an xAI API key instead.'
+					: 'OpenAI Codex usage is not enabled for this workspace or plan. Select a workspace with Codex access or upgrade your plan.')
 			}
 			if (retryAfterMs !== null && retryAfterMs <= 10_000 && retryCount < 1) {
 				await delay(retryAfterMs)
 				return sendRequest(allowRefresh, retryCount + 1)
 			}
 			const suffix = retryAfterMs !== null ? ` Retry after ${Math.ceil(retryAfterMs / 1000)}s.` : ''
-			throw new Error(`OpenAI Codex rate limit reached.${suffix}${detail ? ` ${detail}` : ''}`.trim())
+			throw new Error(`${providerLabel} rate limit reached.${suffix}${detail ? ` ${detail}` : ''}`.trim())
 		}
 
 		if (!response.ok) {
 			const errorText = await response.text()
-			throw new Error(`OpenAI Codex request failed (${response.status}). ${errorText}`.trim())
+			throw new Error(`${providerLabel} request failed (${response.status}). ${errorText}`.trim())
 		}
 
 		const reader = response.body?.getReader()
 		if (!reader) {
-			throw new Error('OpenAI Codex response stream unavailable.')
+			throw new Error(`${providerLabel} response stream unavailable.`)
 		}
 
 		const decoder = new TextDecoder()
@@ -975,6 +1012,7 @@ const sendOpenAICodexChat = async ({ messages, onText, onFinalMessage, onError, 
 		let fullTextSoFar = ''
 		let fullReasoningSoFar = ''
 		let usageSoFar: LLMUsage | undefined
+		let streamError: string | undefined
 		const toolCallsById = new Map<string, { id: string; name: string; args: string }>()
 		const toolCallOrder: string[] = []
 		let lastToolCallId: string | null = null
@@ -1134,6 +1172,15 @@ const sendOpenAICodexChat = async ({ messages, onText, onFinalMessage, onError, 
 						appendOutputFromResponse(event.response)
 					}
 					break
+				case 'error':
+				case 'response.failed':
+					streamError = event.response?.error?.message ?? event.error?.message ?? event.message ?? `${providerLabel} response failed.`
+					break
+				case 'response.incomplete':
+					streamError = event.response?.incomplete_details?.reason
+						? `${providerLabel} response was incomplete: ${event.response.incomplete_details.reason}`
+						: `${providerLabel} response was incomplete.`
+					break
 			}
 		}
 
@@ -1164,9 +1211,21 @@ const sendOpenAICodexChat = async ({ messages, onText, onFinalMessage, onError, 
 			.map(tool => rawToolCallObjOfParamsStr(tool.name, tool.args, tool.id, mcpToolNames))
 			.filter((toolCall): toolCall is RawToolCallObj => toolCall !== null)
 
-		if (!fullTextSoFar && !fullReasoningSoFar && toolCalls.length === 0) {
+		const hasPartialResponse = !!fullTextSoFar || !!fullReasoningSoFar || toolCalls.length > 0
+		if (streamError && !hasPartialResponse) throw new Error(streamError)
+		if (!hasPartialResponse) {
 			onError({ message: 'Orbit: Response from model was empty.', fullError: null })
 			return
+		}
+		if (streamError) {
+			const partialResponseNotice = `\n\n> **Partial response:** ${streamError}`
+			fullTextSoFar += partialResponseNotice
+			onText({
+				fullText: fullTextSoFar,
+				fullReasoning: fullReasoningSoFar,
+				toolCall: toolCalls[0],
+				toolCalls: toolCalls.length ? toolCalls : undefined,
+			})
 		}
 
 		onFinalMessage({
@@ -1791,7 +1850,7 @@ const sendGeminiChat = async ({
 						error.message?.includes('clipboard') ||
 						(error.status === 404 && error.message?.includes('image'))) {
 						onError({
-							message: `This model (${modelName}) does not support image input. Please use a vision-capable model.)`,
+							message: `This model (${modelName}) does not support image input. Please use a vision-capable model.`,
 							fullError: error
 						});
 						return;
@@ -1835,6 +1894,11 @@ export const sendLLMMessageToProviderImplementation = {
 		list: null,
 	},
 	openAICodex: {
+		sendChat: (params) => sendOpenAICodexChat(params),
+		sendFIM: null,
+		list: null,
+	},
+	xAISuperGrok: {
 		sendChat: (params) => sendOpenAICodexChat(params),
 		sendFIM: null,
 		list: null,
