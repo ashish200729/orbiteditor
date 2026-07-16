@@ -2,6 +2,40 @@
 
 All notable changes to Orbit Editor are documented here.
 
+## 0.3.0
+
+### ⚡ Grok through your xAI subscription
+
+Sign in to xAI with your **SuperGrok** or eligible **X Premium** subscription and use **Composer 2.5** and **Grok 4.5** directly in Orbit — no xAI API key required.
+
+- **OAuth sign-in.** Add the *xAI – SuperGrok Subscription* provider in Settings → Providers (or during onboarding) and authenticate in your browser. Orbit stores and refreshes the tokens for you.
+- **Subscription models.** Composer 2.5 and Grok 4.5 are available straight from the subscription. If your plan doesn't include Grok API access, Orbit says so and lets you connect an xAI API key instead — no dead ends.
+- **Usage aware.** Your weekly and monthly subscription usage is surfaced so you can keep an eye on limits.
+
+### 🎛️ Primary bar & title bar refinements
+
+Cleaner, more focused workbench chrome that matches modern editor conventions.
+
+- **Redesigned "Additional Views" menu.** The primary activity-bar overflow (the chevron) is now a premium, attached dropdown. Each view shows its icon, name, keyboard shortcut, and a pin toggle — pinned views stay marked, unpinned ones reveal their pin on hover. It's fully keyboard-navigable, sensibly ordered, and lists only real navigators (empty/contextual containers like *References* no longer clutter it).
+- **Testing moved to the bottom panel.** The Testing view now lives in the bottom panel (bottom-right) instead of the primary sidebar, keeping the activity bar focused on core navigation.
+- **Simpler title bar.** Removed the account icon and the duplicate built-in settings gear from the title bar — Orbit's own settings gear is now the single settings entry point.
+
+### Bug fixes
+
+- Fixed a crash that could leave the Additional Views menu empty or broken (an invalid icon class threw while the menu was being built).
+
+### macOS install
+
+- **Recommended (no Gatekeeper warning):**
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/ashish200729/orbiteditor/main/install.sh | bash
+  ```
+- **Or download the `.dmg`** from the release, drag Orbit to Applications, then run once:
+  ```bash
+  xattr -cr /Applications/Orbit.app
+  ```
+  (Orbit isn't notarized by Apple yet, so a browser-downloaded `.dmg` shows a one-time "unverified developer" prompt; the command above clears it.)
+
 ## 0.2.2
 
 ### 🔍 Semantic Codebase Search
