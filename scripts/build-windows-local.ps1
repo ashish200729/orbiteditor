@@ -20,8 +20,8 @@ $package = Get-Content package.json | ConvertFrom-Json
 $version = $product.orbitVersion
 
 if ($package.version -ne $version) {
-	$package.version = $version
-	$package | ConvertTo-Json -Depth 100 | Set-Content package.json -Encoding utf8
+	node -e "const fs=require('fs'); const p=JSON.parse(fs.readFileSync('package.json','utf8').replace(/^\uFEFF/,'')); p.version='$version'; fs.writeFileSync('package.json', JSON.stringify(p, null, 2) + '\n');"
+	if ($LASTEXITCODE -ne 0) { throw 'Failed to sync package.json version' }
 	Write-Host "Synced package.json version -> $version"
 }
 
