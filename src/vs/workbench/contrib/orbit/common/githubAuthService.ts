@@ -31,6 +31,7 @@ export interface IGitHubAuthService {
 	getState(): Promise<GitHubAuthState>
 	startAuthorizationFlow(): Promise<{ authUrl: string }>
 	waitForCallback(): Promise<GitHubAuthState>
+	cancelAuthorizationFlow(): Promise<void>
 	signOut(): Promise<void>
 	readonly onDidChangeState: Event<GitHubAuthState>
 }
@@ -77,6 +78,8 @@ export class GitHubAuthService extends Disposable implements IGitHubAuthService 
 		this._onDidChangeState.fire(s)
 		return s
 	}
+
+	cancelAuthorizationFlow = () => this.mainService.cancelAuthorizationFlow()
 
 	signOut = () => this.mainService.signOut()
 }

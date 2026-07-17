@@ -15,6 +15,8 @@ export type GitHubCredentials = {
 	}
 }
 
+import type http from 'http'
+
 export type PendingState = {
 	state: string
 	codeVerifier: string
@@ -22,4 +24,5 @@ export type PendingState = {
 	reject: (err: Error) => void
 	timeoutId: NodeJS.Timeout
 	startedAt: number
+	loopbackServer?: http.Server
 }

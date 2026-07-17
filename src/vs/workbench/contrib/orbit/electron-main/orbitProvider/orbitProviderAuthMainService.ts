@@ -29,5 +29,7 @@ export class OrbitProviderAuthMainService extends Disposable implements IOrbitPr
 
 	waitForCallback = () => this.gitHubAuthService.waitForCallback()
 
+	cancelAuthorizationFlow = () => this.gitHubAuthService.cancelAuthorizationFlow()
+
 	signOut = () => this.gitHubAuthService.signOut()
 }

@@ -46,5 +46,10 @@ export class GitHubAuthMainService extends Disposable implements IGitHubAuthServ
 
 	waitForCallback = () => this.manager.waitForCallback()
 
+	cancelAuthorizationFlow = () => {
+		this.manager.cancelAuthorizationFlow()
+		return Promise.resolve()
+	}
+
 	signOut = () => this.manager.clearCredentials()
 }

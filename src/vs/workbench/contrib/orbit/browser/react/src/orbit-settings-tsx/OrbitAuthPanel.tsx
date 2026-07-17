@@ -10,6 +10,7 @@ import { VoidButtonBgDarken } from '../util/inputs.js'
 import { useAccessor, useOrbitProviderAuthState } from '../util/services.js'
 import { useOrbitProviderUsage } from '../util/useOrbitProviderUsage.js'
 import {
+	VOID_ORBIT_PROVIDER_CANCEL_SIGN_IN_ACTION_ID,
 	VOID_ORBIT_PROVIDER_SIGN_IN_ACTION_ID,
 	VOID_ORBIT_PROVIDER_SIGN_OUT_ACTION_ID,
 	VOID_REFRESH_ORBIT_PROVIDER_ACTION_ID,
@@ -136,13 +137,21 @@ export const OrbitAuthPanel = () => {
 					</div>
 				</div>
 			) : (
-				<VoidButtonBgDarken
-					className='w-full px-3 py-1.5 text-xs'
-					disabled={orbitAuth.isPending}
-					onClick={() => commandService.executeCommand(VOID_ORBIT_PROVIDER_SIGN_IN_ACTION_ID)}
-				>
-					{orbitAuth.isPending ? 'Waiting for sign-in…' : 'Sign in with GitHub'}
-				</VoidButtonBgDarken>
+				orbitAuth.isPending ? (
+					<VoidButtonBgDarken
+						className='w-full px-3 py-1.5 text-xs'
+						onClick={() => commandService.executeCommand(VOID_ORBIT_PROVIDER_CANCEL_SIGN_IN_ACTION_ID)}
+					>
+						Cancel sign-in
+					</VoidButtonBgDarken>
+				) : (
+					<VoidButtonBgDarken
+						className='w-full px-3 py-1.5 text-xs'
+						onClick={() => commandService.executeCommand(VOID_ORBIT_PROVIDER_SIGN_IN_ACTION_ID)}
+					>
+						Sign in with GitHub
+					</VoidButtonBgDarken>
+				)
 			)}
 		</div>
 	)

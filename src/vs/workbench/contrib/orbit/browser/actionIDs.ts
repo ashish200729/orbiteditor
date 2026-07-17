@@ -41,6 +41,8 @@ export const VOID_GITHUB_SIGN_OUT_ACTION_ID = 'void.githubSignOut'
 
 export const VOID_ORBIT_PROVIDER_SIGN_IN_ACTION_ID = 'void.orbitProviderSignIn'
 
+export const VOID_ORBIT_PROVIDER_CANCEL_SIGN_IN_ACTION_ID = 'void.orbitProviderCancelSignIn'
+
 export const VOID_ORBIT_PROVIDER_SIGN_OUT_ACTION_ID = 'void.orbitProviderSignOut'
 
 export const VOID_REFRESH_ORBIT_PROVIDER_ACTION_ID = 'void.refreshOrbitProvider'

@@ -12,6 +12,7 @@ import { IOrbitProviderAuthService } from '../common/orbitProviderAuthService.js
 import { IRefreshModelService } from '../common/refreshModelService.js'
 import { ICommandService } from '../../../../platform/commands/common/commands.js'
 import {
+	VOID_ORBIT_PROVIDER_CANCEL_SIGN_IN_ACTION_ID,
 	VOID_ORBIT_PROVIDER_SIGN_IN_ACTION_ID,
 	VOID_ORBIT_PROVIDER_SIGN_OUT_ACTION_ID,
 	VOID_REFRESH_ORBIT_PROVIDER_ACTION_ID,
@@ -95,7 +96,27 @@ registerAction2(class extends Action2 {
 				return
 			}
 			notificationService.error(message)
+		} finally {
+			const state = await authService.getState()
+			if (state.isPending) {
+				await authService.cancelAuthorizationFlow()
+			}
 		}
+	}
+})
+
+registerAction2(class extends Action2 {
+	constructor() {
+		super({
+			id: VOID_ORBIT_PROVIDER_CANCEL_SIGN_IN_ACTION_ID,
+			title: 'Cancel Orbit sign-in',
+			f1: false,
+		})
+	}
+
+	async run(accessor: ServicesAccessor): Promise<void> {
+		const authService = accessor.get(IOrbitProviderAuthService)
+		await authService.cancelAuthorizationFlow()
 	}
 })
 

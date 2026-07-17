@@ -25,6 +25,7 @@ export interface IOrbitProviderAuthService {
 	getUsage(): Promise<OrbitProviderUsage>
 	startAuthorizationFlow(): Promise<{ authUrl: string }>
 	waitForCallback(): Promise<OrbitProviderAuthState>
+	cancelAuthorizationFlow(): Promise<void>
 	signOut(): Promise<void>
 	readonly onDidChangeState: Event<OrbitProviderAuthState>
 }
@@ -73,6 +74,8 @@ export class OrbitProviderAuthService extends Disposable implements IOrbitProvid
 		this._onDidChangeState.fire(s)
 		return s
 	}
+
+	cancelAuthorizationFlow = () => this.mainService.cancelAuthorizationFlow()
 
 	signOut = () => this.mainService.signOut()
 }
