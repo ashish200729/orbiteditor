@@ -53,8 +53,9 @@ export function formatOrbitPlanName(plan: string): string {
 	return normalized.charAt(0).toUpperCase() + normalized.slice(1)
 }
 
-/** Matches orbiteditor-ui low-balance threshold logic. */
+/** Matches orbiteditor-ui low-balance threshold logic. A fully depleted ($0) wallet is the
+ *  most important case to warn about, not an exemption from the warning. */
 export function isOrbitLowBalance(wallet: number, monthlyCredits: number): boolean {
 	const threshold = Math.max(1, Math.min(5, monthlyCredits * 0.1))
-	return wallet > 0 && wallet < threshold
+	return wallet < threshold
 }

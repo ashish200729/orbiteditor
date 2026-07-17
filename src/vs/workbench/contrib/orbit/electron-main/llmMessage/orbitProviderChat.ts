@@ -13,12 +13,15 @@ import { getOrbitLlmMainServices } from './orbitLlmMainServices.js'
 import { generateUuid } from '../../../../../base/common/uuid.js'
 import { availableTools, InternalToolInfo } from '../../common/prompt/prompts.js'
 import type { ChatMode } from '../../common/orbitSettingsTypes.js'
-import type { LLMUsage, RawToolCallObj, ToolPolicy } from '../../common/sendLLMMessageTypes.js'
+import type { LLMUsage, OnError, OnFinalMessage, RawToolCallObj, ToolPolicy } from '../../common/sendLLMMessageTypes.js'
 import { parsePartialToolParams } from './parsePartialToolParams.js'
 import { schemaOfToolInfo } from './toolSchema.js'
 
 /** Orbit gateway rejects output above this (see orbit-backend llmGateway.maxOutputTokens). */
 const ORBIT_GATEWAY_MAX_OUTPUT_TOKENS = 8192
+
+/** If no stream chunk arrives within this window, abort and surface an error instead of hanging forever. */
+const STREAM_IDLE_TIMEOUT_MS = 90_000
 
 const parseOrbitErrorMessage = async (response: Response, fallback: string): Promise<string> => {
 	try {
@@ -70,8 +73,8 @@ export const sendOrbitProviderChat = async (params: SendChatParams_Internal) => 
 	const {
 		messages,
 		onText,
-		onFinalMessage,
-		onError,
+		onFinalMessage: onFinalMessage_orig,
+		onError: onError_orig,
 		modelSelectionOptions,
 		modelName: modelName_,
 		_setAborter,
@@ -81,6 +84,11 @@ export const sendOrbitProviderChat = async (params: SendChatParams_Internal) => 
 		mcpTools,
 		toolPolicy,
 	} = params
+	// Guarded so an idle-timeout abort (see STREAM_IDLE_TIMEOUT_MS below) and the stream
+	// loop's own terminal callback can never both fire for the same request.
+	let settled = false
+	const onError: OnError = (p) => { if (settled) return; settled = true; onError_orig(p) }
+	const onFinalMessage: OnFinalMessage = (p) => { if (settled) return; settled = true; onFinalMessage_orig(p) }
 	// So a real MCP tool named e.g. `read_file` isn't misrouted through builtin-Read param normalization.
 	const mcpToolNames = mcpTools?.map(t => t.name)
 
@@ -280,12 +288,31 @@ export const sendOrbitProviderChat = async (params: SendChatParams_Internal) => 
 		}
 	}
 
+	let idleTimer: ReturnType<typeof setTimeout> | undefined
+	const resetIdleTimer = () => {
+		if (idleTimer) {
+			clearTimeout(idleTimer)
+		}
+		idleTimer = setTimeout(() => {
+			try { controller.abort() } catch { /* ignore */ }
+			onError({ message: 'Orbit: stream stalled — no response received in time.', fullError: null })
+		}, STREAM_IDLE_TIMEOUT_MS)
+	}
+	const stopIdleTimer = () => {
+		if (idleTimer) {
+			clearTimeout(idleTimer)
+			idleTimer = undefined
+		}
+	}
+
 	try {
+		resetIdleTimer()
 		while (true) {
 			const { done, value } = await reader.read()
 			if (done) {
 				break
 			}
+			resetIdleTimer()
 			buffer += decoder.decode(value, { stream: true })
 			const lines = buffer.split('\n')
 			buffer = lines.pop() ?? ''
@@ -364,5 +391,7 @@ export const sendOrbitProviderChat = async (params: SendChatParams_Internal) => 
 		})
 	} catch (error) {
 		onError({ message: error instanceof Error ? error.message : String(error), fullError: error instanceof Error ? error : null })
+	} finally {
+		stopIdleTimer()
 	}
 }

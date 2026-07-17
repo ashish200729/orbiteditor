@@ -19,6 +19,18 @@ import type { GitHubCredentials, PendingState } from './oauthTypes.js'
 import type { GitHubAuthState } from '../../common/githubAuthService.js'
 import { getOrbitApiBaseUrl } from '../llmMessage/orbitApiUrl.js'
 
+const FETCH_TIMEOUT_MS = 15_000
+
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs = FETCH_TIMEOUT_MS): Promise<Response> {
+	const controller = new AbortController()
+	const timer = setTimeout(() => controller.abort(), timeoutMs)
+	try {
+		return await fetch(url, { ...init, signal: controller.signal })
+	} finally {
+		clearTimeout(timer)
+	}
+}
+
 export class GitHubOAuthError extends Error {
 	readonly code: string
 	constructor(message: string, code = 'oauth_error') {
@@ -114,6 +126,7 @@ export class GitHubOAuthManager extends Disposable {
 		authUrl.searchParams.set('client', 'desktop')
 		authUrl.searchParams.set('redirect_uri', callback)
 		authUrl.searchParams.set('code_challenge', codeChallenge)
+		authUrl.searchParams.set('code_challenge_method', 'S256')
 
 		const timeoutId = setTimeout(() => {
 			this.rejectPending(new GitHubOAuthError('Sign-in timed out. Please try again.', 'timeout'))
@@ -188,31 +201,30 @@ export class GitHubOAuthManager extends Disposable {
 			return true
 		}
 
+		// Claim the pending flow before the network round-trip: this prevents the
+		// outer sign-in timeout (or a duplicate deep-link delivery, e.g. an OS that
+		// re-dispatches the callback URL) from racing an in-flight code exchange,
+		// which previously could null-deref pendingAuth mid-await and leave an
+		// orphaned, never-persisted, never-revoked session/device key on the backend.
+		const pending = this.pendingAuth
+		this.pendingAuth = null
+		clearTimeout(pending.timeoutId)
+
 		try {
-			const creds = await this.exchangeAuthorizationCode(code, this.pendingAuth.codeVerifier)
-			const resolve = this.pendingAuth.resolve
-			clearTimeout(this.pendingAuth.timeoutId)
-			this.pendingAuth = null
-			await resolve(creds)
+			const creds = await this.exchangeAuthorizationCode(code, pending.codeVerifier)
+			await pending.resolve(creds)
 		} catch (err) {
 			const message = err instanceof Error ? err.message : 'Failed to complete sign-in.'
-			if (this.pendingAuth) {
-				this.rejectPending(new GitHubOAuthError(message, 'session_fetch_failed'))
-			} else {
-				const error = new GitHubOAuthError(message, 'session_fetch_failed')
-				for (const waiter of this.callbackWaiters.splice(0)) {
-					waiter.reject(error)
-				}
-				this.isPending = false
-				this._onDidChangeState.fire(this.getState())
-			}
+			pending.reject(new GitHubOAuthError(message, 'session_fetch_failed'))
+			this.isPending = false
+			this._onDidChangeState.fire(this.getState())
 		}
 		return true
 	}
 
 	private async exchangeAuthorizationCode(code: string, codeVerifier: string): Promise<GitHubCredentials> {
 		const baseUrl = getOrbitApiBaseUrl(this.services.productService, this.services.environmentService)
-		const res = await fetch(`${baseUrl}/api/auth/desktop/exchange`, {
+		const res = await fetchWithTimeout(`${baseUrl}/api/auth/desktop/exchange`, {
 			method: 'POST',
 			headers: { 'content-type': 'application/json' },
 			body: JSON.stringify({ code, codeVerifier }),
@@ -261,7 +273,7 @@ export class GitHubOAuthManager extends Disposable {
 		if (token?.startsWith('sk_')) {
 			try {
 				const baseUrl = getOrbitApiBaseUrl(this.services.productService, this.services.environmentService)
-				await fetch(`${baseUrl}/api/auth/api-keys/current`, {
+				await fetchWithTimeout(`${baseUrl}/api/auth/api-keys/current`, {
 					method: 'DELETE',
 					headers: { authorization: `Bearer ${token}` },
 				})

@@ -144,7 +144,7 @@ const openAiCodexAuthStateListeners: Set<(s: OpenAiCodexAuthState) => void> = ne
 let xAiGrokAuthState: XAiGrokAuthState = { isAuthenticated: false, isAuthorizing: false }
 const xAiGrokAuthStateListeners: Set<(s: XAiGrokAuthState) => void> = new Set()
 
-let gitHubAuthState: GitHubAuthState = { isAuthenticated: false }
+let gitHubAuthState: GitHubAuthState = { isAuthenticated: false, isPending: false }
 const gitHubAuthStateListeners: Set<(s: GitHubAuthState) => void> = new Set()
 
 let orbitProviderAuthState: OrbitProviderAuthState = { isAuthenticated: false, isPending: false }
@@ -294,7 +294,7 @@ export const _registerServices = (accessor: ServicesAccessor) => {
 		gitHubAuthState = state
 		gitHubAuthStateListeners.forEach(l => l(gitHubAuthState))
 	}).catch(() => {
-		gitHubAuthState = { isAuthenticated: false }
+		gitHubAuthState = { isAuthenticated: false, isPending: false }
 	})
 	disposables.push(
 		gitHubAuthService.onDidChangeState((state) => {
@@ -307,7 +307,7 @@ export const _registerServices = (accessor: ServicesAccessor) => {
 		orbitProviderAuthState = state
 		orbitProviderAuthStateListeners.forEach(l => l(orbitProviderAuthState))
 	}).catch(() => {
-		orbitProviderAuthState = { isAuthenticated: false }
+		orbitProviderAuthState = { isAuthenticated: false, isPending: false }
 	})
 	disposables.push(
 		orbitProviderAuthService.onDidChangeState((state) => {

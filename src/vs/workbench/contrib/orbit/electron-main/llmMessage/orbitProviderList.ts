@@ -25,7 +25,10 @@ export const orbitProviderList = async ({ onSuccess: onSuccess_, onError: onErro
 			headers: { authorization: `Bearer ${token}` },
 		})
 		if (res.status === 401) {
-			await manager.clearCredentials()
+			// This runs unattended (startup, auth-state-change refresh) — do not sign the
+			// user out or revoke their device key from here. A spurious/transient 401 on a
+			// background model-list poll must not silently log a signed-in user out; only
+			// an explicit sign-out or a real 401 during an attended chat request should do that.
 			throw new Error('Please sign in with GitHub.')
 		}
 		if (!res.ok) {

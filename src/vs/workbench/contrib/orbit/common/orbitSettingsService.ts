@@ -647,8 +647,10 @@ class VoidSettingsService extends Disposable implements IVoidSettingsService {
 	setOrbitProviderModels(orbitModelNames: string[], logging: object) {
 		const providerName = 'orbit' as const
 		if (orbitModelNames.length === 0) {
-			console.warn('[Orbit Provider] Model list was empty; clearing Orbit models.')
-			this._clearOrbitProviderModels()
+			// A transient empty response (deploy blip, gateway warm-up) must not wipe a
+			// signed-in user's model list. Explicit sign-out already clears the list via
+			// _revalidateOrbitProvider -> _clearOrbitProviderModels; keep last-known-good here.
+			console.warn('[Orbit Provider] Model list refresh returned no models; keeping existing list.')
 			this._metricsService.capture('Orbit Provider Models Empty', { providerName, ...logging })
 			return
 		}

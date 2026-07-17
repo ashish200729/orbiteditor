@@ -204,9 +204,11 @@ const SimpleModelSettingsDialog = ({
 	onClose: () => void;
 	modelInfo: { modelName: string; providerName: ProviderName; type: 'autodetected' | 'custom' | 'default' } | null;
 }) => {
-	if (!isOpen || !modelInfo) return null;
-
-	const { modelName, providerName, type } = modelInfo;
+	// Hooks must run unconditionally on every render of this component instance (it's
+	// always mounted by the caller with a toggling `isOpen` prop, never remounted) — an
+	// early return here before the hooks below caused a hook-count mismatch ("Rendered
+	// more hooks than during the previous render") the first time a dialog was opened.
+	const { modelName, providerName, type } = modelInfo ?? { modelName: '', providerName: 'openAI' as ProviderName, type: 'default' as const };
 	const accessor = useAccessor()
 	const settingsState = useSettingsState()
 	const mouseDownInsideModal = useRef(false); // Ref to track mousedown origin
@@ -235,6 +237,8 @@ const SimpleModelSettingsDialog = ({
 		setOverrideEnabled(!!cur);
 		setErrorMsg(null);
 	}, [isOpen, providerName, modelName, settingsState.overridesOfModel, placeholder]);
+
+	if (!isOpen || !modelInfo) return null;
 
 	const onSave = async () => {
 		// if disabled override, reset overrides

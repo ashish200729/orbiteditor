@@ -58,9 +58,11 @@ export const OrbitAuthPanel = () => {
 		void openerService.open(URI.parse(getOrbitBillingUrl(environmentService.isBuilt)), { openExternal: true })
 	}
 
-	const loadUsage = useCallback(async () => {
+	const loadUsage = useCallback(async (opts?: { silent?: boolean }) => {
 		const request = ++usageRequest.current
-		setIsLoadingUsage(true)
+		if (!opts?.silent) {
+			setIsLoadingUsage(true)
+		}
 		setUsageError(undefined)
 		try {
 			const nextUsage = await authService.getUsage()
@@ -74,7 +76,7 @@ export const OrbitAuthPanel = () => {
 				setUsageError(error instanceof Error ? error.message : 'Usage is unavailable.')
 			}
 		} finally {
-			if (request === usageRequest.current) {
+			if (request === usageRequest.current && !opts?.silent) {
 				setIsLoadingUsage(false)
 			}
 		}
@@ -95,7 +97,7 @@ export const OrbitAuthPanel = () => {
 		// elsewhere in the editor — without a periodic refresh this panel
 		// only ever updates on manual refresh or a full re-mount, so the
 		// displayed number can be arbitrarily stale.
-		const interval = setInterval(() => void loadUsage(), USAGE_POLL_MS)
+		const interval = setInterval(() => void loadUsage({ silent: true }), USAGE_POLL_MS)
 		return () => clearInterval(interval)
 	}, [orbitAuth.isAuthenticated, loadUsage])
 
