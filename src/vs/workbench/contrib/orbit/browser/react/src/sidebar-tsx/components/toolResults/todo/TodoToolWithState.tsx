@@ -73,7 +73,7 @@ export const TodoToolWithState = ({
 		return (
 			<TodoCompactCard
 				todos={todosForDisplay}
-				variant="inline"
+				variant="bubble"
 				previewMode={previewMode}
 				maxPreviewRows={TODO_CARD_PREVIEW_ROWS}
 				defaultExpanded={isStreaming}
