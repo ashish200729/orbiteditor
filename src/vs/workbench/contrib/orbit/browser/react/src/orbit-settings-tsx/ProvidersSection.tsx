@@ -7,7 +7,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronDown, Eye, EyeOff, RefreshCw } from 'lucide-react'
 import ErrorBoundary from '../sidebar-tsx/ErrorBoundary.js'
 import { VoidButtonBgDarken, VoidSimpleInputBox } from '../util/inputs.js'
-import { useAccessor, useOpenAiCodexAuthState, useSettingsState, useXAiGrokAuthState } from '../util/services.js'
+import { useAccessor, useOpenAiCodexAuthState, useOrbitProviderAuthState, useSettingsState, useXAiGrokAuthState } from '../util/services.js'
 import { ChatMarkdownRender } from '../markdown/ChatMarkdownRender.js'
 import { WarningBox } from './WarningBox.js'
 import type { XAiGrokUsage } from '../../../../common/xAiGrokAuthService.js'
@@ -29,8 +29,9 @@ import {
 	VOID_XAI_GROK_SIGN_IN_ACTION_ID,
 	VOID_XAI_GROK_SIGN_OUT_ACTION_ID,
 } from '../../../actionIDs.js'
+import { OrbitAuthPanel } from './OrbitAuthPanel.js'
 
-const cloudProviderNames = nonlocalProviderNames
+const cloudProviderNames: ProviderName[] = ['orbit', ...nonlocalProviderNames]
 
 type ProviderSectionGroup = {
 	id: string
@@ -45,7 +46,11 @@ const providerStatusLabel = (
 	isConfigured: boolean,
 	codexAuthenticated: boolean,
 	xAiAuthenticated: boolean,
+	orbitAuthenticated: boolean,
 ): string => {
+	if (providerName === 'orbit') {
+		return orbitAuthenticated ? 'Connected' : 'Not connected'
+	}
 	if (providerName === 'openAICodex') {
 		return codexAuthenticated ? 'Connected' : 'Not connected'
 	}
@@ -56,6 +61,9 @@ const providerStatusLabel = (
 }
 
 const providerSubtitle = (providerName: ProviderName): string => {
+	if (providerName === 'orbit') {
+		return 'GitHub sign-in · managed by Orbit Provider'
+	}
 	if (providerName === 'openAICodex') {
 		return 'ChatGPT Plus or Pro subscription'
 	}
@@ -342,6 +350,9 @@ const ProviderAccordionPanel = ({ providerName }: { providerName: ProviderName }
 	if (providerName === 'openAICodex') {
 		return <OpenAICodexProviderPanel />
 	}
+	if (providerName === 'orbit') {
+		return <OrbitAuthPanel />
+	}
 	if (providerName === 'xAISuperGrok') {
 		return <XAiSuperGrokProviderPanel />
 	}
@@ -382,19 +393,22 @@ const ProviderAccordionItem = ({
 	const voidSettingsState = useSettingsState()
 	const authState = useOpenAiCodexAuthState()
 	const xAiAuthState = useXAiGrokAuthState()
+	const orbitAuthState = useOrbitProviderAuthState()
 
 	const { title: providerTitle } = displayInfoOfProviderName(providerName)
 	const isConfigured = voidSettingsState.settingsOfProvider[providerName]._didFillInProviderSettings
-	const isConnected = providerName === 'openAICodex'
+	const isConnected = providerName === 'orbit'
+		? orbitAuthState.isAuthenticated
+		: providerName === 'openAICodex'
 		? authState.isAuthenticated
 		: providerName === 'xAISuperGrok'
 			? xAiAuthState.isAuthenticated
 		: !!isConfigured
 
-	const statusLabel = providerStatusLabel(providerName, !!isConfigured, authState.isAuthenticated, xAiAuthState.isAuthenticated)
+	const statusLabel = providerStatusLabel(providerName, !!isConfigured, authState.isAuthenticated, xAiAuthState.isAuthenticated, orbitAuthState.isAuthenticated)
 
 	return (
-		<div className={`@@provider-accordion${isOpen ? ' @@provider-accordion--open' : ''}${isConnected ? ' @@provider-accordion--connected' : ''}`}>
+		<div className={`@@provider-accordion${isOpen ? ' @@provider-accordion--open' : ''}${isConnected && providerName !== 'orbit' ? ' @@provider-accordion--connected' : ''}`}>
 			<button
 				type="button"
 				className="@@provider-accordion-trigger"
@@ -405,10 +419,12 @@ const ProviderAccordionItem = ({
 					<div className="@@provider-accordion-title">{providerTitle}</div>
 					<div className="@@provider-accordion-subtitle">{providerSubtitle(providerName)}</div>
 				</div>
-				<div className={`@@provider-accordion-status${isConnected ? ' @@provider-accordion-status--connected' : ''}`}>
-					<span className="@@provider-accordion-status-dot" aria-hidden="true" />
-					<span className="@@provider-accordion-status-label">{statusLabel}</span>
-				</div>
+				{providerName !== 'orbit' ? (
+					<div className={`@@provider-accordion-status${isConnected ? ' @@provider-accordion-status--connected' : ''}`}>
+						<span className="@@provider-accordion-status-dot" aria-hidden="true" />
+						<span className="@@provider-accordion-status-label">{statusLabel}</span>
+					</div>
+				) : null}
 				<ChevronDown className="@@provider-accordion-chevron" size={14} aria-hidden="true" />
 			</button>
 			{isOpen && (
@@ -496,7 +512,7 @@ export const ProvidersSection = () => {
 		{
 			id: 'cloud',
 			title: 'Cloud',
-			description: 'Connect API keys from Anthropic, OpenAI, OpenRouter, and other hosted providers.',
+			description: 'Connect Orbit Provider, ChatGPT, SuperGrok, and API keys from Anthropic, OpenAI, OpenRouter, and other hosted providers.',
 			providerNames: cloudProviderNames,
 		},
 		{
@@ -527,7 +543,7 @@ export const ProvidersSection = () => {
 			<div className='@@settings-page-header'>
 				<h2 className='@@settings-page-title'>Providers</h2>
 				<div className='@@settings-page-desc'>
-					Connect cloud APIs and local runtimes. Configure credentials here, then choose models on the Models tab.
+					Connect cloud APIs and local runtimes. Configure credentials here, then choose models on the Models tab. Orbit Provider uses GitHub sign-in — no API key required.
 				</div>
 			</div>
 

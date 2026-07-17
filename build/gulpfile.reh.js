@@ -300,18 +300,20 @@ function packageTask(type, platform, arch, sourceFolderName, destinationFolderNa
 		const sources = es.merge(src, extensions, extensionsCommonDependencies)
 			.pipe(filter(['**', '!**/*.js.map'], { dot: true }));
 
-		let version = packageJson.version;
+		let productVersion = product.version || packageJson.version;
+		let applicationVersion = packageJson.version;
 		const quality = product.quality;
 
 		if (quality && quality !== 'stable') {
-			version += '-' + quality;
+			productVersion += '-' + quality;
+			applicationVersion += '-' + quality;
 		}
 
 		const name = product.nameShort;
 
 		let packageJsonContents;
 		const packageJsonStream = gulp.src(['remote/package.json'], { base: 'remote' })
-			.pipe(json({ name, version, dependencies: undefined, optionalDependencies: undefined, type: 'module' }))
+			.pipe(json({ name, version: applicationVersion, dependencies: undefined, optionalDependencies: undefined, type: 'module' }))
 			.pipe(es.through(function (file) {
 				packageJsonContents = file.contents.toString();
 				this.emit('data', file);
@@ -319,7 +321,7 @@ function packageTask(type, platform, arch, sourceFolderName, destinationFolderNa
 
 		let productJsonContents;
 		const productJsonStream = gulp.src(['product.json'], { base: '.' })
-			.pipe(json({ commit, date: readISODate('out-build'), version }))
+			.pipe(json({ commit, date: readISODate('out-build'), version: productVersion }))
 			.pipe(es.through(function (file) {
 				productJsonContents = file.contents.toString();
 				this.emit('data', file);

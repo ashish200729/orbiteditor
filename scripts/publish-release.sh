@@ -14,6 +14,10 @@
 #
 # Note: SKIP_BUILD reuses an existing DMG — the version inside the .app must match [version].
 #       To release 0.1.1 you must rebuild (omit SKIP_BUILD), not just rename the 0.1.0 DMG.
+#
+# Requires ORBIT_UPDATE_SIGNING_KEY (PEM Ed25519 private key) in the
+# environment — scripts/update-latest-json.js refuses to write an unsigned
+# manifest, and the app refuses to auto-install from one.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -32,6 +36,14 @@ DMG_NAME="Orbit-${VERSION}-darwin-${ARCH}.dmg"
 DMG_PATH="${DMG_PATH:-${ROOT}/${DMG_NAME}}"
 
 echo "Orbit publish: version=${VERSION} tag=${TAG} platform=${PLATFORM_KEY}"
+
+if [[ -z "${ORBIT_UPDATE_SIGNING_KEY:-}" && "${ALLOW_UNSIGNED_MANIFEST:-}" != "1" ]]; then
+	echo "ERROR: ORBIT_UPDATE_SIGNING_KEY is not set."
+	echo "Refusing to publish before the manifest can be signed — otherwise the GitHub"
+	echo "release would ship while update/latest.json stays unsigned or stale."
+	echo "Set ORBIT_UPDATE_SIGNING_KEY, or ALLOW_UNSIGNED_MANIFEST=1 for local testing only."
+	exit 1
+fi
 
 # Keep product.json in sync when an explicit version is passed
 if [[ -n "${1:-}" ]]; then
@@ -135,11 +147,12 @@ if ! gh release view "$TAG" --json assets --jq '.assets[].name' | grep -qx "$DMG
 	exit 1
 fi
 
-node scripts/update-latest-json.js \
-	--version "$VERSION" \
-	--tag "$TAG" \
-	--merge \
-	--asset "${PLATFORM_KEY}=${DMG_NAME}"
+UPDATE_MANIFEST_ARGS=(--version "$VERSION" --tag "$TAG" --merge --asset "${PLATFORM_KEY}=${DMG_NAME}")
+if [[ -z "${ORBIT_UPDATE_SIGNING_KEY:-}" && "${ALLOW_UNSIGNED_MANIFEST:-}" == "1" ]]; then
+	UPDATE_MANIFEST_ARGS+=(--allow-unsigned)
+fi
+
+node scripts/update-latest-json.js "${UPDATE_MANIFEST_ARGS[@]}"
 
 if [[ "${SKIP_MANIFEST_PUSH:-}" == "1" ]]; then
 	echo "SKIP_MANIFEST_PUSH=1 — manifest updated locally only (not committed or pushed)."

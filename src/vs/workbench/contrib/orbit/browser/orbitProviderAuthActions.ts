@@ -31,6 +31,7 @@ registerAction2(class extends Action2 {
 
 	async run(accessor: ServicesAccessor): Promise<void> {
 		const authService = accessor.get(IOrbitProviderAuthService)
+		const refreshService = accessor.get(IRefreshModelService)
 		const openerService = accessor.get(IOpenerService)
 		const notificationService = accessor.get(INotificationService)
 		const clipboardService = accessor.get(IClipboardService)
@@ -41,7 +42,7 @@ registerAction2(class extends Action2 {
 			if (!opened) {
 				const handle = notificationService.notify({
 					severity: Severity.Info,
-					message: `Orbit sign-in URL:\n${authUrl}`,
+					message: 'Could not open your browser automatically. Use Copy URL to finish signing in.',
 					sticky: true,
 					actions: {
 						primary: [
@@ -69,6 +70,7 @@ registerAction2(class extends Action2 {
 					handle.close()
 					if (state.isAuthenticated) {
 						notificationService.info(`Signed in to Orbit${state.login ? ` as ${state.login}` : ''}.`)
+						refreshService.refreshOrbitProviderModels()
 					}
 				} catch (error) {
 					handle.close()
@@ -78,6 +80,7 @@ registerAction2(class extends Action2 {
 				const state = await authService.waitForCallback()
 				if (state.isAuthenticated) {
 					notificationService.info(`Signed in to Orbit${state.login ? ` as ${state.login}` : ''}.`)
+					refreshService.refreshOrbitProviderModels()
 				}
 			}
 		}
@@ -115,7 +118,7 @@ registerAction2(class extends Action2 {
 	constructor() {
 		super({
 			id: VOID_REFRESH_ORBIT_PROVIDER_ACTION_ID,
-			title: 'Refresh Orbit models',
+			title: 'Refresh Orbit Provider models',
 			f1: false,
 		})
 	}
@@ -136,7 +139,7 @@ registerAction2(class extends Action2 {
 
 	async run(accessor: ServicesAccessor): Promise<void> {
 		const commandService = accessor.get(ICommandService)
-		setPendingOrbitSettingsTab('models')
+		setPendingOrbitSettingsTab('account')
 		await commandService.executeCommand(VOID_OPEN_SETTINGS_ACTION_ID)
 	}
 })

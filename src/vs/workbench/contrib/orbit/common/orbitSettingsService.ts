@@ -13,7 +13,7 @@ import { IStorageService, StorageScope, StorageTarget } from '../../../../platfo
 import { IMetricsService } from './metricsService.js';
 import { defaultProviderSettings, getModelCapabilities, ModelOverrides } from './modelCapabilities.js';
 import { VOID_SETTINGS_STORAGE_KEY } from './storageKeys.js';
-import { defaultSettingsOfProvider, FeatureName, ProviderName, ModelSelectionOfFeature, SettingsOfProvider, SettingName, providerNames, ModelSelection, modelSelectionsEqual, featureNames, VoidStatefulModelInfo, GlobalSettings, GlobalSettingName, defaultGlobalSettings, ModelSelectionOptions, OptionsOfModelSelection, ChatMode, OverridesOfModel, defaultOverridesOfModel, MCPUserStateOfName as MCPUserStateOfName, MCPUserState, authGatedProviderNames } from './orbitSettingsTypes.js';
+import { defaultSettingsOfProvider, displayInfoOfProviderName, FeatureName, ProviderName, ModelSelectionOfFeature, SettingsOfProvider, SettingName, providerNames, ModelSelection, modelSelectionsEqual, featureNames, VoidStatefulModelInfo, GlobalSettings, GlobalSettingName, defaultGlobalSettings, ModelSelectionOptions, OptionsOfModelSelection, ChatMode, OverridesOfModel, defaultOverridesOfModel, MCPUserStateOfName as MCPUserStateOfName, MCPUserState, authGatedProviderNames } from './orbitSettingsTypes.js';
 import { IOrbitProviderAuthService, OrbitProviderAuthState } from './orbitProviderAuthService.js';
 import { BUILTIN_SUBAGENTS } from './subAgentRegistry.js';
 
@@ -184,7 +184,7 @@ const _validatedModelState = (state: Omit<VoidSettingsState, '_modelOptions'>): 
 	// update model options
 	let newModelOptions: ModelOption[] = []
 	for (const providerName of providerNames) {
-		const providerTitle = providerName // displayInfoOfProviderName(providerName).title.toLowerCase() // looks better lowercase, best practice to not use raw providerName
+		const providerTitle = displayInfoOfProviderName(providerName).title
 		if (!newSettingsOfProvider[providerName]._didFillInProviderSettings) continue // if disabled, don't display model options
 		for (const { modelName, isHidden } of newSettingsOfProvider[providerName].models) {
 			if (isHidden) continue
@@ -646,9 +646,18 @@ class VoidSettingsService extends Disposable implements IVoidSettingsService {
 
 	setOrbitProviderModels(orbitModelNames: string[], logging: object) {
 		const providerName = 'orbit' as const
+		if (orbitModelNames.length === 0) {
+			console.warn('[Orbit Provider] Model list was empty; clearing Orbit models.')
+			this._clearOrbitProviderModels()
+			this._metricsService.capture('Orbit Provider Models Empty', { providerName, ...logging })
+			return
+		}
 		const { models } = this.state.settingsOfProvider[providerName]
 		const oldModelNames = models.map(m => m.modelName)
-		const newModels = _modelsWithSwappedInNewModels({ existingModels: models, models: orbitModelNames, type: 'orbit' })
+		const orbitNameSet = new Set(orbitModelNames)
+		const swapped = _modelsWithSwappedInNewModels({ existingModels: models, models: orbitModelNames, type: 'orbit' })
+		// Drop stale static defaults when the gateway returns the same public name.
+		const newModels = swapped.filter(m => m.type !== 'default' || !orbitNameSet.has(m.modelName))
 		this.setSettingOfProvider(providerName, 'models', newModels)
 		const new_names = newModels.map(m => m.modelName)
 		if (!(oldModelNames.length === new_names.length
@@ -680,10 +689,8 @@ class VoidSettingsService extends Disposable implements IVoidSettingsService {
 	}
 
 	private _clearOrbitProviderModels() {
-		const defaultNames = defaultSettingsOfProvider.orbit.models
-			.filter(m => m.type === 'default')
-			.map(m => m.modelName)
-		this.setOrbitProviderModels(defaultNames, { source: 'sign_out' })
+		const defaultModels = defaultSettingsOfProvider.orbit.models.filter(m => m.type === 'default')
+		this.setSettingOfProvider('orbit', 'models', defaultModels)
 	}
 
 	toggleModelHidden(providerName: ProviderName, modelName: string) {

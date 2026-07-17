@@ -7,8 +7,17 @@
  *      --asset darwin-arm64=./Orbit-0.2.0-darwin-arm64.dmg \
  *      --merge
  *
- *  --merge   Preserve existing platform entries not passed via --asset
- *  --commit  Optional git commit SHA to record in the manifest
+ *  --merge             Preserve existing platform entries not passed via --asset
+ *  --commit            Optional git commit SHA to record in the manifest
+ *  --allow-unsigned    Skip Ed25519 signing (local/dev testing only — the app
+ *                      refuses to auto-install an unsigned manifest)
+ *
+ *  Signing requires ORBIT_UPDATE_SIGNING_KEY: a PEM-encoded PKCS8 Ed25519
+ *  private key (the full "-----BEGIN PRIVATE KEY-----...-----END PRIVATE
+ *  KEY-----" block, e.g. as a GitHub Actions secret). The matching public
+ *  key is embedded in src/vs/workbench/contrib/orbit/electron-main/
+ *  orbitUpdateSignature.ts — regenerate both together if the key ever
+ *  needs to be rotated.
  *--------------------------------------------------------------------------------------------*/
 
 'use strict';
@@ -33,6 +42,45 @@ function sha256(filePath) {
 	return crypto.createHash('sha256').update(data).digest('hex');
 }
 
+// Keep this byte-for-byte identical to canonicalOrbitJsonStringify in
+// src/vs/workbench/contrib/orbit/common/orbitUpdateManifest.ts — this
+// script signs with this copy, the app verifies with that one.
+function canonicalOrbitJsonStringify(value) {
+	if (Array.isArray(value)) {
+		return `[${value.map((v) => canonicalOrbitJsonStringify(v === undefined ? null : v)).join(',')}]`;
+	}
+	if (value !== null && typeof value === 'object') {
+		const keys = Object.keys(value).filter((k) => value[k] !== undefined).sort();
+		const entries = keys.map((k) => `${JSON.stringify(k)}:${canonicalOrbitJsonStringify(value[k])}`);
+		return `{${entries.join(',')}}`;
+	}
+	return JSON.stringify(value);
+}
+
+function signingPayload(manifest) {
+	const { version, commit, releasedAt, assets } = manifest;
+	return canonicalOrbitJsonStringify({ version, commit, releasedAt, assets });
+}
+
+function signManifest(manifest, allowUnsigned) {
+	const keyPem = process.env.ORBIT_UPDATE_SIGNING_KEY;
+	if (!keyPem) {
+		if (allowUnsigned) {
+			console.warn('WARNING: ORBIT_UPDATE_SIGNING_KEY not set — writing an UNSIGNED manifest (--allow-unsigned). The app will refuse to auto-install from this manifest.');
+			return manifest;
+		}
+		throw new Error(
+			'ORBIT_UPDATE_SIGNING_KEY is not set. Refusing to publish an unsigned update manifest ' +
+			'(the app will not auto-install from it, silently degrading every user to manual updates). ' +
+			'Set the signing key, or pass --allow-unsigned for local/dev testing only.'
+		);
+	}
+	const privateKey = crypto.createPrivateKey(keyPem);
+	const payload = Buffer.from(signingPayload(manifest), 'utf8');
+	const signature = crypto.sign(null, payload, privateKey).toString('base64');
+	return { ...manifest, signature };
+}
+
 function releaseUrl(tag, version, platformKey) {
 	const fileName = ARTIFACT_NAMES[platformKey](version);
 	return `https://github.com/${REPO}/releases/download/${tag}/${fileName}`;
@@ -44,6 +92,7 @@ function parseArgs(argv) {
 		tag: '',
 		commit: undefined,
 		merge: false,
+		allowUnsigned: false,
 		assets: {},
 	};
 
@@ -51,6 +100,8 @@ function parseArgs(argv) {
 		const arg = argv[i];
 		if (arg === '--merge') {
 			opts.merge = true;
+		} else if (arg === '--allow-unsigned') {
+			opts.allowUnsigned = true;
 		} else if (arg === '--version') {
 			opts.version = argv[++i];
 		} else if (arg === '--tag') {
@@ -125,10 +176,12 @@ function main() {
 		manifest.commit = opts.commit;
 	}
 
+	const signedManifest = signManifest(manifest, opts.allowUnsigned);
+
 	fs.mkdirSync(path.dirname(manifestPath), { recursive: true });
-	fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, '\t') + '\n');
+	fs.writeFileSync(manifestPath, JSON.stringify(signedManifest, null, '\t') + '\n');
 	console.log(`Updated ${manifestPath}`);
-	console.log(JSON.stringify(manifest, null, 2));
+	console.log(JSON.stringify(signedManifest, null, 2));
 }
 
 main();

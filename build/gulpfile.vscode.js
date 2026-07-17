@@ -262,15 +262,17 @@ function packageTask(platform, arch, sourceFolderName, destinationFolderName, op
 		const sources = es.merge(src, extensions)
 			.pipe(filter(['**', '!**/*.js.map'], { dot: true }));
 
-		let version = packageJson.version;
+		let productVersion = product.version || packageJson.version;
+		let applicationVersion = packageJson.version;
 		const quality = product.quality;
 
 		if (quality && quality !== 'stable') {
-			version += '-' + quality;
+			productVersion += '-' + quality;
+			applicationVersion += '-' + quality;
 		}
 
 		const name = product.nameShort;
-		const packageJsonUpdates = { name, version };
+		const packageJsonUpdates = { name, version: applicationVersion };
 
 		if (platform === 'linux') {
 			packageJsonUpdates.desktopName = `${product.applicationName}.desktop`;
@@ -286,7 +288,7 @@ function packageTask(platform, arch, sourceFolderName, destinationFolderName, op
 
 		let productJsonContents;
 		const productJsonStream = gulp.src(['product.json'], { base: '.' })
-			.pipe(json({ commit, date: readISODate('out-build'), checksums, version }))
+			.pipe(json({ commit, date: readISODate('out-build'), checksums, version: productVersion }))
 			.pipe(es.through(function (file) {
 				productJsonContents = file.contents.toString();
 				this.emit('data', file);

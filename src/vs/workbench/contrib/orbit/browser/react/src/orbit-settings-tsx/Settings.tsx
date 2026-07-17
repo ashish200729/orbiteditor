@@ -8,8 +8,8 @@ import '../styles.css';
 import { ProviderName, providerNames, VoidStatefulModelInfo, RefreshableProviderName, refreshableProviderNames, displayInfoOfProviderName, GlobalSettingName, displayInfoOfFeatureName } from '../../../../common/orbitSettingsTypes.js'
 import ErrorBoundary from '../sidebar-tsx/ErrorBoundary.js'
 import { VoidButtonBgDarken, VoidCustomDropdownBox, VoidInputBox2, VoidSimpleInputBox, VoidSwitch } from '../util/inputs.js'
-import { useAccessor, useIsDark, useIsOptedOut, useRefreshModelListener, useRefreshModelState, useSettingsState, useOpenAiCodexAuthState, useOrbitProviderAuthState, useOrbitUsageStats, useXAiGrokAuthState } from '../util/services.js'
-import { X, RefreshCw, Loader2, Check, Asterisk, Plus, Boxes, Cloud, Sparkles, Settings2, Puzzle, LayoutList, BookOpen, Bot, Trash2, Download, Search, Pause, Play, AlertTriangle, Database, type LucideIcon } from 'lucide-react'
+import { useAccessor, useIsDark, useIsOptedOut, useOrbitProviderAuthState, useRefreshModelListener, useRefreshModelState, useSettingsState, useOpenAiCodexAuthState, useXAiGrokAuthState } from '../util/services.js'
+import { X, RefreshCw, Loader2, Check, Asterisk, Plus, Boxes, Cloud, Sparkles, Settings2, Puzzle, LayoutList, BookOpen, Bot, Trash2, Download, Search, Pause, Play, AlertTriangle, Database, User, type LucideIcon } from 'lucide-react'
 import { listSkills, onSkillsChanged, type SkillDefinition } from '../../../../common/skillRegistry.js'
 import { listSubAgents, type ResolvedSubAgentDefinition } from '../../../../common/subAgentRegistry.js'
 import { URI } from '../../../../../../../base/common/uri.js'
@@ -27,9 +27,12 @@ import { useMCPServiceState } from '../util/services.js';
 import { OPT_OUT_KEY } from '../../../../common/storageKeys.js';
 import { StorageScope, StorageTarget } from '../../../../../../../platform/storage/common/storage.js';
 import { consumePendingOrbitSettingsTab } from '../../../orbitSettingsNavigation.js';
+import { VOID_REFRESH_ORBIT_PROVIDER_ACTION_ID } from '../../../actionIDs.js';
 import { ProvidersSection } from './ProvidersSection.js';
+import { AccountSection } from './AccountSection.js';
 
 type Tab =
+	| 'account'
 	| 'models'
 	| 'providers'
 	| 'featureOptions'
@@ -109,7 +112,9 @@ const RefreshModelButton = ({ providerName }: { providerName: RefreshableProvide
 
 const RefreshableModels = () => {
 	const settingsState = useSettingsState()
-
+	const orbitAuth = useOrbitProviderAuthState()
+	const accessor = useAccessor()
+	const commandService = accessor.get('ICommandService')
 
 	const buttons = refreshableProviderNames.map(providerName => {
 		if (!settingsState.settingsOfProvider[providerName]._didFillInProviderSettings) return null
@@ -118,6 +123,15 @@ const RefreshableModels = () => {
 
 	return <>
 		{buttons}
+		{orbitAuth.isAuthenticated ? (
+			<VoidButtonBgDarken
+				className='px-3 py-1 text-xs w-fit'
+				onClick={() => commandService.executeCommand(VOID_REFRESH_ORBIT_PROVIDER_ACTION_ID)}
+			>
+				<RefreshCw className='inline w-3 h-3 mr-1 -mt-px' />
+				Refresh Orbit Provider models
+			</VoidButtonBgDarken>
+		) : null}
 	</>
 
 }
@@ -353,6 +367,7 @@ export const ModelDump = ({ filteredProviders }: { filteredProviders?: ProviderN
 	const settingsState = useSettingsState()
 	const authState = useOpenAiCodexAuthState()
 	const xAiAuthState = useXAiGrokAuthState()
+	const orbitAuth = useOrbitProviderAuthState()
 
 	// State to track which model's settings dialog is open
 	const [openSettingsModel, setOpenSettingsModel] = useState<{
@@ -378,7 +393,7 @@ export const ModelDump = ({ filteredProviders }: { filteredProviders?: ProviderN
 	const providersToShow = (filteredProviders || providerNames).filter((provider) => {
 		if (provider === 'openAICodex' && !authState.isAuthenticated) return false
 		if (provider === 'xAISuperGrok' && !xAiAuthState.isAuthenticated) return false
-		if (provider === 'orbit') return false // Orbit is hidden from settings UI, same as the Providers tab (nonlocalProviderNames excludes it)
+		if (provider === 'orbit' && !orbitAuth.isAuthenticated) return false
 		return true
 	});
 
@@ -492,6 +507,8 @@ export const ModelDump = ({ filteredProviders }: { filteredProviders?: ProviderN
 
 			const detailAboutModel = type === 'autodetected' ?
 				<Asterisk size={14} className="inline-block align-text-top text-void-fg-3" data-tooltip-id='void-tooltip' data-tooltip-place='right' data-tooltip-content='Detected locally' />
+				: type === 'orbit' ?
+					<Asterisk size={14} className="inline-block align-text-top text-void-fg-3" data-tooltip-id='void-tooltip' data-tooltip-place='right' data-tooltip-content='Loaded from Orbit Provider' />
 				: type === 'custom' ?
 					<Asterisk size={14} className="inline-block align-text-top text-void-fg-3" data-tooltip-id='void-tooltip' data-tooltip-place='right' data-tooltip-content='Custom model' />
 					: undefined
@@ -550,7 +567,7 @@ export const ModelDump = ({ filteredProviders }: { filteredProviders?: ProviderN
 
 					{/* X button */}
 					<div className={`w-5 flex items-center justify-center`}>
-						{type === 'default' || type === 'autodetected' ? null : <button
+						{type === 'default' || type === 'autodetected' || type === 'orbit' ? null : <button
 							onClick={() => { settingsStateService.deleteModel(providerName, modelName); }}
 							data-tooltip-id='void-tooltip'
 							data-tooltip-place='right'
@@ -651,190 +668,12 @@ export const ModelDump = ({ filteredProviders }: { filteredProviders?: ProviderN
 
 
 
-const formatUsageCount = (value: number) => value.toLocaleString()
-
-const formatUsageTokens = (value: number) => {
-	if (value >= 1_000_000) {
-		return `${(value / 1_000_000).toFixed(1)}M`
-	}
-	if (value >= 1_000) {
-		return `${(value / 1_000).toFixed(1)}K`
-	}
-	return formatUsageCount(value)
-}
-
-const formatUsageDate = (iso: string | null) => {
-	if (!iso) {
-		return '—'
-	}
-	const date = new Date(iso)
-	if (Number.isNaN(date.getTime())) {
-		return '—'
-	}
-	return date.toLocaleString()
-}
-
-const usageProgressPercent = (used: number, limit: number) => {
-	if (limit <= 0) {
-		return 0
-	}
-	return Math.min(100, Math.round((used / limit) * 100))
-}
-
-const UsageProgressBar = ({ label, used, limit, formatValue }: {
-	label: string
-	used: number
-	limit: number
-	formatValue: (value: number) => string
-}) => {
-	const percent = usageProgressPercent(used, limit)
-	const isNearLimit = percent >= 90
-	return (
-		<div className='@@settings-progress'>
-			<div className='@@settings-progress-meta'>
-				<span className='@@settings-progress-label'>{label}</span>
-				<span className={`@@settings-progress-value${isNearLimit ? ' @@settings-progress-value--warning' : ''}`}>
-					{formatValue(used)} / {formatValue(limit)}
-				</span>
-			</div>
-			<div className='@@settings-progress-track'>
-				<div
-					className={`@@settings-progress-fill${isNearLimit ? ' @@settings-progress-fill--warning' : ''}`}
-					style={{ width: `${percent}%` }}
-				/>
-			</div>
-		</div>
-	)
-}
-
 const SettingsPageHeader = ({ title, description }: { title: string; description?: React.ReactNode }) => (
 	<div className='@@settings-page-header'>
 		<h2 className='@@settings-page-title'>{title}</h2>
 		{description ? <div className='@@settings-page-desc'>{description}</div> : null}
 	</div>
 )
-
-const AccountUsageStats = ({ enabled }: { enabled: boolean }) => {
-	const orbitAuth = useOrbitProviderAuthState()
-	const { stats, loading, error, refresh } = useOrbitUsageStats(enabled)
-
-	if (!orbitAuth.isAuthenticated) {
-		return null
-	}
-
-	const totalTokens = (stats?.totalInputTokens ?? 0) + (stats?.totalOutputTokens ?? 0)
-	const usedTokens30d = (stats?.last30Days?.totalInputTokens ?? 0) + (stats?.last30Days?.totalOutputTokens ?? 0)
-	const tokenLimit30d = stats?.limits?.monthlyTokens
-
-	return (
-		<div className='mt-6'>
-			<div className='@@settings-usage-header'>
-				<h3 className='@@settings-usage-title'>Usage</h3>
-				<button
-					type='button'
-					className='@@settings-refresh-btn'
-					disabled={loading}
-					onClick={() => void refresh()}
-				>
-					<RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
-					Refresh
-				</button>
-			</div>
-
-			<div className='@@settings-card'>
-				<div className='@@settings-card-body'>
-					{error && (
-						<p className='@@settings-card-sublabel mb-3'>{error}</p>
-					)}
-					{loading && !stats ? (
-						<div className='@@settings-loading'>
-							<Loader2 className='w-4 h-4 animate-spin' />
-							Loading usage…
-						</div>
-					) : (
-						<>
-							<p className='@@settings-usage-hint'>
-								Free plan includes 1M tokens per rolling 30 days. Usage refreshes when you open this tab or finish a chat.
-							</p>
-
-							{tokenLimit30d != null && (
-								<UsageProgressBar
-									label='Tokens (30 days)'
-									used={usedTokens30d}
-									limit={tokenLimit30d}
-									formatValue={formatUsageTokens}
-								/>
-							)}
-
-							<div className='@@settings-stat-grid @@settings-stat-grid--4'>
-								<div className='@@settings-stat'>
-									<div className='@@settings-stat-label'>Plan</div>
-									<div className='@@settings-stat-value capitalize'>{stats?.limits?.plan ?? orbitAuth.plan ?? 'free'}</div>
-								</div>
-								<div className='@@settings-stat'>
-									<div className='@@settings-stat-label'>Last activity</div>
-									<div className='@@settings-stat-value'>{formatUsageDate(stats?.lastRequestAt ?? null)}</div>
-								</div>
-								{stats?.remaining30Days?.tokens != null && (
-									<div className='@@settings-stat'>
-										<div className='@@settings-stat-label'>Remaining</div>
-										<div className='@@settings-stat-value'>{formatUsageTokens(stats.remaining30Days.tokens)}</div>
-									</div>
-								)}
-								<div className='@@settings-stat'>
-									<div className='@@settings-stat-label'>Requests (30d)</div>
-									<div className='@@settings-stat-value'>{formatUsageCount(stats?.last30Days?.totalLlmRequests ?? 0)}</div>
-								</div>
-							</div>
-
-							<div className='@@settings-subsection-title'>All-time</div>
-							<div className='@@settings-stat-grid @@settings-stat-grid--4'>
-								<div className='@@settings-stat'>
-									<div className='@@settings-stat-label'>API requests</div>
-									<div className='@@settings-stat-value'>{formatUsageCount(stats?.totalRequests ?? 0)}</div>
-								</div>
-								<div className='@@settings-stat'>
-									<div className='@@settings-stat-label'>LLM requests</div>
-									<div className='@@settings-stat-value'>{formatUsageCount(stats?.totalLlmRequests ?? 0)}</div>
-								</div>
-								<div className='@@settings-stat'>
-									<div className='@@settings-stat-label'>Input tokens</div>
-									<div className='@@settings-stat-value'>{formatUsageTokens(stats?.totalInputTokens ?? 0)}</div>
-								</div>
-								<div className='@@settings-stat'>
-									<div className='@@settings-stat-label'>Output tokens</div>
-									<div className='@@settings-stat-value'>{formatUsageTokens(stats?.totalOutputTokens ?? 0)}</div>
-								</div>
-							</div>
-
-							<div className='@@settings-total-row'>
-								<span className='@@settings-total-label'>Total tokens</span>
-								<span className='@@settings-total-value'>{formatUsageTokens(totalTokens)}</span>
-							</div>
-
-							{(stats?.byModel?.length ?? 0) > 0 && (
-								<>
-									<div className='@@settings-subsection-title'>By model</div>
-									<div>
-										{stats!.byModel.map((row) => (
-											<div key={row.model} className='@@settings-model-row'>
-												<span className='@@settings-model-name'>{row.model}</span>
-												<span className='@@settings-model-meta'>
-													{formatUsageCount(row.llmRequests)} calls · {formatUsageTokens(row.inputTokens + row.outputTokens)} tokens
-												</span>
-											</div>
-										))}
-									</div>
-								</>
-							)}
-						</>
-					)}
-				</div>
-			</div>
-		</div>
-	)
-}
-
 
 export const AutoDetectLocalModelsToggle = () => {
 	const settingName: GlobalSettingName = 'autoRefreshModels'
@@ -1452,6 +1291,7 @@ export const Settings = () => {
 		useState<Tab>(() => consumePendingOrbitSettingsTab() ?? 'models');
 
 	const navItems: { tab: Tab; label: string; icon: React.ReactNode; category?: string }[] = [
+		{ tab: 'account', label: 'Account', icon: <SettingsNavIcon icon={User} /> },
 		{ tab: 'models', label: 'Models', icon: <SettingsNavIcon icon={Boxes} /> },
 		{ tab: 'providers', label: 'Providers', icon: <SettingsNavIcon icon={Cloud} /> },
 		{ tab: 'featureOptions', label: 'Feature Options', icon: <SettingsNavIcon icon={Sparkles} /> },
@@ -1630,6 +1470,13 @@ export const Settings = () => {
 				<div className="@@settings-content">
 
 				<div className='@@settings-section-gap'>
+					{/* Account section */}
+					<div className={shouldShowTab('account') ? `` : 'hidden'}>
+						<ErrorBoundary>
+							<AccountSection />
+						</ErrorBoundary>
+					</div>
+
 					{/* Models section (formerly FeaturesTab) */}
 					<div className={shouldShowTab('models') ? `` : 'hidden'}>
 						<ErrorBoundary>

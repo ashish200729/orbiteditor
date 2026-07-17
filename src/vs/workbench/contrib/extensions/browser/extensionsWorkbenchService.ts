@@ -2973,22 +2973,28 @@ export class ExtensionsWorkbenchService extends Disposable implements IExtension
 	}
 
 	handleURL(uri: URI, options?: IOpenURLOptions): Promise<boolean> {
-		if (!/^extension/.test(uri.path)) {
+		const extensionId = this.getExtensionIdFromExtensionUri(uri);
+		if (!extensionId) {
 			return Promise.resolve(false);
 		}
 
-		this.onOpenExtensionUrl(uri);
+		this.onOpenExtensionUrl(extensionId);
 		return Promise.resolve(true);
 	}
 
-	private onOpenExtensionUrl(uri: URI): void {
-		const match = /^extension\/([^/]+)$/.exec(uri.path);
+	private getExtensionIdFromExtensionUri(uri: URI): string | undefined {
+		// Support both canonical `orbit:extension/publisher.name` links and the
+		// hierarchical `orbit://extension/publisher.name` form used by some sites.
+		const match = uri.authority.toLowerCase() === 'extension'
+			? /^\/([^/]+)\/?$/.exec(uri.path)
+			: !uri.authority
+				? /^\/?extension\/([^/]+)\/?$/.exec(uri.path)
+				: null;
+		const extensionId = match?.[1];
+		return extensionId && EXTENSION_IDENTIFIER_REGEX.test(extensionId) ? extensionId : undefined;
+	}
 
-		if (!match) {
-			return;
-		}
-
-		const extensionId = match[1];
+	private onOpenExtensionUrl(extensionId: string): void {
 
 		this.queryLocal().then(async local => {
 			let extension = local.find(local => areSameExtensions(local.identifier, { id: extensionId }));

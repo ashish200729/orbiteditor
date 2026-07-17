@@ -23,6 +23,9 @@ import { compareOrbitVersions, getCurrentOrbitVersion, getOrbitPlatformAssetKey,
 import { IVoidUpdateService } from '../common/orbitUpdateService.js';
 import { VoidCheckUpdateRespose } from '../common/orbitUpdateServiceTypes.js';
 import { preflightMacInstall, resolveMacAppBundlePath, resolveMacInstallTarget, spawnMacDmgInstaller } from './orbitUpdateInstall.darwin.js';
+import { verifyOrbitManifestSignature } from './orbitUpdateSignature.js';
+
+class OrbitManifestSignatureError extends Error { }
 
 interface IDownloadedUpdate {
 	readonly version: string;
@@ -205,8 +208,24 @@ export class VoidMainUpdateService extends Disposable implements IVoidUpdateServ
 			if (!manifest?.version || !manifest.assets) {
 				throw new Error('Manifest is missing version or assets');
 			}
+			// The sha256 check alone only proves the binary matches what the
+			// manifest claims — it doesn't prove the manifest is ours. Without
+			// an independent signature, anyone who can write to the GitHub repo
+			// (or MITM the raw.githubusercontent.com fetch) could publish a
+			// self-consistent malicious manifest+binary pair that auto-installs.
+			if (!verifyOrbitManifestSignature(manifest)) {
+				throw new OrbitManifestSignatureError('Manifest signature is missing or invalid — refusing to trust it');
+			}
 			return manifest;
 		} catch (error) {
+			// Signature failures must not fall back to the GitHub Releases API —
+			// that path omits per-asset sha256 checksums, and check() already
+			// refuses to auto-install without them. Treating a bad signature like
+			// a transport error would silently break auto-updates for everyone.
+			if (error instanceof OrbitManifestSignatureError) {
+				this._logService.error('[Orbit Update] Manifest signature is missing or invalid — refusing unsigned fallback', error);
+				throw error;
+			}
 			this._logService.warn('[Orbit Update] Manifest fetch failed, trying GitHub Releases API', error);
 			return this._fetchManifestFromGitHubReleases();
 		}

@@ -46,7 +46,6 @@ import { IOpenAiCodexAuthService, OpenAiCodexAuthState } from '../../../../commo
 import { IXAiGrokAuthService, XAiGrokAuthState } from '../../../../common/xAiGrokAuthService.js'
 import { IGitHubAuthService, GitHubAuthState } from '../../../../common/githubAuthService.js'
 import { IOrbitProviderAuthService, OrbitProviderAuthState } from '../../../../common/orbitProviderAuthService.js'
-import type { OrbitUsageStats } from '../../../../common/orbitUsageTypes.js'
 import { URI } from '../../../../../../../base/common/uri.js'
 import { IChatThreadService, IsRunningType, QueuedUserMessage, ThreadsState, ThreadStreamState } from '../../../chatThreadService.js'
 import { ITerminalToolService } from '../../../terminalToolService.js'
@@ -148,7 +147,7 @@ const xAiGrokAuthStateListeners: Set<(s: XAiGrokAuthState) => void> = new Set()
 let gitHubAuthState: GitHubAuthState = { isAuthenticated: false }
 const gitHubAuthStateListeners: Set<(s: GitHubAuthState) => void> = new Set()
 
-let orbitProviderAuthState: OrbitProviderAuthState = { isAuthenticated: false }
+let orbitProviderAuthState: OrbitProviderAuthState = { isAuthenticated: false, isPending: false }
 const orbitProviderAuthStateListeners: Set<(s: OrbitProviderAuthState) => void> = new Set()
 
 const ctrlKZoneStreamingStateListeners: Set<(diffareaid: number, s: boolean) => void> = new Set()
@@ -783,50 +782,6 @@ export const useOrbitProviderAuthState = () => {
 		return () => { orbitProviderAuthStateListeners.delete(ss) }
 	}, [ss])
 	return s
-}
-
-export const useOrbitUsageStats = (enabled = true) => {
-	const accessor = useAccessor()
-	const orbitAuth = useOrbitProviderAuthState()
-	const authService = accessor.get('IOrbitProviderAuthService')
-	const runningThreadIds = useRunningThreadIds()
-	const wasRunningRef = useRef(false)
-	const [stats, setStats] = useState<OrbitUsageStats | null>(null)
-	const [loading, setLoading] = useState(false)
-	const [error, setError] = useState<string | null>(null)
-
-	const refresh = useCallback(async () => {
-		if (!enabled || !orbitAuth.isAuthenticated) {
-			setStats(null)
-			setError(null)
-			setLoading(false)
-			return
-		}
-		setLoading(true)
-		setError(null)
-		try {
-			const next = await authService.getUsageStats()
-			setStats(next)
-		} catch (e) {
-			setError(e instanceof Error ? e.message : 'Failed to load usage')
-		} finally {
-			setLoading(false)
-		}
-	}, [enabled, orbitAuth.isAuthenticated, authService])
-
-	useEffect(() => {
-		void refresh()
-	}, [refresh])
-
-	useEffect(() => {
-		const isRunning = Object.keys(runningThreadIds).length > 0
-		if (wasRunningRef.current && !isRunning && enabled && orbitAuth.isAuthenticated) {
-			void refresh()
-		}
-		wasRunningRef.current = isRunning
-	}, [runningThreadIds, enabled, orbitAuth.isAuthenticated, refresh])
-
-	return { stats, loading, error, refresh }
 }
 
 

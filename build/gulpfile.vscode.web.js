@@ -29,7 +29,8 @@ const WEB_FOLDER = path.join(REPO_ROOT, 'remote', 'web');
 
 const commit = getVersion(REPO_ROOT);
 const quality = product.quality;
-const version = (quality && quality !== 'stable') ? `${packageJson.version}-${quality}` : packageJson.version;
+const applicationVersion = (quality && quality !== 'stable') ? `${packageJson.version}-${quality}` : packageJson.version;
+const productVersion = (quality && quality !== 'stable') ? `${product.version || packageJson.version}-${quality}` : (product.version || packageJson.version);
 
 const vscodeWebResourceIncludes = [
 
@@ -98,7 +99,7 @@ const createVSCodeWebFileContentMapper = (extensionsRoot, product) => {
 			return content => {
 				const productConfiguration = JSON.stringify({
 					...product,
-					version,
+					version: productVersion,
 					commit,
 					date: readISODate('out-build')
 				});
@@ -167,7 +168,7 @@ function packageTask(sourceFolderName, destinationFolderName) {
 
 		const name = product.nameShort;
 		const packageJsonStream = gulp.src(['remote/web/package.json'], { base: 'remote/web' })
-			.pipe(json({ name, version }));
+			.pipe(json({ name, version: applicationVersion }));
 
 		const license = gulp.src(['remote/LICENSE'], { base: 'remote', allowEmpty: true });
 

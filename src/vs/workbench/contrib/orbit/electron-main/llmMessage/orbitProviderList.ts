@@ -21,7 +21,7 @@ export const orbitProviderList = async ({ onSuccess: onSuccess_, onError: onErro
 		const manager = getGitHubOAuthManager()
 		const token = await manager.getAccessToken()
 		const baseUrl = getOrbitApiBaseUrl(productService, environmentService)
-		const res = await fetch(`${baseUrl}/v1/models`, {
+		const res = await fetch(`${baseUrl}/api/v1/models`, {
 			headers: { authorization: `Bearer ${token}` },
 		})
 		if (res.status === 401) {
@@ -29,7 +29,7 @@ export const orbitProviderList = async ({ onSuccess: onSuccess_, onError: onErro
 			throw new Error('Please sign in with GitHub.')
 		}
 		if (!res.ok) {
-			throw new Error(`Orbit /v1/models failed: ${res.status}`)
+			throw new Error(`Orbit /api/v1/models failed: ${res.status}`)
 		}
 		const json = await res.json() as { data?: Array<{ id: string; orbit?: { contextWindow?: number; supportsTools?: boolean; supportsReasoning?: boolean } }> }
 		onSuccess({

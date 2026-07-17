@@ -146,6 +146,16 @@ suite('ExtensionsWorkbenchServiceTest', () => {
 		instantiationService.stub(IUpdateService, { onStateChange: Event.None, state: State.Uninitialized });
 	});
 
+	test('handles canonical and hierarchical extension URLs only', async () => {
+		testObject = await aWorkbenchService();
+
+		assert.strictEqual(await testObject.handleURL(URI.parse('orbit:extension/ms-python.python')), true);
+		assert.strictEqual(await testObject.handleURL(URI.parse('orbit://extension/ms-python.python')), true);
+		assert.strictEqual(await testObject.handleURL(URI.parse('orbit:extensions/ms-python.python')), false);
+		assert.strictEqual(await testObject.handleURL(URI.parse('orbit:extension/not-an-extension-id')), false);
+		assert.strictEqual(await testObject.handleURL(URI.parse('orbit://unexpected/ms-python.python')), false);
+	});
+
 	test('test gallery extension', async () => {
 		const expected = aGalleryExtension('expectedName', {
 			displayName: 'expectedDisplayName',

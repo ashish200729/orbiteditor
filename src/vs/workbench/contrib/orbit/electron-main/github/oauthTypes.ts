@@ -17,6 +17,7 @@ export type GitHubCredentials = {
 
 export type PendingState = {
 	state: string
+	codeVerifier: string
 	resolve: (creds: GitHubCredentials) => void
 	reject: (err: Error) => void
 	timeoutId: NodeJS.Timeout

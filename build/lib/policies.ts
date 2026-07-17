@@ -1067,7 +1067,7 @@ async function getTranslations(): Promise<Translations> {
 		return [];
 	}
 
-	const version = parseVersion(packageJson.version);
+	const version = parseVersion(product.version || packageJson.version);
 	const languageIds = Object.keys(Languages);
 
 	return await Promise.all(languageIds.map(

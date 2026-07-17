@@ -15,13 +15,29 @@ import { availableTools, InternalToolInfo } from '../../common/prompt/prompts.js
 import type { ChatMode } from '../../common/orbitSettingsTypes.js'
 import type { LLMUsage, RawToolCallObj, ToolPolicy } from '../../common/sendLLMMessageTypes.js'
 import { parsePartialToolParams } from './parsePartialToolParams.js'
+import { schemaOfToolInfo } from './toolSchema.js'
+
+/** Orbit gateway rejects output above this (see orbit-backend llmGateway.maxOutputTokens). */
+const ORBIT_GATEWAY_MAX_OUTPUT_TOKENS = 8192
+
+const parseOrbitErrorMessage = async (response: Response, fallback: string): Promise<string> => {
+	try {
+		const json = await response.json() as { error?: { message?: string } }
+		if (json.error?.message && json.error.message !== 'Bad Request Exception') {
+			return json.error.message
+		}
+	} catch {
+		// fall through
+	}
+	return fallback
+}
 
 const toOpenAICompatibleTool = (toolInfo: InternalToolInfo): OpenAI.Chat.Completions.ChatCompletionTool => ({
 	type: 'function',
 	function: {
 		name: toolInfo.name,
 		description: toolInfo.description,
-		parameters: toolInfo.params,
+		parameters: schemaOfToolInfo(toolInfo),
 	},
 })
 
@@ -73,6 +89,7 @@ export const sendOrbitProviderChat = async (params: SendChatParams_Internal) => 
 		specialToolFormat,
 		reasoningCapabilities,
 		additionalOpenAIPayload,
+		reservedOutputTokenSpace,
 	} = getModelCapabilities(providerName, modelName_, overridesOfModel)
 
 	const { providerReasoningIOSettings } = getProviderCapabilities(providerName)
@@ -116,11 +133,17 @@ export const sendOrbitProviderChat = async (params: SendChatParams_Internal) => 
 		return { role: 'user', content: nonImageContent }
 	})
 
+	const maxCompletionTokens = Math.min(
+		reservedOutputTokenSpace ?? 4096,
+		ORBIT_GATEWAY_MAX_OUTPUT_TOKENS,
+	)
+
 	const body = {
 		model: modelName,
 		messages: cleanedMessages,
 		stream: true,
 		stream_options: { include_usage: true },
+		max_completion_tokens: maxCompletionTokens,
 		...nativeToolsObj,
 		...includeInPayload,
 	}
@@ -148,7 +171,7 @@ export const sendOrbitProviderChat = async (params: SendChatParams_Internal) => 
 
 	let response: Response
 	try {
-		response = await fetch(`${baseUrl}/v1/chat/completions`, {
+		response = await fetch(`${baseUrl}/api/v1/chat/completions`, {
 			method: 'POST',
 			headers: {
 				Authorization: `Bearer ${accessToken}`,
@@ -186,16 +209,30 @@ export const sendOrbitProviderChat = async (params: SendChatParams_Internal) => 
 		onError({ message, fullError: null })
 		return
 	}
+	if (response.status === 402) {
+		let message = 'Your Orbit credit balance is exhausted.'
+		try {
+			const json = await response.json() as { error?: { message?: string } }
+			if (json.error?.message) {
+				message = json.error.message
+			}
+		} catch {
+			// keep the actionable default
+		}
+		onError({ message, fullError: null })
+		return
+	}
 	if (response.status >= 500) {
 		metricsService.capture('orbitProvider - Error', { status: response.status })
 		onError({ message: 'Orbit backend unavailable.', fullError: null })
 		return
 	}
 	if (!response.ok) {
-		const text = await response.text()
+		const fallback = `Orbit request failed (${response.status}).`
+		const message = await parseOrbitErrorMessage(response, fallback)
 		onError({
-			message: `Orbit request failed (${response.status}).`,
-			fullError: text ? new Error(text) : null,
+			message,
+			fullError: message !== fallback ? new Error(message) : null,
 		})
 		return
 	}
@@ -261,12 +298,16 @@ export const sendOrbitProviderChat = async (params: SendChatParams_Internal) => 
 				if (data === '[DONE]') {
 					continue
 				}
-				let chunk: OpenAI.Chat.Completions.ChatCompletionChunk
+				let parsed: OpenAI.Chat.Completions.ChatCompletionChunk | { error?: { message?: string } }
 				try {
-					chunk = JSON.parse(data)
+					parsed = JSON.parse(data)
 				} catch {
 					continue
 				}
+				if ('error' in parsed && parsed.error) {
+					throw new Error(parsed.error.message ?? 'Orbit stream failed.')
+				}
+				const chunk = parsed as OpenAI.Chat.Completions.ChatCompletionChunk
 				if (chunk.usage) {
 					usageSoFar = {
 						promptTokens: chunk.usage.prompt_tokens,

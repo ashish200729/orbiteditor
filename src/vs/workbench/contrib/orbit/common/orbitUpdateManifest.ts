@@ -26,6 +26,35 @@ export interface IOrbitUpdateManifest {
 	readonly commit?: string;
 	readonly releasedAt?: string;
 	readonly assets: Record<string, IOrbitUpdateAsset>;
+	/** Base64 Ed25519 signature over {@link orbitManifestSigningPayload}. */
+	readonly signature?: string;
+}
+
+/**
+ * Deterministic JSON serialization (recursively sorted object keys) so the
+ * exact same manifest content always produces the exact same byte string
+ * to sign/verify, regardless of the key order it happens to be written or
+ * parsed in. Keep this in sync with the identical implementation in
+ * scripts/update-latest-json.js — the release script signs with that copy,
+ * the app verifies with this one; they must agree byte-for-byte.
+ */
+export function canonicalOrbitJsonStringify(value: unknown): string {
+	if (Array.isArray(value)) {
+		return `[${value.map(v => canonicalOrbitJsonStringify(v === undefined ? null : v)).join(',')}]`;
+	}
+	if (value !== null && typeof value === 'object') {
+		const record = value as Record<string, unknown>;
+		const keys = Object.keys(record).filter(k => record[k] !== undefined).sort();
+		const entries = keys.map(k => `${JSON.stringify(k)}:${canonicalOrbitJsonStringify(record[k])}`);
+		return `{${entries.join(',')}}`;
+	}
+	return JSON.stringify(value);
+}
+
+/** The exact bytes that are Ed25519-signed/verified — everything in the manifest except the signature itself. */
+export function orbitManifestSigningPayload(manifest: Pick<IOrbitUpdateManifest, 'version' | 'commit' | 'releasedAt' | 'assets'>): string {
+	const { version, commit, releasedAt, assets } = manifest;
+	return canonicalOrbitJsonStringify({ version, commit, releasedAt, assets });
 }
 
 export function normalizeOrbitVersion(version: string): string {

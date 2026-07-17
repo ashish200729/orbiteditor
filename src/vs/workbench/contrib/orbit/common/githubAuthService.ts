@@ -20,10 +20,15 @@ export type GitHubAuthState = {
 	plan?: string
 }
 
+// getAccessToken deliberately isn't part of this interface: it's registered
+// on a renderer-reachable IPC channel (void-channel-github-auth), and every
+// real token use lives in the main process (orbitProviderChat/List/Usage,
+// via getGitHubOAuthManager() directly) — putting it here would hand a
+// live sk_.../session token to any compromised renderer/webview with no
+// legitimate caller needing it. Fetch the token main-process-side only.
 export interface IGitHubAuthService {
 	readonly _serviceBrand: undefined
 	getState(): Promise<GitHubAuthState>
-	getAccessToken(): Promise<string>
 	startAuthorizationFlow(): Promise<{ authUrl: string }>
 	waitForCallback(): Promise<GitHubAuthState>
 	signOut(): Promise<void>
@@ -63,8 +68,6 @@ export class GitHubAuthService extends Disposable implements IGitHubAuthService 
 	}
 
 	getState = () => this.mainService.getState()
-
-	getAccessToken = () => this.mainService.getAccessToken()
 
 	startAuthorizationFlow = () => this.mainService.startAuthorizationFlow()
 

@@ -3,7 +3,7 @@
  *  Licensed under the Apache License, Version 2.0. See LICENSE.txt for more information.
  *--------------------------------------------------------------------------------------*/
 
-import { randomBytes } from 'crypto'
+import { createHash, randomBytes } from 'crypto'
 import { Emitter, Event } from '../../../../../base/common/event.js'
 import { URI } from '../../../../../base/common/uri.js'
 import { Disposable } from '../../../../../base/common/lifecycle.js'
@@ -107,8 +107,13 @@ export class GitHubOAuthManager extends Disposable {
 
 		const baseUrl = getOrbitApiBaseUrl(this.services.productService, this.services.environmentService)
 		const editorState = randomBytes(GITHUB_OAUTH_CONFIG.stateParamLength / 2).toString('hex')
+		const codeVerifier = randomBytes(GITHUB_OAUTH_CONFIG.pkceVerifierLength).toString('base64url')
+		const codeChallenge = createHash('sha256').update(codeVerifier).digest('base64url')
+		const callback = `${this.services.productService.urlProtocol ?? GITHUB_OAUTH_CONFIG.callbackScheme}://${GITHUB_OAUTH_CONFIG.callbackHost}?editor_state=${encodeURIComponent(editorState)}`
 		const authUrl = new URL(`${baseUrl}${GITHUB_OAUTH_CONFIG.desktopStartPath}`)
-		authUrl.searchParams.set('state', editorState)
+		authUrl.searchParams.set('client', 'desktop')
+		authUrl.searchParams.set('redirect_uri', callback)
+		authUrl.searchParams.set('code_challenge', codeChallenge)
 
 		const timeoutId = setTimeout(() => {
 			this.rejectPending(new GitHubOAuthError('Sign-in timed out. Please try again.', 'timeout'))
@@ -116,6 +121,7 @@ export class GitHubOAuthManager extends Disposable {
 
 		this.pendingAuth = {
 			state: editorState,
+			codeVerifier,
 			startedAt: Date.now(),
 			timeoutId,
 			resolve: async (creds) => {
@@ -176,14 +182,14 @@ export class GitHubOAuthManager extends Disposable {
 			return true
 		}
 
-		const sessionToken = query.get('session_token') ?? query.get('token')
-		if (!sessionToken) {
-			this.rejectPending(new GitHubOAuthError('No session token in callback.', 'missing_token'))
+		const code = query.get('code')
+		if (!code) {
+			this.rejectPending(new GitHubOAuthError('No authorization code in callback.', 'missing_code'))
 			return true
 		}
 
 		try {
-			const creds = await this.fetchSessionCredentials(sessionToken)
+			const creds = await this.exchangeAuthorizationCode(code, this.pendingAuth.codeVerifier)
 			const resolve = this.pendingAuth.resolve
 			clearTimeout(this.pendingAuth.timeoutId)
 			this.pendingAuth = null
@@ -204,27 +210,32 @@ export class GitHubOAuthManager extends Disposable {
 		return true
 	}
 
-	private async fetchSessionCredentials(sessionToken: string): Promise<GitHubCredentials> {
+	private async exchangeAuthorizationCode(code: string, codeVerifier: string): Promise<GitHubCredentials> {
 		const baseUrl = getOrbitApiBaseUrl(this.services.productService, this.services.environmentService)
-		const res = await fetch(`${baseUrl}/api/auth/get-session`, {
-			headers: { authorization: `Bearer ${sessionToken}` },
+		const res = await fetch(`${baseUrl}/api/auth/desktop/exchange`, {
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify({ code, codeVerifier }),
 		})
 		if (!res.ok) {
 			throw new Error(`Failed to fetch session (${res.status})`)
 		}
 		const json = await res.json() as {
+			token?: string
 			session?: { expiresAt?: string }
 			user?: { id?: string; email?: string; name?: string; image?: string; githubLogin?: string; plan?: string }
 		}
 		const user = json.user
-		if (!user?.id) {
+		if (!json.token || !user?.id) {
 			throw new Error('Invalid session response')
 		}
+		// Backend is expected to always send expiresAt. If it's ever missing, fall back to a
+		// bounded 30-day expiry rather than treating the credential as never expiring.
 		const expiresAt = json.session?.expiresAt
 			? Date.parse(json.session.expiresAt)
 			: Date.now() + 30 * 24 * 60 * 60 * 1000
 		return {
-			accessToken: sessionToken,
+			accessToken: json.token,
 			expiresAt,
 			user: {
 				id: user.id,
@@ -246,6 +257,20 @@ export class GitHubOAuthManager extends Disposable {
 	}
 
 	async clearCredentials(): Promise<void> {
+		const token = this.credentials?.accessToken
+		if (token?.startsWith('sk_')) {
+			try {
+				const baseUrl = getOrbitApiBaseUrl(this.services.productService, this.services.environmentService)
+				await fetch(`${baseUrl}/api/auth/api-keys/current`, {
+					method: 'DELETE',
+					headers: { authorization: `Bearer ${token}` },
+				})
+			} catch (error) {
+				// Local sign-out must still complete while offline. The website's
+				// account page can revoke any orphaned device key later.
+				this.services.logService.warn('[GitHubOAuthManager] Failed to revoke API key during sign-out', error)
+			}
+		}
 		this.credentials = null
 		this.cancelPending('Authorization cancelled.')
 		await this.services.storageService.whenReady

@@ -503,6 +503,8 @@ const extensiveModelOptionsFallback: VoidStaticProviderInfo['modelOptionsFallbac
 
 	if (lower.includes('deepseek-r1') || lower.includes('deepseek-reasoner')) return toFallback(openSourceModelOptions_assumingOAICompat, 'deepseekR1')
 	if (lower.includes('deepseek') && lower.includes('v2')) return toFallback(openSourceModelOptions_assumingOAICompat, 'deepseekCoderV2')
+	if (lower.includes('deepseek-v4-flash')) return toFallback(deepseekModelOptions, 'deepseek-v4-flash')
+	if (lower.includes('deepseek-v4-pro')) return toFallback(deepseekModelOptions, 'deepseek-v4-pro')
 	if (lower.includes('deepseek')) return toFallback(openSourceModelOptions_assumingOAICompat, 'deepseekCoderV3')
 
 	if (lower.includes('llama3')) return toFallback(openSourceModelOptions_assumingOAICompat, 'llama3')
@@ -1984,18 +1986,8 @@ const orbitProviderSettings: VoidStaticProviderInfo = {
 	},
 	modelOptionsFallback: (modelName) => extensiveModelOptionsFallback(modelName),
 	providerReasoningIOSettings: {
-		input: {
-			includeInPayload: (reasoningInfo) => {
-				const base = openAICompatIncludeInPayloadReasoning(reasoningInfo)
-				if (!reasoningInfo?.isReasoningEnabled) return base
-				return {
-					...(base ?? {}),
-					// MiniMax-M3 and similar models: split thinking into reasoning_content when supported
-					reasoning_split: true,
-				}
-			},
-		},
-		// Fallback: parse <think> tags inlined in content when reasoning_split is off
+		input: { includeInPayload: openAICompatIncludeInPayloadReasoning },
+		// Fallback: parse <think> tags inlined in content when the upstream model does not emit a separate reasoning field.
 		output: { needsManualParse: true },
 	},
 }

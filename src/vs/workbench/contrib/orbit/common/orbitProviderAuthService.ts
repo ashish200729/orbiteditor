@@ -10,15 +10,19 @@ import { createDecorator } from '../../../../platform/instantiation/common/insta
 import { registerSingleton, InstantiationType } from '../../../../platform/instantiation/common/extensions.js'
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js'
 import type { GitHubAuthState } from './githubAuthService.js'
-import type { OrbitUsageStats } from './orbitUsageTypes.js'
+import type { OrbitProviderUsage } from './orbitProviderUsage.js'
 
 export type OrbitProviderAuthState = GitHubAuthState
 
+// getAccessToken deliberately isn't part of this interface — see the
+// identical note on IGitHubAuthService in githubAuthService.ts. This
+// interface is registered on the renderer-reachable void-channel-orbit-
+// provider-auth IPC channel; every real token use lives in the main
+// process, which fetches it main-process-side only.
 export interface IOrbitProviderAuthService {
 	readonly _serviceBrand: undefined
 	getState(): Promise<OrbitProviderAuthState>
-	getAccessToken(): Promise<string>
-	getUsageStats(): Promise<OrbitUsageStats>
+	getUsage(): Promise<OrbitProviderUsage>
 	startAuthorizationFlow(): Promise<{ authUrl: string }>
 	waitForCallback(): Promise<OrbitProviderAuthState>
 	signOut(): Promise<void>
@@ -59,9 +63,7 @@ export class OrbitProviderAuthService extends Disposable implements IOrbitProvid
 
 	getState = () => this.mainService.getState()
 
-	getAccessToken = () => this.mainService.getAccessToken()
-
-	getUsageStats = () => this.mainService.getUsageStats()
+	getUsage = () => this.mainService.getUsage()
 
 	startAuthorizationFlow = () => this.mainService.startAuthorizationFlow()
 

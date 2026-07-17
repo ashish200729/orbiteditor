@@ -11,12 +11,9 @@ import { FilterType, SortBy } from './extensionManagement.js';
 
 type ExtensionGalleryConfig = {
 	readonly serviceUrl: string;
-	readonly itemUrl: string;
-	readonly publisherUrl: string;
-	readonly resourceUrlTemplate: string;
-	readonly extensionUrlTemplate: string;
-	readonly controlUrl: string;
-	readonly nlsBaseUrl: string;
+	readonly itemUrl?: string;
+	readonly publisherUrl?: string;
+	readonly resourceUrlTemplate?: string;
 };
 
 export class ExtensionGalleryManifestService extends Disposable implements IExtensionGalleryManifestService {

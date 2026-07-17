@@ -3,12 +3,13 @@
  *  Licensed under the Apache License, Version 2.0. See LICENSE.txt for more information.
  *--------------------------------------------------------------------------------------*/
 
-import type { OrbitUsageStats } from '../../common/orbitUsageTypes.js'
+import type { OrbitProviderUsage } from '../../common/orbitProviderUsage.js'
+import { parseOrbitProviderUsage } from '../../common/orbitProviderUsage.js'
 import { getGitHubOAuthManager } from '../github/oauthManager.js'
-import { getOrbitApiBaseUrl } from '../llmMessage/orbitApiUrl.js'
-import { getOrbitLlmMainServices } from '../llmMessage/orbitLlmMainServices.js'
+import { getOrbitApiBaseUrl } from './orbitApiUrl.js'
+import { getOrbitLlmMainServices } from './orbitLlmMainServices.js'
 
-export async function fetchOrbitUsageStats(): Promise<OrbitUsageStats> {
+export async function fetchOrbitProviderUsage(): Promise<OrbitProviderUsage> {
 	const { productService, environmentService } = getOrbitLlmMainServices()
 	const manager = getGitHubOAuthManager()
 	const token = await manager.getAccessToken()
@@ -21,7 +22,8 @@ export async function fetchOrbitUsageStats(): Promise<OrbitUsageStats> {
 		throw new Error('Please sign in with GitHub.')
 	}
 	if (!res.ok) {
-		throw new Error(`Failed to load usage (${res.status})`)
+		throw new Error(`Orbit usage failed: ${res.status}`)
 	}
-	return await res.json() as OrbitUsageStats
+	const json = await res.json() as Parameters<typeof parseOrbitProviderUsage>[0]
+	return parseOrbitProviderUsage(json)
 }

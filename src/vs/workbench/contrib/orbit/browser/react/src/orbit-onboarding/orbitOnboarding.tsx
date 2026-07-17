@@ -361,7 +361,7 @@ const ProviderConnectPage = ({ setPageIndex }: { pageIndex: number; setPageIndex
 			<div className="w-full flex flex-col gap-3">
 				<ProviderOptionButton
 					label="Sign in with GitHub"
-					sublabel="Use Orbit's hosted models — no API key needed"
+					sublabel="Use Orbit Provider — no API key needed"
 					connected={orbitAuth.isAuthenticated}
 					onClick={() => { void commandService.executeCommand(VOID_ORBIT_PROVIDER_SIGN_IN_ACTION_ID) }}
 				/>

@@ -10,12 +10,13 @@ export function getOrbitApiBaseUrl(
 	productService: IProductService,
 	environmentService: INativeEnvironmentService,
 ): string {
-	if (process.env.ORBIT_API_URL) {
+	// ORBIT_API_URL is for local development only — never honor it in release builds.
+	if (!environmentService.isBuilt && process.env.ORBIT_API_URL) {
 		return process.env.ORBIT_API_URL.replace(/\/$/, '')
 	}
 	// Dev builds (./scripts/code.sh) use the local backend; release builds use production.
 	if (!environmentService.isBuilt) {
-		return (productService.orbitApiUrlDev ?? 'http://localhost:8080').replace(/\/$/, '')
+		return (productService.orbitApiUrlDev ?? 'http://localhost:4000').replace(/\/$/, '')
 	}
 	if (productService.orbitApiUrl) {
 		return productService.orbitApiUrl.replace(/\/$/, '')

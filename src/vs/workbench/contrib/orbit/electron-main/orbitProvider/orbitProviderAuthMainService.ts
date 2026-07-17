@@ -7,7 +7,7 @@ import { Disposable } from '../../../../../base/common/lifecycle.js'
 import { Emitter } from '../../../../../base/common/event.js'
 import type { IOrbitProviderAuthService, OrbitProviderAuthState } from '../../common/orbitProviderAuthService.js'
 import { IGitHubAuthService as IGitHubAuthServiceDecorator, type IGitHubAuthService } from '../../common/githubAuthService.js'
-import { fetchOrbitUsageStats } from './orbitProviderUsage.js'
+import { fetchOrbitProviderUsage } from '../llmMessage/orbitProviderUsage.js'
 
 export class OrbitProviderAuthMainService extends Disposable implements IOrbitProviderAuthService {
 	_serviceBrand: undefined
@@ -23,9 +23,7 @@ export class OrbitProviderAuthMainService extends Disposable implements IOrbitPr
 
 	getState = () => this.gitHubAuthService.getState()
 
-	getAccessToken = () => this.gitHubAuthService.getAccessToken()
-
-	getUsageStats = () => fetchOrbitUsageStats()
+	getUsage = () => fetchOrbitProviderUsage()
 
 	startAuthorizationFlow = () => this.gitHubAuthService.startAuthorizationFlow()
 

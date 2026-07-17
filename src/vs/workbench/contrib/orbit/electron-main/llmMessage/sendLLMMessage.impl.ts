@@ -27,6 +27,7 @@ import { getXAiGrokOAuthManager } from '../xai-grok/oauthManager.js';
 import { XAI_GROK_OAUTH_CONFIG } from '../xai-grok/oauthConfig.js';
 import { sendOrbitProviderChat } from './orbitProviderChat.js';
 import { orbitProviderList } from './orbitProviderList.js';
+import { schemaOfToolInfo } from './toolSchema.js';
 
 const getGoogleApiKey = async () => {
 	// module‑level singleton
@@ -297,17 +298,6 @@ const _sendOpenAICompatibleFIM = async ({ messages: { prefix, suffix, stopTokens
 		})
 }
 
-
-const schemaOfToolInfo = (toolInfo: InternalToolInfo): JsonToolSchema => {
-	if (toolInfo.inputSchema) return toolInfo.inputSchema as JsonToolSchema
-	const paramsWithType: { [s: string]: { description: string; type: 'string' } } = {}
-	for (const key in toolInfo.params) { paramsWithType[key] = { ...toolInfo.params[key], type: 'string' } }
-	return {
-		type: 'object',
-		properties: paramsWithType,
-		// required: Object.keys(toolInfo.params), // in strict mode, all params are required and additionalProperties is false
-	}
-}
 
 const jsonSchemaToGeminiSchema = (schema: JsonToolSchema): Schema => {
 	const type = schema.type === 'number' || schema.type === 'integer' ? Type.NUMBER

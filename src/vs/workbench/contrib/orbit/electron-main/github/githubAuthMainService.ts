@@ -42,8 +42,6 @@ export class GitHubAuthMainService extends Disposable implements IGitHubAuthServ
 
 	getState = async () => this.manager.getState()
 
-	getAccessToken = () => this.manager.getAccessToken()
-
 	startAuthorizationFlow = async () => ({ authUrl: await this.manager.startAuthorizationFlow() })
 
 	waitForCallback = () => this.manager.waitForCallback()

@@ -90,13 +90,22 @@ export class RefreshModelService extends Disposable implements IRefreshModelServ
 	) {
 		super()
 
+		const refreshOrbitWhenReady = () => {
+			void this.voidSettingsService.waitForInitState.then(() => {
+				this.refreshOrbitProviderModels()
+			})
+		}
+
 		this._register(this.orbitProviderAuthService.onDidChangeState((state) => {
 			if (state.isAuthenticated) {
-				this.refreshOrbitProviderModels()
+				refreshOrbitWhenReady()
 			}
 		}))
 
-		void this.orbitProviderAuthService.getState().then((state) => {
+		void Promise.all([
+			this.voidSettingsService.waitForInitState,
+			this.orbitProviderAuthService.getState(),
+		]).then(([, state]) => {
 			if (state.isAuthenticated) {
 				this.refreshOrbitProviderModels()
 			}
@@ -250,7 +259,9 @@ export class RefreshModelService extends Disposable implements IRefreshModelServ
 					{ source: 'auth_refresh' },
 				)
 			},
-			onError: () => { /* keep static defaults on failure */ },
+			onError: ({ error }) => {
+				console.warn('[Orbit Provider] Model list refresh failed:', error)
+			},
 		})
 	}
 

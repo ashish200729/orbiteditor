@@ -9,7 +9,7 @@ import { useSettingsState, useRefreshModelState, useAccessor, useOpenAiCodexAuth
 import { _VoidSelectBox, VoidCustomDropdownBox } from '../util/inputs.js'
 import { SelectBox } from '../../../../../../../base/browser/ui/selectBox/selectBox.js'
 import { VOID_OPEN_SETTINGS_ACTION_ID, VOID_TOGGLE_SETTINGS_ACTION_ID } from '../../../orbitSettingsPane.js'
-import { VOID_OPENAI_CODEX_SIGN_IN_ACTION_ID, VOID_ORBIT_PROVIDER_SIGN_IN_ACTION_ID, VOID_XAI_GROK_SIGN_IN_ACTION_ID } from '../../../actionIDs.js'
+import { VOID_OPENAI_CODEX_SIGN_IN_ACTION_ID, VOID_OPEN_ACCOUNT_SETTINGS_ACTION_ID, VOID_XAI_GROK_SIGN_IN_ACTION_ID } from '../../../actionIDs.js'
 import { modelFilterOfFeatureName, ModelOption } from '../../../../common/orbitSettingsService.js'
 import { WarningBox } from './WarningBox.js'
 import ErrorBoundary from '../sidebar-tsx/ErrorBoundary.js'
@@ -154,8 +154,8 @@ const MemoizedModelDropdown = ({ featureName, className }: { featureName: Featur
 		}
 		if (!orbitAuth.isAuthenticated && hasOrbitModels) {
 			return <WarningBox
-				onClick={() => commandService.executeCommand(VOID_ORBIT_PROVIDER_SIGN_IN_ACTION_ID)}
-				text='Sign in with GitHub to use Orbit models'
+				onClick={() => commandService.executeCommand(VOID_OPEN_ACCOUNT_SETTINGS_ACTION_ID)}
+				text='Sign in with GitHub to use Orbit Provider models'
 			/>
 		}
 		return <WarningBox text={emptyMessage?.message || 'No models available'} />
