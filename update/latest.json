@@ -1,10 +1,10 @@
 {
-	"version": "0.3.0",
-	"releasedAt": "2026-07-16",
+	"version": "0.4.0",
+	"releasedAt": "2026-07-20",
 	"assets": {
 		"darwin-arm64": {
-			"url": "https://github.com/ashish200729/orbiteditor/releases/download/v0.3.0/Orbit-0.3.0-darwin-arm64.dmg",
-			"sha256": "f07d57e371de1fdb8eda2e97fb718edcd9134263e950ca41675cac757d3c7286"
+			"url": "https://github.com/ashish200729/orbiteditor/releases/download/v0.4.0/Orbit-0.4.0-darwin-arm64.dmg",
+			"sha256": "4d3ab291d716c8fba487e5ba726d91f9fdbc323d019e04b93c2abd83a5ef14f5"
 		},
 		"darwin-x64": {
 			"url": "https://github.com/ashish200729/orbiteditor/releases/download/v0.3.0/Orbit-0.3.0-darwin-x64.dmg",
