@@ -284,8 +284,15 @@ jobs:
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
           echo "tag=v${VERSION}" >> $GITHUB_OUTPUT
 
-      - name: Update latest.json with SHA-256 hashes
+      - name: Update and sign latest.json
+        env:
+          ORBIT_UPDATE_SIGNING_KEY: ${{ secrets.ORBIT_UPDATE_SIGNING_KEY }}
         run: |
+          if [[ -z "${ORBIT_UPDATE_SIGNING_KEY:-}" ]]; then
+            echo "ERROR: ORBIT_UPDATE_SIGNING_KEY secret is not set."
+            echo "Add the PEM Ed25519 private key as a repository secret before running releases."
+            exit 1
+          fi
           VERSION="${{ steps.version.outputs.version }}"
           TAG="${{ steps.version.outputs.tag }}"
           ARGS=(--version "$VERSION" --tag "$TAG" --commit "${{ github.sha }}")
