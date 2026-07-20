@@ -12,11 +12,12 @@
 		},
 		"win32-x64": {
 			"url": "https://github.com/ashish200729/orbiteditor/releases/download/v0.4.0/Orbit-0.4.0-win32-x64-setup.exe",
-			"sha256": "17ba1471ceb3c0feab06402f68dbdf199bb9ab544d030ba9d6368aab747c76da"
+			"sha256": "d8383a9cc0ab8b57f1bb81a99751376a8d7319779b93115d2149cbfe705176b5"
 		},
 		"win32-arm64": {
 			"url": "https://github.com/ashish200729/orbiteditor/releases/download/v0.4.0/Orbit-0.4.0-win32-arm64-setup.exe",
-			"sha256": "3f65458ada99ce979d8b22ba194b85d26e8aac5997fc781e3414f7677f1e44b0"
+			"sha256": "235b4f0d33c18c29e520c05fbfa174e73899456dd38207cbe63dd922ca15d25b"
 		}
-	}
+	},
+	"signature": "rXpDYk0hWYp4Om338WgnBBuuJEVgc36xKK3Ob4TOgpBDZ4T61J6/qFTIPRm5Qk/d2V5Ynr84I1chVKUp+OEnDQ=="
 }
