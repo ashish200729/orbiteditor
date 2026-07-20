@@ -36,6 +36,8 @@ export type PendingBrowserAuth = {
 	codeVerifier: string
 	redirectUri: string
 	server: Server
+	host: string
+	port: number
 	resolve: (credentials: XAiGrokCredentials) => void
 	reject: (error: Error) => void
 	promise: Promise<XAiGrokCredentials>

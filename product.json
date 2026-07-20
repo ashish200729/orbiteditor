@@ -2,8 +2,8 @@
 	"nameShort": "Orbit",
 	"nameLong": "Orbit",
 	"version": "1.95.0",
-	"orbitVersion": "0.3.0",
-	"orbitRelease": "0104",
+	"orbitVersion": "0.4.0",
+	"orbitRelease": "0105",
 	"downloadUrl": "https://github.com/ashish200729/orbiteditor/releases/latest",
 	"applicationName": "orbit",
 	"dataFolderName": ".orbit-editor",
@@ -46,12 +46,14 @@
 	"builtInExtensions": [],
 	"linkProtectionTrustedDomains": [
 		"https://orbiteditorai.com",
+		"https://www.orbiteditorai.com",
 		"https://orbiteditor.com",
 		"https://orbiteditor.dev",
+		"https://api.orbiteditorai.com",
 		"https://api.orbiteditor.com",
 		"https://github.com/ashish200729/orbiteditor",
 		"https://ollama.com"
 	],
-	"orbitApiUrl": "https://api.orbiteditor.com",
-	"orbitApiUrlDev": "http://localhost:4000"
+	"orbitApiUrl": "https://api.orbiteditorai.com",
+	"orbitApiUrlDev": "https://api.orbiteditorai.com"
 }

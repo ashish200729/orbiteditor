@@ -10,6 +10,7 @@ import ErrorBoundary from '../sidebar-tsx/ErrorBoundary.js';
 import { IconShell1 } from '../markdown/ApplyBlockHoverButtons.js';
 import { IconLoadingSpinner } from '../sidebar-tsx/components/icons/IconLoadingSpinner.js';
 import { getConnectedWindow } from '../util/connectedWindow.js';
+import { OrbitUserProfileFooter } from '../shared/OrbitUserProfileFooter.js';
 import { Check, CheckCircle2, CircleDashed, Copy, MessageCircleQuestion, MessageSquarePlus, Trash2, X, MoreHorizontal, LayoutGrid, Search } from 'lucide-react';
 import { IsRunningType, ThreadType } from '../../../chatThreadService.js';
 
@@ -128,6 +129,7 @@ const ChatHistoryContent = () => {
 						<p className="text-sm">Error accessing chat history.</p>
 					</div>
 				</div>
+				<OrbitUserProfileFooter />
 			</div>
 		);
 	}
@@ -240,6 +242,7 @@ const ChatHistoryContent = () => {
 					</div>
 				)}
 			</div>
+			<OrbitUserProfileFooter />
 		</div>
 	);
 };

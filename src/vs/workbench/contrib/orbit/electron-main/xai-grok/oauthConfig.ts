@@ -3,9 +3,26 @@
  *  Licensed under the Apache License, Version 2.0. See LICENSE.txt for more information.
  *--------------------------------------------------------------------------------------*/
 
+// Loopback OAuth callback configuration for the xAI SuperGrok desktop flow.
+//
+// xAI's public `grok-cli` desktop OAuth client is allowlisted for an *exact*
+// loopback redirect URI: `http://127.0.0.1:56121/callback`. No other host
+// (`localhost`, `::1`) or port is accepted by xAI's authorization server.
+//
+// On Windows, binding 127.0.0.1:56121 can still fail when:
+//
+//   1. Windows reserves the port for Hyper-V / WSL2 / Docker Desktop
+//      (`netsh int ipv4 show excludedportrange protocol=tcp`). `server.listen`
+//      then throws `EACCES` (NOT `EADDRINUSE`).
+//   2. Windows Defender Firewall blocks the first inbound loopback connection
+//      from the browser, causing the 5-minute `authTimeoutMs` to expire.
+//
+// When loopback bind fails, Orbit routes Windows users to the device-code flow,
+// which needs no local server at all. Do not add fallback hosts or ports here
+// unless xAI has explicitly allowlisted the matching redirect URI for client
+// `b1a00492-073a-47ea-816f-4c329264a828`.
+
 export const XAI_GROK_OAUTH_CONFIG = {
-	// Public desktop OAuth client shipped for Grok CLI. xAI currently requires this
-	// allowlisted client and exact loopback redirect for third-party desktop flows.
 	clientId: 'b1a00492-073a-47ea-816f-4c329264a828',
 	authorizationEndpoint: 'https://auth.x.ai/oauth2/authorize',
 	tokenEndpoint: 'https://auth.x.ai/oauth2/token',
@@ -24,12 +41,12 @@ export const XAI_GROK_OAUTH_CONFIG = {
 
 export const XAI_GROK_REDIRECT_URI = `http://${XAI_GROK_OAUTH_CONFIG.callbackHost}:${XAI_GROK_OAUTH_CONFIG.callbackPort}${XAI_GROK_OAUTH_CONFIG.callbackPath}`
 
-export const buildXAiGrokAuthorizeUrl = (params: { codeChallenge: string; state: string; nonce: string }) => {
+export const buildXAiGrokAuthorizeUrl = (params: { codeChallenge: string; state: string; nonce: string; redirectUri?: string }) => {
 	const url = new URL(XAI_GROK_OAUTH_CONFIG.authorizationEndpoint)
 	for (const [key, value] of Object.entries({
 		response_type: 'code',
 		client_id: XAI_GROK_OAUTH_CONFIG.clientId,
-		redirect_uri: XAI_GROK_REDIRECT_URI,
+		redirect_uri: params.redirectUri ?? XAI_GROK_REDIRECT_URI,
 		scope: XAI_GROK_OAUTH_CONFIG.scopes,
 		code_challenge: params.codeChallenge,
 		code_challenge_method: 'S256',

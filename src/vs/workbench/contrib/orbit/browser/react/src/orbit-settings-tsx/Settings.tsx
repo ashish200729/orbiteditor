@@ -393,12 +393,16 @@ export const ModelDump = ({ filteredProviders }: { filteredProviders?: ProviderN
 	// a dump of all the enabled providers' models
 	const modelDump: (VoidStatefulModelInfo & { providerName: ProviderName, providerEnabled: boolean })[] = []
 
-	// Use either filtered providers or all providers
+	// Use either filtered providers or all providers. Orbit Provider is listed first when available.
 	const providersToShow = (filteredProviders || providerNames).filter((provider) => {
 		if (provider === 'openAICodex' && !authState.isAuthenticated) return false
 		if (provider === 'xAISuperGrok' && !xAiAuthState.isAuthenticated) return false
 		if (provider === 'orbit' && !orbitAuth.isAuthenticated) return false
 		return true
+	}).sort((a, b) => {
+		if (a === 'orbit') return -1
+		if (b === 'orbit') return 1
+		return 0
 	});
 
 	for (let providerName of providersToShow) {
@@ -407,8 +411,10 @@ export const ModelDump = ({ filteredProviders }: { filteredProviders?: ProviderN
 		modelDump.push(...providerSettings.models.map(model => ({ ...model, providerName, providerEnabled: !!providerSettings._didFillInProviderSettings })))
 	}
 
-	// sort by hidden
+	// Enabled providers first; Orbit Provider stays at the top of the list.
 	modelDump.sort((a, b) => {
+		if (a.providerName === 'orbit' && b.providerName !== 'orbit') return -1
+		if (b.providerName === 'orbit' && a.providerName !== 'orbit') return 1
 		return Number(b.providerEnabled) - Number(a.providerEnabled)
 	})
 

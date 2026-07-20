@@ -93,9 +93,7 @@ export const defaultModelsOfProvider = {
 		// 'gpt-4o',
 		// 'gpt-4o-mini',
 	],
-	orbit: [
-		'gpt-5.5',
-	],
+	orbit: [],
 	openAICodex: [
 		'gpt-5.1-codex-max',
 		'gpt-5.1-codex',
@@ -1971,19 +1969,7 @@ const openRouterSettings: VoidStaticProviderInfo = {
 // ---------------- model settings of everything above ----------------
 
 const orbitProviderSettings: VoidStaticProviderInfo = {
-	...openAISettings,
-	modelOptions: {
-		'gpt-5.5': { // Orbit's own hosted model, distinct from OpenAI's identically-named gpt-5.5
-			contextWindow: 200_000,
-			reservedOutputTokenSpace: 8192,
-			supportsSystemMessage: 'system-role',
-			specialToolFormat: 'openai-style',
-			supportsFIM: false,
-			reasoningCapabilities: false,
-			cost: { input: 0, output: 0 },
-			downloadable: false,
-		},
-	},
+	modelOptions: {},
 	modelOptionsFallback: (modelName) => extensiveModelOptionsFallback(modelName),
 	providerReasoningIOSettings: {
 		input: { includeInPayload: openAICompatIncludeInPayloadReasoning },

@@ -92,11 +92,11 @@ const postToken = async (body: URLSearchParams, signal?: AbortSignal) => {
 	return payload
 }
 
-export const exchangeCodeForTokens = async (code: string, codeVerifier: string) => {
+export const exchangeCodeForTokens = async (code: string, codeVerifier: string, redirectUri: string = XAI_GROK_REDIRECT_URI) => {
 	const payload = await postToken(new URLSearchParams({
 		grant_type: 'authorization_code',
 		code,
-		redirect_uri: XAI_GROK_REDIRECT_URI,
+		redirect_uri: redirectUri,
 		client_id: XAI_GROK_OAUTH_CONFIG.clientId,
 		code_verifier: codeVerifier,
 	}))

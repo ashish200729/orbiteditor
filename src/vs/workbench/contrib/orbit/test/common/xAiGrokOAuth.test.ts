@@ -5,7 +5,9 @@
 
 import * as assert from 'assert'
 import { defaultModelsOfProvider, getModelCapabilities } from '../../common/modelCapabilities.js'
+import { getXAiGrokOAuthErrorCode } from '../../common/xAiGrokAuthErrors.js'
 import { buildXAiGrokAuthorizeUrl, XAI_GROK_OAUTH_CONFIG, XAI_GROK_REDIRECT_URI } from '../../electron-main/xai-grok/oauthConfig.js'
+import { XAiGrokOAuthError } from '../../electron-main/xai-grok/oauthManager.js'
 import { parseXAiGrokMonthlyUsage, parseXAiGrokWeeklyUsage } from '../../electron-main/xai-grok/billing.js'
 import { isTokenExpired, positiveSecondsToMs } from '../../electron-main/xai-grok/tokenManager.js'
 
@@ -38,6 +40,24 @@ suite('xAI SuperGrok OAuth', () => {
 		assert.strictEqual(url.searchParams.get('nonce'), 'nonce')
 		assert.strictEqual(url.searchParams.get('plan'), 'generic')
 		assert.strictEqual(url.searchParams.get('referrer'), 'orbit-editor')
+	})
+
+	test('uses only the allowlisted 127.0.0.1 loopback redirect', () => {
+		assert.strictEqual(XAI_GROK_OAUTH_CONFIG.callbackHost, '127.0.0.1')
+		assert.strictEqual(XAI_GROK_OAUTH_CONFIG.callbackPort, 56121)
+		assert.strictEqual(XAI_GROK_REDIRECT_URI, 'http://127.0.0.1:56121/callback')
+	})
+
+	test('encodes OAuth error codes in error.name so they survive renderer IPC', () => {
+		const error = new XAiGrokOAuthError('loopback bind failed', 'port_unavailable')
+		assert.strictEqual(error.code, 'port_unavailable')
+		assert.strictEqual(error.name, 'XAiGrokOAuthError:port_unavailable')
+		assert.strictEqual(getXAiGrokOAuthErrorCode(error), 'port_unavailable')
+
+		// Simulate VS Code IPC deserialization (message/name/stack only).
+		const ipcError = new Error(error.message)
+		ipcError.name = error.name
+		assert.strictEqual(getXAiGrokOAuthErrorCode(ipcError), 'port_unavailable')
 	})
 
 	test('normalizes invalid device-code timing values instead of busy-looping', () => {

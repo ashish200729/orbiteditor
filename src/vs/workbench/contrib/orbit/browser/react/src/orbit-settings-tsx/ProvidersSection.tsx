@@ -10,6 +10,7 @@ import { VoidButtonBgDarken, VoidSimpleInputBox } from '../util/inputs.js'
 import { useAccessor, useOpenAiCodexAuthState, useOrbitProviderAuthState, useSettingsState, useXAiGrokAuthState } from '../util/services.js'
 import { ChatMarkdownRender } from '../markdown/ChatMarkdownRender.js'
 import { WarningBox } from './WarningBox.js'
+import { isWindows } from '../../../../../../../base/common/platform.js'
 import type { XAiGrokUsage } from '../../../../common/xAiGrokAuthService.js'
 import {
 	ProviderName,
@@ -31,7 +32,7 @@ import {
 } from '../../../actionIDs.js'
 import { OrbitAuthPanel } from './OrbitAuthPanel.js'
 
-const cloudProviderNames: ProviderName[] = ['orbit', ...nonlocalProviderNames]
+const cloudProviderNames: ProviderName[] = [...nonlocalProviderNames]
 
 type ProviderSectionGroup = {
 	id: string
@@ -319,24 +320,29 @@ const XAiSuperGrokProviderPanel = () => {
 						)}
 					</div>
 				</div>
-			) : (
-				<div className='flex flex-col gap-2'>
-					<VoidButtonBgDarken
-						className='w-full px-3 py-1.5 text-xs'
-						disabled={authState.isAuthorizing}
-						onClick={() => commandService.executeCommand(VOID_XAI_GROK_SIGN_IN_ACTION_ID)}
-					>
-						{authState.isAuthorizing ? 'Waiting for xAI…' : 'Sign in with browser'}
-					</VoidButtonBgDarken>
-					<VoidButtonBgDarken
-						className='w-full px-3 py-1.5 text-xs'
-						disabled={authState.isAuthorizing}
-						onClick={() => commandService.executeCommand(VOID_XAI_GROK_DEVICE_SIGN_IN_ACTION_ID)}
-					>
-						Use a device code
-					</VoidButtonBgDarken>
-				</div>
-			)}
+	) : (
+			<div className='flex flex-col gap-2'>
+				{isWindows && (
+					<p className='@@provider-auth-desc'>
+						On Windows, browser sign-in can be blocked by Windows Firewall or a port reserved by Hyper-V / WSL. If it doesn't complete, use the device-code option below.
+					</p>
+				)}
+				<VoidButtonBgDarken
+					className='w-full px-3 py-1.5 text-xs'
+					disabled={authState.isAuthorizing}
+					onClick={() => commandService.executeCommand(VOID_XAI_GROK_SIGN_IN_ACTION_ID)}
+				>
+					{authState.isAuthorizing ? 'Waiting for xAI…' : 'Sign in with browser'}
+				</VoidButtonBgDarken>
+				<VoidButtonBgDarken
+					className='w-full px-3 py-1.5 text-xs'
+					disabled={authState.isAuthorizing}
+					onClick={() => commandService.executeCommand(VOID_XAI_GROK_DEVICE_SIGN_IN_ACTION_ID)}
+				>
+					Use a device code {isWindows ? '(recommended on Windows)' : ''}
+				</VoidButtonBgDarken>
+			</div>
+		)}
 		</div>
 	)
 }
@@ -486,6 +492,57 @@ const LocalSetupCollapsible = () => {
 	)
 }
 
+const OrbitProviderFeaturedSection = ({
+	expanded,
+	onToggle,
+}: {
+	expanded: Set<ProviderName>
+	onToggle: (providerName: ProviderName) => void
+}) => {
+	const orbitAuthState = useOrbitProviderAuthState()
+	const isOpen = expanded.has('orbit')
+
+	return (
+		<section className="@@provider-orbit-featured">
+			<div className="@@provider-orbit-featured-header">
+				<div className="@@provider-orbit-featured-heading">
+					<h3 className="@@provider-orbit-featured-title">Orbit Provider</h3>
+					<p className="@@provider-orbit-featured-desc">
+						Sign in with GitHub to use managed models. No API key required — manage billing and usage from your account page.
+					</p>
+				</div>
+				<div className={`@@provider-orbit-featured-status${orbitAuthState.isAuthenticated ? ' @@provider-orbit-featured-status--connected' : ''}`}>
+					<span className="@@provider-orbit-featured-status-dot" aria-hidden="true" />
+					<span>{orbitAuthState.isAuthenticated ? 'Connected' : 'Not connected'}</span>
+				</div>
+			</div>
+			<div className={`@@provider-orbit-featured-card${isOpen ? ' @@provider-orbit-featured-card--open' : ''}`}>
+				<button
+					type="button"
+					className="@@provider-orbit-featured-trigger"
+					onClick={() => onToggle('orbit')}
+					aria-expanded={isOpen}
+				>
+					<div className="@@provider-orbit-featured-trigger-text">
+						<span className="@@provider-orbit-featured-trigger-title">Account &amp; billing</span>
+						<span className="@@provider-orbit-featured-trigger-subtitle">
+							{orbitAuthState.isAuthenticated
+								? 'Manage sign-in, wallet balance, and model refresh'
+								: 'Connect GitHub to unlock Orbit Provider models'}
+						</span>
+					</div>
+					<ChevronDown className="@@provider-orbit-featured-chevron" size={14} aria-hidden="true" />
+				</button>
+				{isOpen ? (
+					<div className="@@provider-orbit-featured-panel">
+						<OrbitAuthPanel />
+					</div>
+				) : null}
+			</div>
+		</section>
+	)
+}
+
 const ProviderSectionGroup = ({
 	title,
 	description,
@@ -511,8 +568,8 @@ export const ProvidersSection = () => {
 	const sections = useMemo<ProviderSectionGroup[]>(() => [
 		{
 			id: 'cloud',
-			title: 'Cloud',
-			description: 'Connect Orbit Provider, ChatGPT, SuperGrok, and API keys from Anthropic, OpenAI, OpenRouter, and other hosted providers.',
+			title: 'Bring your own provider',
+			description: 'Connect ChatGPT, SuperGrok, and API keys from Anthropic, OpenAI, OpenRouter, and other hosted providers.',
 			providerNames: cloudProviderNames,
 		},
 		{
@@ -524,7 +581,7 @@ export const ProvidersSection = () => {
 		},
 	], [])
 
-	const [expanded, setExpanded] = useState<Set<ProviderName>>(() => new Set())
+	const [expanded, setExpanded] = useState<Set<ProviderName>>(() => new Set(['orbit']))
 
 	const toggleProvider = useCallback((providerName: ProviderName) => {
 		setExpanded((prev) => {
@@ -543,11 +600,12 @@ export const ProvidersSection = () => {
 			<div className='@@settings-page-header'>
 				<h2 className='@@settings-page-title'>Providers</h2>
 				<div className='@@settings-page-desc'>
-					Connect cloud APIs and local runtimes. Configure credentials here, then choose models on the Models tab. Orbit Provider uses GitHub sign-in — no API key required.
+					Connect Orbit Provider or bring your own API keys and local runtimes. Configure credentials here, then choose models on the Models tab.
 				</div>
 			</div>
 
 			<div className="@@providers-sections">
+				<OrbitProviderFeaturedSection expanded={expanded} onToggle={toggleProvider} />
 				{sections.map((section) => (
 					<ProviderSectionGroup
 						key={section.id}

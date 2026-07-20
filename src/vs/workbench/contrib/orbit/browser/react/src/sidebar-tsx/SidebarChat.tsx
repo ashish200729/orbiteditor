@@ -17,8 +17,6 @@ import { isABuiltinToolName } from '../../../../common/prompt/prompts.js';
 import { TextAreaFns, VoidInputBox2 } from '../util/inputs.js';
 import { focusInConnectedWindow, downscaleImageDataUrl } from '../util/helpers.js';
 import { getConnectedWindow } from '../util/connectedWindow.js';
-import { VOID_CTRL_L_ACTION_ID } from '../../../actionIDs.js';
-import { VOID_OPEN_SETTINGS_ACTION_ID } from '../../../orbitSettingsPane.js';
 
 // External components (not extracted)
 import ErrorBoundary from './ErrorBoundary.js';
@@ -238,8 +236,6 @@ export const SidebarChat = () => {
 		const threadId = currentThread.id
 		await chatThreadsService.abortRunning(threadId)
 	}, [currentThread.id, chatThreadsService])
-
-	const keybindingString = accessor.get('IKeybindingService').lookupKeybinding(VOID_CTRL_L_ACTION_ID)?.getLabel()
 
 	const currCheckpointIdx = chatThreadsState.allThreads[threadId]?.state?.currCheckpointIdx ?? undefined  // if not exist, treat like checkpoint is last message (infinity)
 
@@ -483,7 +479,7 @@ export const SidebarChat = () => {
 				enableAtToMention
 				enableSlashCommands
 className={`min-h-[40px] px-0.5 py-0.5 resize-none placeholder:text-void-fg-4`}
-				placeholder={`@ to mention, / for commands, ${keybindingString ? `${keybindingString} to add a selection. ` : ''}Enter instructions...`}
+				placeholder='Plan, Build, / for skills, @ for context'
 				onChangeText={onChangeText}
 				onKeyDown={onKeyDown}
 				onFocus={() => { chatThreadsService.setCurrentlyFocusedMessageIdx(undefined) }}

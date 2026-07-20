@@ -2,6 +2,45 @@
 
 All notable changes to Orbit Editor are documented here.
 
+## 0.4.0
+
+### 🚀 Orbit Provider — sign in, pick a model, start coding
+
+Orbit Provider is now the first-class way to use Orbit without bringing your own API keys. Sign in with **GitHub**, and Orbit loads the models your account has access to — no key to paste, no extra setup.
+
+- **GitHub sign-in.** Settings → Providers opens with a dedicated **Orbit Provider** section at the top. Click **Sign in with GitHub**, finish in your browser, and you're back in the editor. Your session stays on your machine.
+- **Live model list.** After sign-in, Orbit pulls your available models automatically. Hit **Refresh models** any time to get the latest catalog.
+- **Profile footer.** When signed in, the chat sidebar footer shows your GitHub avatar, plan, and remaining credits — matching what you see in Settings.
+
+### 💳 Billing & usage
+
+- **Wallet balance in the editor.** See your remaining credits in Settings → Account and in the chat profile footer. A low-balance warning appears before you run out mid-session.
+- **Plan-aware UI.** Free, Pro, and other plan labels are shown consistently across settings and the sidebar.
+- **Billing on the web.** **Billing & usage** opens your account page for top-ups, invoices, and subscription management.
+
+### 🎛️ Settings & providers
+
+- **Orbit Provider featured at the top.** The Providers tab separates Orbit Provider from *Bring your own provider* (Anthropic, OpenAI, OpenRouter, ChatGPT, SuperGrok, etc.) and **Local** (Ollama, vLLM, LM Studio).
+- **Models tab ordering.** Orbit Provider models appear at the top of the Models list when you are signed in.
+
+### 🛠️ Reliability
+
+- **Balance stays in sync.** Refreshing your wallet balance in Settings updates the sidebar footer too — one source of truth, no stale numbers.
+- **Windows SuperGrok sign-in.** If browser sign-in doesn't complete on Windows, Orbit offers a device-code option so you can still connect your subscription.
+- **Safer sign-out.** Signing out of Orbit Provider clears your session and revokes access cleanly.
+
+### macOS install
+
+- **Recommended (no Gatekeeper warning):**
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/ashish200729/orbiteditor/main/install.sh | bash
+  ```
+- **Or download the `.dmg`** from the release, drag Orbit to Applications, then run once:
+  ```bash
+  xattr -cr /Applications/Orbit.app
+  ```
+  (Orbit isn't notarized by Apple yet, so a browser-downloaded `.dmg` shows a one-time "unverified developer" prompt; the command above clears it.)
+
 ## 0.3.0
 
 ### ⚡ Grok through your xAI subscription

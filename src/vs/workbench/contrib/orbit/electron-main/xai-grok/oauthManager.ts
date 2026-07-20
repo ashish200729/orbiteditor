@@ -6,6 +6,7 @@
 import http from 'http'
 import { URL } from 'url'
 import { Emitter, Event } from '../../../../../base/common/event.js'
+import { isWindows } from '../../../../../base/common/platform.js'
 import { IEncryptionMainService } from '../../../../../platform/encryption/common/encryptionService.js'
 import { ILogService } from '../../../../../platform/log/common/log.js'
 import { StorageScope, StorageTarget } from '../../../../../platform/storage/common/storage.js'
@@ -21,7 +22,8 @@ const CORS_ALLOWED_ORIGINS = new Set(['https://accounts.x.ai', 'https://auth.x.a
 export class XAiGrokOAuthError extends Error {
 	constructor(message: string, readonly code = 'oauth_error') {
 		super(message)
-		this.name = 'XAiGrokOAuthError'
+		// Encode `code` in `name` so it survives renderer IPC (see xAiGrokAuthErrors.ts).
+		this.name = `XAiGrokOAuthError:${code}`
 	}
 }
 
@@ -89,24 +91,16 @@ export class XAiGrokOAuthManager {
 		const codeChallenge = generateCodeChallenge(codeVerifier)
 		const server = http.createServer((req, res) => void this.handleBrowserCallback(req, res))
 
-		try {
-			await new Promise<void>((resolve, reject) => {
-				const onError = (error: Error) => reject(error)
-				server.once('error', onError)
-				server.listen(XAI_GROK_OAUTH_CONFIG.callbackPort, XAI_GROK_OAUTH_CONFIG.callbackHost, () => {
-					server.removeListener('error', onError)
-					server.on('error', error => this.logService.warn('[XAiGrokOAuthManager] OAuth callback server error', error))
-					resolve()
-				})
-			})
-		} catch (error) {
+		// Bind the single allowlisted loopback redirect (127.0.0.1:56121). On
+		// Windows this can fail with EACCES (Hyper-V/WSL port exclusions) or
+		// EADDRINUSE (stale instance); the renderer then falls back to device-code.
+		const bindResult = await this.bindCallbackServer(server)
+		if (!bindResult) {
 			server.close()
-			const err = error as NodeJS.ErrnoException
-			if (err.code === 'EADDRINUSE') {
-				throw new XAiGrokOAuthError(`Port ${XAI_GROK_OAUTH_CONFIG.callbackPort} is already in use. Use device-code sign-in or close the other app and try again.`, 'port_in_use')
-			}
-			throw new XAiGrokOAuthError(`Failed to start the xAI sign-in callback: ${err.message || String(error)}`, 'callback_server_error')
+			throw this.buildBindError(this.lastBindAttempts, this.lastBindErrors)
 		}
+
+		const redirectUri = XAI_GROK_REDIRECT_URI
 
 		let resolvePending: (credentials: XAiGrokCredentials) => void = () => { }
 		let rejectPending: (error: Error) => void = () => { }
@@ -116,10 +110,82 @@ export class XAiGrokOAuthManager {
 		})
 		promise.catch(() => { /* observed by waitForCallback */ })
 		const timeoutId = setTimeout(() => this.rejectBrowser(new XAiGrokOAuthError('xAI sign-in timed out.', 'timeout')), XAI_GROK_OAUTH_CONFIG.authTimeoutMs)
-		this.pendingBrowser = { state, codeVerifier, redirectUri: XAI_GROK_REDIRECT_URI, server, resolve: resolvePending, reject: rejectPending, promise, timeoutId }
+		this.pendingBrowser = {
+			state,
+			codeVerifier,
+			redirectUri,
+			server,
+			host: XAI_GROK_OAUTH_CONFIG.callbackHost,
+			port: XAI_GROK_OAUTH_CONFIG.callbackPort,
+			resolve: resolvePending,
+			reject: rejectPending,
+			promise,
+			timeoutId,
+		}
 		this.fireState()
 
-		return buildXAiGrokAuthorizeUrl({ codeChallenge, state, nonce })
+		return buildXAiGrokAuthorizeUrl({ codeChallenge, state, nonce, redirectUri })
+	}
+
+	private lastBindAttempts: string[] = []
+	private lastBindErrors: string[] = []
+
+	// Binds the allowlisted loopback redirect. Returns the bound `{ host, port }`
+	// on success, or `null` on failure. Records the attempt in `lastBindAttempts`
+	// / `lastBindErrors` so the caller can build a useful error message.
+	private async bindCallbackServer(server: http.Server): Promise<{ host: string; port: number } | null> {
+		const host = XAI_GROK_OAUTH_CONFIG.callbackHost
+		const port = XAI_GROK_OAUTH_CONFIG.callbackPort
+		this.lastBindAttempts = []
+		this.lastBindErrors = []
+		this.lastBindAttempts.push(`${host}:${port}`)
+		try {
+			await new Promise<void>((resolve, reject) => {
+				const onError = (error: Error) => {
+					server.removeListener('error', onError)
+					reject(error)
+				}
+				server.once('error', onError)
+				server.listen(port, host, () => {
+					server.removeListener('error', onError)
+					server.on('error', error => this.logService.warn('[XAiGrokOAuthManager] OAuth callback server error', error))
+					resolve()
+				})
+			})
+			return { host, port }
+		} catch (error) {
+			const err = error as NodeJS.ErrnoException
+			this.lastBindErrors.push(`${host}:${port} -> ${err.code || err.message || String(error)}`)
+			return null
+		}
+	}
+
+	private buildBindError(attempts: string[], errors: string[]): XAiGrokOAuthError {
+		const hasEacces = errors.some(entry => entry.includes('EACCES'))
+		const hasEaddrinuse = errors.some(entry => entry.includes('EADDRINUSE'))
+		if (isWindows && (hasEacces || hasEaddrinuse)) {
+			return new XAiGrokOAuthError(
+				`Orbit could not open the SuperGrok sign-in callback on Windows. ` +
+					`Tried: ${attempts.join(', ')}. ` +
+					`This is usually caused by Windows Firewall blocking loopback traffic, ` +
+					`or a port reserved by Hyper-V / WSL / Docker Desktop. ` +
+					`Use "Use a device code" sign-in instead, which works without a local server.`,
+				'port_unavailable',
+			)
+		}
+		if (hasEacces || hasEaddrinuse) {
+			return new XAiGrokOAuthError(
+				`Port ${XAI_GROK_OAUTH_CONFIG.callbackPort} is already in use or unavailable. ` +
+					`Use device-code sign-in or close the other app and try again.`,
+				'port_unavailable',
+			)
+		}
+		return new XAiGrokOAuthError(
+			`Failed to start the xAI sign-in callback. Tried: ${attempts.join(', ')}. ` +
+				`Errors: ${errors.join('; ')}. ` +
+				`Use "Use a device code" sign-in as a reliable alternative.`,
+			'callback_server_error',
+		)
 	}
 
 	private async handleBrowserCallback(req: http.IncomingMessage, res: http.ServerResponse) {
@@ -141,7 +207,7 @@ export class XAiGrokOAuthManager {
 			res.end('Method not allowed')
 			return
 		}
-		const url = new URL(req.url || '/', XAI_GROK_REDIRECT_URI)
+		const url = new URL(req.url || '/', this.pendingBrowser?.redirectUri ?? XAI_GROK_REDIRECT_URI)
 		if (url.pathname !== XAI_GROK_OAUTH_CONFIG.callbackPath) {
 			res.writeHead(404, { 'Content-Type': 'text/plain' })
 			res.end('Not found')
@@ -173,7 +239,7 @@ export class XAiGrokOAuthManager {
 		}
 
 		try {
-			const credentials = await exchangeCodeForTokens(code, pending.codeVerifier)
+			const credentials = await exchangeCodeForTokens(code, pending.codeVerifier, pending.redirectUri)
 			await this.persistCredentials(credentials)
 			this.respondWithHtml(res, true, 'Your SuperGrok subscription is connected to Orbit. You can close this tab.')
 			this.resolveBrowser(credentials)

@@ -46,6 +46,7 @@ import { IOpenAiCodexAuthService, OpenAiCodexAuthState } from '../../../../commo
 import { IXAiGrokAuthService, XAiGrokAuthState } from '../../../../common/xAiGrokAuthService.js'
 import { IGitHubAuthService, GitHubAuthState } from '../../../../common/githubAuthService.js'
 import { IOrbitProviderAuthService, OrbitProviderAuthState } from '../../../../common/orbitProviderAuthService.js'
+import { initOrbitProviderUsage, syncOrbitProviderUsageAuth } from './useOrbitProviderUsage.js'
 import { URI } from '../../../../../../../base/common/uri.js'
 import { IChatThreadService, IsRunningType, QueuedUserMessage, ThreadsState, ThreadStreamState } from '../../../chatThreadService.js'
 import { ITerminalToolService } from '../../../terminalToolService.js'
@@ -303,16 +304,21 @@ export const _registerServices = (accessor: ServicesAccessor) => {
 		})
 	)
 
+	initOrbitProviderUsage(orbitProviderAuthService)
+
 	orbitProviderAuthService.getState().then(state => {
 		orbitProviderAuthState = state
 		orbitProviderAuthStateListeners.forEach(l => l(orbitProviderAuthState))
+		syncOrbitProviderUsageAuth(state.isAuthenticated)
 	}).catch(() => {
 		orbitProviderAuthState = { isAuthenticated: false, isPending: false }
+		syncOrbitProviderUsageAuth(false)
 	})
 	disposables.push(
 		orbitProviderAuthService.onDidChangeState((state) => {
 			orbitProviderAuthState = state
 			orbitProviderAuthStateListeners.forEach(l => l(orbitProviderAuthState))
+			syncOrbitProviderUsageAuth(state.isAuthenticated)
 		})
 	)
 

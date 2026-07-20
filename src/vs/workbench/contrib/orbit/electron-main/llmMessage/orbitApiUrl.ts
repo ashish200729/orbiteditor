@@ -14,12 +14,13 @@ export function getOrbitApiBaseUrl(
 	if (!environmentService.isBuilt && process.env.ORBIT_API_URL) {
 		return process.env.ORBIT_API_URL.replace(/\/$/, '')
 	}
-	// Dev builds (./scripts/code.sh) use the local backend; release builds use production.
+	// Dev builds (./scripts/code.sh) use orbitApiUrlDev from product.json.
+	// Override with ORBIT_API_URL=http://localhost:4000 for a local backend.
 	if (!environmentService.isBuilt) {
-		return (productService.orbitApiUrlDev ?? 'http://localhost:4000').replace(/\/$/, '')
+		return (productService.orbitApiUrlDev ?? 'https://api.orbiteditorai.com').replace(/\/$/, '')
 	}
 	if (productService.orbitApiUrl) {
 		return productService.orbitApiUrl.replace(/\/$/, '')
 	}
-	return 'https://api.orbiteditor.com'
+	return 'https://api.orbiteditorai.com'
 }
