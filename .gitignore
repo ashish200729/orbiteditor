@@ -23,6 +23,7 @@ product.overrides.json
 .vscode-test
 
 # Orbit added these:
+orbit-update-private.pem
 .tmp/
 .tmp2/
 /tmp/
