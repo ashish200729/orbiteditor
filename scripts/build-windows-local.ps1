@@ -5,10 +5,12 @@
 #   .\scripts\build-windows-local.ps1 -Arch x64    # x64 only
 #   .\scripts\build-windows-local.ps1 -Arch arm64  # arm64 only
 #   .\scripts\build-windows-local.ps1 -SkipCompile # repackage existing out-vscode-min only
+#   .\scripts\build-windows-local.ps1 -UpdateManifest  # refresh + sign update/latest.json after build
 param(
 	[ValidateSet('x64', 'arm64', 'both')]
 	[string]$Arch = 'both',
-	[switch]$SkipCompile
+	[switch]$SkipCompile,
+	[switch]$UpdateManifest
 )
 
 $ErrorActionPreference = 'Stop'
@@ -75,6 +77,29 @@ foreach ($a in $architectures) {
 	}
 	Copy-Item $src $dest -Force
 	Write-Host "Created $dest ($([math]::Round((Get-Item $dest).Length / 1MB, 1)) MB)"
+}
+
+$pemPath = Join-Path $Root 'orbit-update-private.pem'
+if ($UpdateManifest -or (Test-Path $pemPath)) {
+	. (Join-Path $Root 'scripts\orbit-update-signing.ps1')
+	Set-OrbitUpdateSigningKeyFromFile -Root $Root | Out-Null
+	$tag = "v$version"
+	$manifestArgs = @('--version', $version, '--tag', $tag, '--merge')
+	foreach ($a in $architectures) {
+		$exe = Join-Path $Root "Orbit-$version-win32-$a-setup.exe"
+		if (Test-Path $exe) {
+			$manifestArgs += @('--asset', "win32-$a=$exe")
+		}
+	}
+	if ($manifestArgs.Count -gt 5) {
+		Write-Host "`n>>> Updating and signing update/latest.json (Windows key)"
+		node scripts/update-latest-json.js @manifestArgs
+		if ($LASTEXITCODE -ne 0) { throw 'update-latest-json.js failed' }
+	} elseif (Test-Path $pemPath) {
+		Write-Host "`n>>> Signing update/latest.json (Windows key)"
+		node scripts/update-latest-json.js --sign-existing
+		if ($LASTEXITCODE -ne 0) { throw 'update-latest-json.js --sign-existing failed' }
+	}
 }
 
 Write-Host "`nDone. Installers:"
