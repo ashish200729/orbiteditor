@@ -29,12 +29,21 @@ if ($package.version -ne $version) {
 
 $env:NODE_OPTIONS = '--max-old-space-size=8192'
 
+function Invoke-NpmCommand {
+	param([string[]]$NpmArgs)
+	$prevErrorAction = $ErrorActionPreference
+	$ErrorActionPreference = 'Continue'
+	& npm @NpmArgs
+	$exit = $LASTEXITCODE
+	$ErrorActionPreference = $prevErrorAction
+	if ($exit -ne 0) { throw "npm $($NpmArgs -join ' ') failed with exit code $exit" }
+}
+
 function Invoke-Gulp {
 	param([string[]]$Tasks)
 	foreach ($task in $Tasks) {
 		Write-Host "`n>>> gulp $task"
-		npm run gulp -- $task
-		if ($LASTEXITCODE -ne 0) { throw "gulp $task failed with exit code $LASTEXITCODE" }
+		Invoke-NpmCommand @('run', 'gulp', '--', $task)
 	}
 }
 
@@ -45,14 +54,11 @@ if (-not $SkipCompile) {
 		'compile-extension-media-build'
 	)
 	Write-Host "`n>>> npm run buildreact (dev bundles for compile-client)"
-	npm run buildreact
-	if ($LASTEXITCODE -ne 0) { throw 'buildreact failed' }
+	Invoke-NpmCommand @('run', 'buildreact')
 	Write-Host "`n>>> npm run compile-client"
-	npm run compile-client
-	if ($LASTEXITCODE -ne 0) { throw 'compile-client failed' }
+	Invoke-NpmCommand @('run', 'compile-client')
 	Write-Host "`n>>> npm run buildreact:prod"
-	npm run buildreact:prod
-	if ($LASTEXITCODE -ne 0) { throw 'buildreact:prod failed' }
+	Invoke-NpmCommand @('run', 'buildreact:prod')
 	$agentBundle = Join-Path $Root 'src\vs\workbench\contrib\orbit\browser\react\out\agent-window-tsx\index.js'
 	if (-not (Test-Path $agentBundle)) {
 		throw "Missing Agents React bundle: $agentBundle (buildreact:prod did not produce agent-window-tsx)"
