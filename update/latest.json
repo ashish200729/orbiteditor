@@ -18,5 +18,6 @@
 			"url": "https://github.com/ashish200729/orbiteditor/releases/download/v0.4.1/Orbit-0.4.1-win32-arm64-setup.exe",
 			"sha256": "9f5c9434d4c1a4930496badea5f3d0ff6ae4ce9341ef13a4c18362909123fdd8"
 		}
-	}
+	},
+	"signature": "wWdO9y3zax4Qekqq2Kz/oqPMBms3oN6qASYrVD01Y8xjY4f4R4unRFsQtba979C4iBLEUICp/D1R1lnU054zBg=="
 }
