@@ -1,14 +1,14 @@
 {
-	"version": "0.4.0",
-	"releasedAt": "2026-07-20",
+	"version": "0.4.1",
+	"releasedAt": "2026-07-21",
 	"assets": {
 		"darwin-arm64": {
-			"url": "https://github.com/ashish200729/orbiteditor/releases/download/v0.4.0/Orbit-0.4.0-darwin-arm64.dmg",
-			"sha256": "4d3ab291d716c8fba487e5ba726d91f9fdbc323d019e04b93c2abd83a5ef14f5"
+			"url": "https://github.com/ashish200729/orbiteditor/releases/download/v0.4.1/Orbit-0.4.1-darwin-arm64.dmg",
+			"sha256": "46f432435e86b223643e664fc64a31de2d16dfad0bdd86a7aef48307b96a9813"
 		},
 		"darwin-x64": {
-			"url": "https://github.com/ashish200729/orbiteditor/releases/download/v0.4.0/Orbit-0.4.0-darwin-x64.dmg",
-			"sha256": "92197307ceccad7bc719d256864a3d06babd3ae461f1ab171c4c58bab182f5b7"
+			"url": "https://github.com/ashish200729/orbiteditor/releases/download/v0.4.1/Orbit-0.4.1-darwin-x64.dmg",
+			"sha256": "bfcaa7358a7bc0e3bec462501fb1efa4fb3acbcb9a51fdbe8c4e843f35abde4c"
 		},
 		"win32-x64": {
 			"url": "https://github.com/ashish200729/orbiteditor/releases/download/v0.4.0/Orbit-0.4.0-win32-x64-setup.exe",
@@ -18,6 +18,5 @@
 			"url": "https://github.com/ashish200729/orbiteditor/releases/download/v0.4.0/Orbit-0.4.0-win32-arm64-setup.exe",
 			"sha256": "235b4f0d33c18c29e520c05fbfa174e73899456dd38207cbe63dd922ca15d25b"
 		}
-	},
-	"signature": "rXpDYk0hWYp4Om338WgnBBuuJEVgc36xKK3Ob4TOgpBDZ4T61J6/qFTIPRm5Qk/d2V5Ynr84I1chVKUp+OEnDQ=="
+	}
 }
