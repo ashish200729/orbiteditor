@@ -3,6 +3,7 @@
  *  Licensed under the Apache License, Version 2.0. See LICENSE.txt for more information.
  *--------------------------------------------------------------------------------------*/
 
+import { setOrbitProviderModelMetadata } from '../../common/orbitProviderModelMetadata.js'
 import type { OrbitProviderModelResponse } from '../../common/sendLLMMessageTypes.js'
 import { getGitHubOAuthManager } from '../github/oauthManager.js'
 import { getOrbitApiBaseUrl } from './orbitApiUrl.js'
@@ -34,15 +35,30 @@ export const orbitProviderList = async ({ onSuccess: onSuccess_, onError: onErro
 		if (!res.ok) {
 			throw new Error(`Orbit /api/v1/models failed: ${res.status}`)
 		}
-		const json = await res.json() as { data?: Array<{ id: string; orbit?: { contextWindow?: number; supportsTools?: boolean; supportsReasoning?: boolean } }> }
-		onSuccess({
-			models: (json.data ?? []).map((m) => ({
-				modelName: m.id,
-				contextWindow: m.orbit?.contextWindow ?? 200_000,
-				supportsTools: m.orbit?.supportsTools ?? true,
-				supportsReasoning: m.orbit?.supportsReasoning ?? false,
-			})),
-		})
+		const json = await res.json() as {
+			data?: Array<{
+				id: string
+				orbit?: {
+					contextWindow?: number
+					supportsTools?: boolean
+					supportsReasoning?: boolean
+					inputCreditMultiplier?: number
+					outputCreditMultiplier?: number
+				}
+			}>
+		}
+		const models = (json.data ?? []).map((m) => ({
+			modelName: m.id,
+			contextWindow: m.orbit?.contextWindow ?? 200_000,
+			supportsTools: m.orbit?.supportsTools ?? true,
+			supportsReasoning: m.orbit?.supportsReasoning ?? false,
+			inputCreditMultiplier: m.orbit?.inputCreditMultiplier ?? 0,
+			outputCreditMultiplier: m.orbit?.outputCreditMultiplier ?? 0,
+		}))
+		if (models.length > 0) {
+			setOrbitProviderModelMetadata(models)
+		}
+		onSuccess({ models })
 	} catch (e) {
 		onError({ error: e instanceof Error ? e.message : String(e) })
 	}

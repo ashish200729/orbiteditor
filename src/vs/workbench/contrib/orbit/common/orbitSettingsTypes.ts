@@ -19,7 +19,7 @@ export const providerNames = Object.keys(defaultProviderSettings) as ProviderNam
 
 export const localProviderNames = ['ollama', 'vLLM', 'lmStudio'] satisfies ProviderName[] // all local names
 export const nonlocalProviderNames = providerNames.filter((name) => !(localProviderNames as string[]).includes(name) && name !== 'orbit') // all non-local names
-export const authGatedProviderNames = ['orbit'] satisfies ProviderName[]
+export const authGatedProviderNames = ['orbit', 'clinePass'] satisfies ProviderName[]
 
 type CustomSettingName = UnionOfKeys<typeof defaultProviderSettings[ProviderName]>
 type CustomProviderSettings<providerName extends ProviderName> = {
@@ -33,7 +33,7 @@ export const customSettingNamesOfProvider = (providerName: ProviderName) => {
 
 export type VoidStatefulModelInfo = { // <-- STATEFUL
 	modelName: string,
-	type: 'default' | 'autodetected' | 'custom' | 'orbit';
+	type: 'default' | 'autodetected' | 'custom' | 'orbit' | 'clinePass';
 	isHidden: boolean, // whether or not the user is hiding it (switched off)
 }
 
@@ -74,6 +74,9 @@ export const displayInfoOfProviderName = (providerName: ProviderName): DisplayIn
 	}
 	else if (providerName === 'orbit') {
 		return { title: 'Orbit Provider', }
+	}
+	else if (providerName === 'clinePass') {
+		return { title: 'ClinePass', }
 	}
 	else if (providerName === 'deepseek') {
 		return { title: 'DeepSeek', }
@@ -128,6 +131,7 @@ export const subTextMdOfProviderName = (providerName: ProviderName): string => {
 	if (providerName === 'openAICodex') return 'Sign in with your ChatGPT Plus/Pro subscription to use Codex.'
 	if (providerName === 'xAISuperGrok') return 'Sign in with a SuperGrok or eligible X Premium subscription. No xAI API key is required.'
 	if (providerName === 'orbit') return 'Sign in with GitHub to use Orbit Provider models. No API key required.'
+	if (providerName === 'clinePass') return 'Sign in with your Cline account to use ClinePass models ($9.99/mo). No API key required.'
 	if (providerName === 'deepseek') return 'Get your [API Key here](https://platform.deepseek.com/api_keys).'
 	if (providerName === 'openRouter') return 'Get your [API Key here](https://openrouter.ai/settings/keys). Read about [rate limits here](https://openrouter.ai/docs/api-reference/limits).'
 	if (providerName === 'gemini') return 'Get your [API Key here](https://aistudio.google.com/apikey). Read about [rate limits here](https://ai.google.dev/gemini-api/docs/rate-limits#current-rate-limits).'
@@ -298,6 +302,12 @@ export const defaultSettingsOfProvider: SettingsOfProvider = {
 		...defaultCustomSettings,
 		...defaultProviderSettings.orbit,
 		...modelInfoOfDefaultModelNames(defaultModelsOfProvider.orbit),
+		_didFillInProviderSettings: undefined,
+	},
+	clinePass: {
+		...defaultCustomSettings,
+		...defaultProviderSettings.clinePass,
+		...modelInfoOfDefaultModelNames(defaultModelsOfProvider.clinePass),
 		_didFillInProviderSettings: undefined,
 	},
 	deepseek: {

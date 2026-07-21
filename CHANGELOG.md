@@ -2,6 +2,36 @@
 
 All notable changes to Orbit Editor are documented here.
 
+## 0.4.1
+
+### 🎫 ClinePass — open-weight models through your Cline subscription
+
+Use your **ClinePass** subscription ($9.99/mo) directly in Orbit — no API key, no Orbit backend proxy. Sign in once with your Cline account and pick from 11 curated open-weight coding models with higher rate limits than standard Cline API access.
+
+- **Sign in with Cline.** Settings → Providers → **ClinePass** → **Sign in with Cline**. OAuth runs in your browser; tokens are encrypted and stored on your machine.
+- **11 models ready to go.** GLM 5.2, Kimi K2.7 Code, Kimi K2.6, Kimi K3, DeepSeek V4 Pro/Flash, MiMo V2.5/Pro, MiniMax M3, Qwen 3.7 Max/Plus — with tools and reasoning where supported.
+- **Live model list.** After sign-in, Orbit refreshes the catalog from Cline's API. Static fallbacks keep the picker populated if a refresh is temporarily empty.
+- **Direct to Cline.** Chat requests go straight to `api.cline.bot` with streaming, native tool calls, and reasoning deltas — same OpenAI-compatible path Cline uses.
+- **Clear billing signals.** No subscription? You'll see a 402 with a link to subscribe. Hit a quota window? 429 points you to your Cline dashboard.
+
+### 🛠️ Orbit Provider & reliability
+
+- **Richer model metadata.** Orbit Provider now caches context window, tool/reasoning support, and credit multipliers from the live model API — so capabilities and reference pricing stay accurate as your catalog changes.
+- **Safer OAuth.** ClinePass sign-in embeds CSRF state in the callback URL and cleans up the local server if authorization fails, so port 1488 isn't left orphaned.
+- **Auth-gated model picker.** If you're signed out of ClinePass (or Orbit Provider), the model dropdown shows a one-click sign-in prompt instead of a blank "No models available" state.
+
+### macOS install
+
+- **Recommended (no Gatekeeper warning):**
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/ashish200729/orbiteditor/main/install.sh | bash
+  ```
+- **Or download the `.dmg`** from the release, drag Orbit to Applications, then run once:
+  ```bash
+  xattr -cr /Applications/Orbit.app
+  ```
+  (Orbit isn't notarized by Apple yet, so a browser-downloaded `.dmg` shows a one-time "unverified developer" prompt; the command above clears it.)
+
 ## 0.4.0
 
 ### 🚀 Orbit Provider — sign in, pick a model, start coding

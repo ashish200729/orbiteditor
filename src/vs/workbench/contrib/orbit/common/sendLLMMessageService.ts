@@ -3,7 +3,7 @@
  *  Licensed under the Apache License, Version 2.0. See LICENSE.txt for more information.
  *--------------------------------------------------------------------------------------*/
 
-import { EventLLMMessageOnTextParams, EventLLMMessageOnErrorParams, EventLLMMessageOnFinalMessageParams, ServiceSendLLMMessageParams, MainSendLLMMessageParams, MainLLMMessageAbortParams, ServiceModelListParams, EventModelListOnSuccessParams, EventModelListOnErrorParams, MainModelListParams, MainOrbitProviderListParams, OllamaModelResponse, OpenaiCompatibleModelResponse, OrbitProviderModelResponse, OrbitServiceModelListParams, } from './sendLLMMessageTypes.js';
+import { EventLLMMessageOnTextParams, EventLLMMessageOnErrorParams, EventLLMMessageOnFinalMessageParams, ServiceSendLLMMessageParams, MainSendLLMMessageParams, MainLLMMessageAbortParams, ServiceModelListParams, EventModelListOnSuccessParams, EventModelListOnErrorParams, MainModelListParams, MainOrbitProviderListParams, MainClinePassProviderListParams, OllamaModelResponse, OpenaiCompatibleModelResponse, OrbitProviderModelResponse, ClinePassModelResponse, OrbitServiceModelListParams, ClinePassServiceModelListParams, } from './sendLLMMessageTypes.js';
 
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { registerSingleton, InstantiationType } from '../../../../platform/instantiation/common/extensions.js';
@@ -26,6 +26,7 @@ export interface ILLMMessageService {
 	ollamaList: (params: ServiceModelListParams<OllamaModelResponse>) => void;
 	openAICompatibleList: (params: ServiceModelListParams<OpenaiCompatibleModelResponse>) => void;
 	orbitProviderList: (params: OrbitServiceModelListParams<OrbitProviderModelResponse>) => void;
+	clinePassProviderList: (params: ClinePassServiceModelListParams<ClinePassModelResponse>) => void;
 }
 
 
@@ -57,8 +58,12 @@ export class LLMMessageService extends Disposable implements ILLMMessageService 
 			success: {} as { [eventId: string]: ((params: EventModelListOnSuccessParams<OrbitProviderModelResponse>) => void) },
 			error: {} as { [eventId: string]: ((params: EventModelListOnErrorParams<OrbitProviderModelResponse>) => void) },
 		},
+		clinePass: {
+			success: {} as { [eventId: string]: ((params: EventModelListOnSuccessParams<ClinePassModelResponse>) => void) },
+			error: {} as { [eventId: string]: ((params: EventModelListOnErrorParams<ClinePassModelResponse>) => void) },
+		},
 	} satisfies {
-		[providerName in 'ollama' | 'openAICompat' | 'orbit']: {
+		[providerName in 'ollama' | 'openAICompat' | 'orbit' | 'clinePass']: {
 			success: { [eventId: string]: ((params: EventModelListOnSuccessParams<any>) => void) },
 			error: { [eventId: string]: ((params: EventModelListOnErrorParams<any>) => void) },
 		}
@@ -111,6 +116,12 @@ export class LLMMessageService extends Disposable implements ILLMMessageService 
 		}))
 		this._register((this.channel.listen('onError_list_orbit') satisfies Event<EventModelListOnErrorParams<OrbitProviderModelResponse>>)(e => {
 			this.listHooks.orbit.error[e.requestId]?.(e)
+		}))
+		this._register((this.channel.listen('onSuccess_list_clinePass') satisfies Event<EventModelListOnSuccessParams<ClinePassModelResponse>>)(e => {
+			this.listHooks.clinePass.success[e.requestId]?.(e)
+		}))
+		this._register((this.channel.listen('onError_list_clinePass') satisfies Event<EventModelListOnErrorParams<ClinePassModelResponse>>)(e => {
+			this.listHooks.clinePass.error[e.requestId]?.(e)
 		}))
 
 	}
@@ -214,6 +225,23 @@ export class LLMMessageService extends Disposable implements ILLMMessageService 
 		} satisfies MainOrbitProviderListParams<OrbitProviderModelResponse>)
 	}
 
+	clinePassProviderList = (params: ClinePassServiceModelListParams<ClinePassModelResponse>) => {
+		const { onSuccess, onError, ...proxyParams } = params
+
+		const { settingsOfProvider } = this.voidSettingsService.state
+
+		const requestId_ = generateUuid();
+		this.listHooks.clinePass.success[requestId_] = onSuccess
+		this.listHooks.clinePass.error[requestId_] = onError
+
+		this.channel.call('clinePassProviderList', {
+			...proxyParams,
+			settingsOfProvider,
+			providerName: 'clinePass',
+			requestId: requestId_,
+		} satisfies MainClinePassProviderListParams<ClinePassModelResponse>)
+	}
+
 	private _clearChannelHooks(requestId: string) {
 		delete this.llmMessageHooks.onText[requestId]
 		delete this.llmMessageHooks.onFinalMessage[requestId]
@@ -228,6 +256,9 @@ export class LLMMessageService extends Disposable implements ILLMMessageService 
 
 		delete this.listHooks.orbit.success[requestId]
 		delete this.listHooks.orbit.error[requestId]
+
+		delete this.listHooks.clinePass.success[requestId]
+		delete this.listHooks.clinePass.error[requestId]
 	}
 }
 

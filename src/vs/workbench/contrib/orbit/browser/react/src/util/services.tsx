@@ -43,6 +43,7 @@ import { IHistoryService } from '../../../../../../services/history/common/histo
 import { IOpenerService } from '../../../../../../../platform/opener/common/opener.js'
 import { IMetricsService } from '../../../../common/metricsService.js'
 import { IOpenAiCodexAuthService, OpenAiCodexAuthState } from '../../../../common/openAiCodexAuthService.js'
+import { IClinePassAuthService, ClinePassAuthState } from '../../../../common/clinePassAuthService.js'
 import { IXAiGrokAuthService, XAiGrokAuthState } from '../../../../common/xAiGrokAuthService.js'
 import { IGitHubAuthService, GitHubAuthState } from '../../../../common/githubAuthService.js'
 import { IOrbitProviderAuthService, OrbitProviderAuthState } from '../../../../common/orbitProviderAuthService.js'
@@ -151,6 +152,9 @@ const gitHubAuthStateListeners: Set<(s: GitHubAuthState) => void> = new Set()
 let orbitProviderAuthState: OrbitProviderAuthState = { isAuthenticated: false, isPending: false }
 const orbitProviderAuthStateListeners: Set<(s: OrbitProviderAuthState) => void> = new Set()
 
+let clinePassAuthState: ClinePassAuthState = { isAuthenticated: false }
+const clinePassAuthStateListeners: Set<(s: ClinePassAuthState) => void> = new Set()
+
 const ctrlKZoneStreamingStateListeners: Set<(diffareaid: number, s: boolean) => void> = new Set()
 const commandBarURIStateListeners: Set<(uri: URI) => void> = new Set();
 const activeURIListeners: Set<(uri: URI | null) => void> = new Set();
@@ -180,9 +184,10 @@ export const _registerServices = (accessor: ServicesAccessor) => {
 		xAiGrokAuthService: accessor.get(IXAiGrokAuthService),
 		gitHubAuthService: accessor.get(IGitHubAuthService),
 		orbitProviderAuthService: accessor.get(IOrbitProviderAuthService),
+		clinePassAuthService: accessor.get(IClinePassAuthService),
 	}
 
-	const { settingsStateService, chatThreadsStateService, refreshModelService, themeService, workbenchThemeService, editCodeService, voidCommandBarService, modelService, mcpService, openAiCodexAuthService, xAiGrokAuthService, gitHubAuthService, orbitProviderAuthService } = stateServices
+	const { settingsStateService, chatThreadsStateService, refreshModelService, themeService, workbenchThemeService, editCodeService, voidCommandBarService, modelService, mcpService, openAiCodexAuthService, xAiGrokAuthService, gitHubAuthService, orbitProviderAuthService, clinePassAuthService } = stateServices
 	chatThreadsStateServiceRef = chatThreadsStateService
 
 
@@ -322,6 +327,19 @@ export const _registerServices = (accessor: ServicesAccessor) => {
 		})
 	)
 
+	clinePassAuthService.getState().then(state => {
+		clinePassAuthState = state
+		clinePassAuthStateListeners.forEach(l => l(clinePassAuthState))
+	}).catch(() => {
+		clinePassAuthState = { isAuthenticated: false }
+	})
+	disposables.push(
+		clinePassAuthService.onDidChangeState((state) => {
+			clinePassAuthState = state
+			clinePassAuthStateListeners.forEach(l => l(clinePassAuthState))
+		})
+	)
+
 	const terminalGroupService = accessor.get(ITerminalGroupService)
 	const terminalService = accessor.get(ITerminalService)
 	const refreshTerminalVibeState = () => {
@@ -397,6 +415,7 @@ const getReactAccessor = (accessor: ServicesAccessor) => {
 		IXAiGrokAuthService: accessor.get(IXAiGrokAuthService),
 		IGitHubAuthService: accessor.get(IGitHubAuthService),
 		IOrbitProviderAuthService: accessor.get(IOrbitProviderAuthService),
+		IClinePassAuthService: accessor.get(IClinePassAuthService),
 
 		IVoidCommandBarService: accessor.get(IVoidCommandBarService),
 		INativeHostService: accessor.get(INativeHostService),
@@ -786,6 +805,16 @@ export const useOrbitProviderAuthState = () => {
 		ss(orbitProviderAuthState)
 		orbitProviderAuthStateListeners.add(ss)
 		return () => { orbitProviderAuthStateListeners.delete(ss) }
+	}, [ss])
+	return s
+}
+
+export const useClinePassAuthState = () => {
+	const [s, ss] = useState(clinePassAuthState)
+	useEffect(() => {
+		ss(clinePassAuthState)
+		clinePassAuthStateListeners.add(ss)
+		return () => { clinePassAuthStateListeners.delete(ss) }
 	}, [ss])
 	return s
 }

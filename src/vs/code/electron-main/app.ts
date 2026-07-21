@@ -131,12 +131,14 @@ import ErrorTelemetry from '../../platform/telemetry/electron-main/errorTelemetr
 import { IMetricsService } from '../../workbench/contrib/orbit/common/metricsService.js';
 import { IVoidUpdateService } from '../../workbench/contrib/orbit/common/orbitUpdateService.js';
 import { IOpenAiCodexAuthService } from '../../workbench/contrib/orbit/common/openAiCodexAuthService.js';
+import { IClinePassAuthService } from '../../workbench/contrib/orbit/common/clinePassAuthService.js';
 import { IXAiGrokAuthService } from '../../workbench/contrib/orbit/common/xAiGrokAuthService.js';
 import { IGitHubAuthService } from '../../workbench/contrib/orbit/common/githubAuthService.js';
 import { IOrbitProviderAuthService } from '../../workbench/contrib/orbit/common/orbitProviderAuthService.js';
 import { MetricsMainService } from '../../workbench/contrib/orbit/electron-main/metricsMainService.js';
 import { VoidMainUpdateService } from '../../workbench/contrib/orbit/electron-main/orbitUpdateMainService.js';
 import { OpenAiCodexAuthMainService } from '../../workbench/contrib/orbit/electron-main/openai-codex/openAiCodexAuthMainService.js';
+import { ClinePassAuthMainService } from '../../workbench/contrib/orbit/electron-main/cline-pass/clinePassAuthMainService.js';
 import { XAiGrokAuthMainService } from '../../workbench/contrib/orbit/electron-main/xai-grok/xAiGrokAuthMainService.js';
 import { GitHubAuthMainService } from '../../workbench/contrib/orbit/electron-main/github/githubAuthMainService.js';
 import { OrbitProviderAuthMainService } from '../../workbench/contrib/orbit/electron-main/orbitProvider/orbitProviderAuthMainService.js';
@@ -1190,6 +1192,7 @@ export class CodeApplication extends Disposable {
 		services.set(IMetricsService, new SyncDescriptor(MetricsMainService, undefined, false));
 		services.set(IVoidUpdateService, new SyncDescriptor(VoidMainUpdateService, undefined, false));
 		services.set(IOpenAiCodexAuthService, new SyncDescriptor(OpenAiCodexAuthMainService, undefined, false));
+		services.set(IClinePassAuthService, new SyncDescriptor(ClinePassAuthMainService, undefined, false));
 		services.set(IXAiGrokAuthService, new SyncDescriptor(XAiGrokAuthMainService, undefined, false));
 		services.set(IGitHubAuthService, new SyncDescriptor(GitHubAuthMainService, undefined, false));
 		services.set(IOrbitProviderAuthService, new SyncDescriptor(OrbitProviderAuthMainService, undefined, false));
@@ -1345,6 +1348,9 @@ export class CodeApplication extends Disposable {
 
 		const openAiCodexAuthChannel = ProxyChannel.fromService(accessor.get(IOpenAiCodexAuthService), disposables);
 		mainProcessElectronServer.registerChannel('void-channel-openai-codex-auth', openAiCodexAuthChannel);
+
+		const clinePassAuthChannel = ProxyChannel.fromService(accessor.get(IClinePassAuthService), disposables);
+		mainProcessElectronServer.registerChannel('void-channel-cline-pass-auth', clinePassAuthChannel);
 
 		const xAiGrokAuthChannel = ProxyChannel.fromService(accessor.get(IXAiGrokAuthService), disposables);
 		mainProcessElectronServer.registerChannel('void-channel-xai-grok-auth', xAiGrokAuthChannel);

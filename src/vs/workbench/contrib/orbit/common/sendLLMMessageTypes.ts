@@ -245,6 +245,19 @@ export type OrbitProviderModelResponse = {
 	contextWindow?: number;
 	supportsTools?: boolean;
 	supportsReasoning?: boolean;
+	inputCreditMultiplier?: number;
+	outputCreditMultiplier?: number;
+}
+
+export type ClinePassModelResponse = {
+	modelName: string;
+	contextWindow?: number;
+	maxTokens?: number;
+	supportsTools?: boolean;
+	supportsReasoning?: boolean;
+	supportsImages?: boolean;
+	inputPrice?: number;
+	outputPrice?: number;
 }
 
 
@@ -269,9 +282,15 @@ export type OrbitServiceModelListParams<modelResponse> = {
 	onError: (param: { error: any }) => void;
 }
 
+export type ClinePassServiceModelListParams<modelResponse> = {
+	onSuccess: (param: { models: modelResponse[] }) => void;
+	onError: (param: { error: any }) => void;
+}
+
 type BlockedMainModelListParams = 'onSuccess' | 'onError'
 export type MainModelListParams<modelResponse> = Omit<ModelListParams<modelResponse>, BlockedMainModelListParams> & { providerName: RefreshableProviderName, requestId: string }
 export type MainOrbitProviderListParams<modelResponse> = Omit<ModelListParams<modelResponse>, BlockedMainModelListParams> & { providerName: 'orbit', requestId: string }
+export type MainClinePassProviderListParams<modelResponse> = Omit<ModelListParams<modelResponse>, BlockedMainModelListParams> & { providerName: 'clinePass', requestId: string }
 
 export type EventModelListOnSuccessParams<modelResponse> = Parameters<ModelListParams<modelResponse>['onSuccess']>[0] & { requestId: string }
 export type EventModelListOnErrorParams<modelResponse> = Parameters<ModelListParams<modelResponse>['onError']>[0] & { requestId: string }

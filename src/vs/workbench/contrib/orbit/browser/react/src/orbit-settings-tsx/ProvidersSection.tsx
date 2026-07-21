@@ -7,7 +7,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronDown, Eye, EyeOff, RefreshCw } from 'lucide-react'
 import ErrorBoundary from '../sidebar-tsx/ErrorBoundary.js'
 import { VoidButtonBgDarken, VoidSimpleInputBox } from '../util/inputs.js'
-import { useAccessor, useOpenAiCodexAuthState, useOrbitProviderAuthState, useSettingsState, useXAiGrokAuthState } from '../util/services.js'
+import { useAccessor, useOpenAiCodexAuthState, useOrbitProviderAuthState, useSettingsState, useXAiGrokAuthState, useClinePassAuthState } from '../util/services.js'
 import { ChatMarkdownRender } from '../markdown/ChatMarkdownRender.js'
 import { WarningBox } from './WarningBox.js'
 import { isWindows } from '../../../../../../../base/common/platform.js'
@@ -26,6 +26,8 @@ import {
 import {
 	VOID_OPENAI_CODEX_SIGN_IN_ACTION_ID,
 	VOID_OPENAI_CODEX_SIGN_OUT_ACTION_ID,
+	VOID_CLINE_PASS_SIGN_IN_ACTION_ID,
+	VOID_CLINE_PASS_SIGN_OUT_ACTION_ID,
 	VOID_XAI_GROK_DEVICE_SIGN_IN_ACTION_ID,
 	VOID_XAI_GROK_SIGN_IN_ACTION_ID,
 	VOID_XAI_GROK_SIGN_OUT_ACTION_ID,
@@ -48,6 +50,7 @@ const providerStatusLabel = (
 	codexAuthenticated: boolean,
 	xAiAuthenticated: boolean,
 	orbitAuthenticated: boolean,
+	clinePassAuthenticated: boolean,
 ): string => {
 	if (providerName === 'orbit') {
 		return orbitAuthenticated ? 'Connected' : 'Not connected'
@@ -57,6 +60,9 @@ const providerStatusLabel = (
 	}
 	if (providerName === 'xAISuperGrok') {
 		return xAiAuthenticated ? 'Connected' : 'Not connected'
+	}
+	if (providerName === 'clinePass') {
+		return clinePassAuthenticated ? 'Connected' : 'Not connected'
 	}
 	return isConfigured ? 'Configured' : 'Not configured'
 }
@@ -70,6 +76,9 @@ const providerSubtitle = (providerName: ProviderName): string => {
 	}
 	if (providerName === 'xAISuperGrok') {
 		return 'SuperGrok or eligible X Premium subscription'
+	}
+	if (providerName === 'clinePass') {
+		return 'Cline subscription · open-weight models · $9.99/mo'
 	}
 	if ((localProviderNames as readonly string[]).includes(providerName)) {
 		return 'Local endpoint · auto-detected models'
@@ -207,6 +216,44 @@ const OpenAICodexProviderPanel = () => {
 					Sign in
 				</VoidButtonBgDarken>
 			)}
+		</div>
+	)
+}
+
+const ClinePassAuthPanel = () => {
+	const authState = useClinePassAuthState()
+	const accessor = useAccessor()
+	const commandService = accessor.get('ICommandService')
+
+	return (
+		<div className='@@provider-auth-panel'>
+			<p className='@@provider-auth-desc'>
+				Use your ClinePass subscription for open-weight models with 2–5x rate limits. $9.99/mo (first month $4.99).
+			</p>
+			{authState.isAuthenticated ? (
+				<div className='@@provider-auth-row'>
+					<span className='@@settings-profile-name'>{authState.email ?? authState.displayName ?? 'Signed in'}</span>
+					<VoidButtonBgDarken
+						className='px-3 py-1 text-xs shrink-0'
+						onClick={() => commandService.executeCommand(VOID_CLINE_PASS_SIGN_OUT_ACTION_ID)}
+					>
+						Sign out
+					</VoidButtonBgDarken>
+				</div>
+			) : (
+				<VoidButtonBgDarken
+					className='w-full px-3 py-1.5 text-xs'
+					onClick={() => commandService.executeCommand(VOID_CLINE_PASS_SIGN_IN_ACTION_ID)}
+				>
+					Sign in with Cline
+				</VoidButtonBgDarken>
+			)}
+			<div className='@@provider-field-hint' style={{ marginTop: 8 }}>
+				{authState.isAuthenticated
+					? 'Visit your Cline dashboard to manage subscription and view quota usage.'
+					: <a href="https://app.cline.bot/dashboard/subscription?personal=true" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--void-accent, #4a90d9)' }}>Subscribe to ClinePass</a>
+				}
+			</div>
 		</div>
 	)
 }
@@ -362,6 +409,9 @@ const ProviderAccordionPanel = ({ providerName }: { providerName: ProviderName }
 	if (providerName === 'xAISuperGrok') {
 		return <XAiSuperGrokProviderPanel />
 	}
+	if (providerName === 'clinePass') {
+		return <ClinePassAuthPanel />
+	}
 
 	return (
 		<div className='@@provider-panel-fields'>
@@ -400,6 +450,7 @@ const ProviderAccordionItem = ({
 	const authState = useOpenAiCodexAuthState()
 	const xAiAuthState = useXAiGrokAuthState()
 	const orbitAuthState = useOrbitProviderAuthState()
+	const clinePassAuthState = useClinePassAuthState()
 
 	const { title: providerTitle } = displayInfoOfProviderName(providerName)
 	const isConfigured = voidSettingsState.settingsOfProvider[providerName]._didFillInProviderSettings
@@ -409,9 +460,11 @@ const ProviderAccordionItem = ({
 		? authState.isAuthenticated
 		: providerName === 'xAISuperGrok'
 			? xAiAuthState.isAuthenticated
+		: providerName === 'clinePass'
+			? clinePassAuthState.isAuthenticated
 		: !!isConfigured
 
-	const statusLabel = providerStatusLabel(providerName, !!isConfigured, authState.isAuthenticated, xAiAuthState.isAuthenticated, orbitAuthState.isAuthenticated)
+	const statusLabel = providerStatusLabel(providerName, !!isConfigured, authState.isAuthenticated, xAiAuthState.isAuthenticated, orbitAuthState.isAuthenticated, clinePassAuthState.isAuthenticated)
 
 	return (
 		<div className={`@@provider-accordion${isOpen ? ' @@provider-accordion--open' : ''}${isConnected && providerName !== 'orbit' ? ' @@provider-accordion--connected' : ''}`}>

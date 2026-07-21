@@ -41,6 +41,7 @@ import './media/void.css'
 // update (frontend part, also see platform/)
 import './orbitUpdateActions.js'
 import './openAiCodexActions.js'
+import './clinePassAuthActions.js'
 import './xAiGrokActions.js'
 import './orbitProviderAuthActions.js'
 

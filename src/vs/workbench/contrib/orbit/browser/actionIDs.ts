@@ -45,4 +45,8 @@ export const VOID_ORBIT_PROVIDER_SIGN_OUT_ACTION_ID = 'void.orbitProviderSignOut
 
 export const VOID_REFRESH_ORBIT_PROVIDER_ACTION_ID = 'void.refreshOrbitProvider'
 
+export const VOID_CLINE_PASS_SIGN_IN_ACTION_ID = 'void.clinePassSignIn'
+
+export const VOID_CLINE_PASS_SIGN_OUT_ACTION_ID = 'void.clinePassSignOut'
+
 export const VOID_OPEN_ACCOUNT_SETTINGS_ACTION_ID = 'void.openAccountSettings'

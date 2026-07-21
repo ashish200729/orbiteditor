@@ -4,11 +4,12 @@
  *--------------------------------------------------------------------------------------*/
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { FeatureName, featureNames, isFeatureNameDisabled, ModelSelection, modelSelectionsEqual, ProviderName, providerNames, SettingsOfProvider } from '../../../../common/orbitSettingsTypes.js'
-import { useSettingsState, useRefreshModelState, useAccessor, useOpenAiCodexAuthState, useOrbitProviderAuthState, useXAiGrokAuthState } from '../util/services.js'
+import { FeatureName, featureNames, isFeatureNameDisabled, ModelSelection, modelSelectionsEqual, ProviderName, providerNames, SettingsOfProvider, displayInfoOfProviderName } from '../../../../common/orbitSettingsTypes.js'
+import { useSettingsState, useRefreshModelState, useAccessor, useOpenAiCodexAuthState, useOrbitProviderAuthState, useXAiGrokAuthState, useClinePassAuthState } from '../util/services.js'
 import { _VoidSelectBox, VoidCustomDropdownBox } from '../util/inputs.js'
 import { SelectBox } from '../../../../../../../base/browser/ui/selectBox/selectBox.js'
 import { VOID_OPEN_SETTINGS_ACTION_ID, VOID_TOGGLE_SETTINGS_ACTION_ID } from '../../../orbitSettingsPane.js'
+import { VOID_CLINE_PASS_SIGN_IN_ACTION_ID } from '../../../actionIDs.js'
 import { VOID_OPENAI_CODEX_SIGN_IN_ACTION_ID, VOID_OPEN_ACCOUNT_SETTINGS_ACTION_ID, VOID_XAI_GROK_SIGN_IN_ACTION_ID } from '../../../actionIDs.js'
 import { modelFilterOfFeatureName, ModelOption } from '../../../../common/orbitSettingsService.js'
 import { WarningBox } from './WarningBox.js'
@@ -21,6 +22,14 @@ const optionsEqual = (m1: ModelOption[], m2: ModelOption[]) => {
 		if (!modelSelectionsEqual(m1[i].selection, m2[i].selection)) return false
 	}
 	return true
+}
+
+const formatUsdPerMillion = (amount: number) => {
+	if (!Number.isFinite(amount) || amount === 0) return '$0'
+	if (amount >= 1) return `$${amount.toFixed(2)}`
+	if (amount >= 0.01) return `$${amount.toFixed(2)}`
+	if (amount >= 0.0001) return `$${amount.toFixed(4)}`
+	return `$${amount.toPrecision(3)}`
 }
 
 const ModelSelectBox = ({ options, featureName, className }: { options: ModelOption[], featureName: FeatureName, className: string }) => {
@@ -51,7 +60,7 @@ const ModelSelectBox = ({ options, featureName, className }: { options: ModelOpt
 		const capabilities = getModelCapabilities(providerName, modelName, overrides)
 
 		const details: string[] = []
-		details.push(`Provider: ${providerName}`)
+		details.push(`Provider: ${displayInfoOfProviderName(providerName).title}`)
 		details.push(`\nContext Window: ${capabilities.contextWindow.toLocaleString()} tokens`)
 
 		if (capabilities.reservedOutputTokenSpace !== null) {
@@ -68,15 +77,20 @@ const ModelSelectBox = ({ options, featureName, className }: { options: ModelOpt
 			}
 		}
 
-		if (capabilities.cost) {
-			details.push(`\nCost (per 1M tokens):`)
-			details.push(`  • Input: $${capabilities.cost.input}`)
-			details.push(`  • Output: $${capabilities.cost.output}`)
+		if (capabilities.specialToolFormat) {
+			details.push('\nTools: Supported')
+		}
+
+		if (capabilities.cost && (capabilities.cost.input > 0 || capabilities.cost.output > 0)) {
+			const costLabel = providerName === 'orbit' ? '\nCost (per 1M tokens, Orbit credits):' : '\nCost (per 1M tokens):'
+			details.push(costLabel)
+			details.push(`  • Input: ${formatUsdPerMillion(capabilities.cost.input)}`)
+			details.push(`  • Output: ${formatUsdPerMillion(capabilities.cost.output)}`)
 			if (capabilities.cost.cache_read) {
-				details.push(`  • Cache Read: $${capabilities.cost.cache_read}`)
+				details.push(`  • Cache Read: ${formatUsdPerMillion(capabilities.cost.cache_read)}`)
 			}
 			if (capabilities.cost.cache_write) {
-				details.push(`  • Cache Write: $${capabilities.cost.cache_write}`)
+				details.push(`  • Cache Write: ${formatUsdPerMillion(capabilities.cost.cache_write)}`)
 			}
 		}
 
@@ -115,6 +129,7 @@ const MemoizedModelDropdown = ({ featureName, className }: { featureName: Featur
 	const authState = useOpenAiCodexAuthState()
 	const xAiAuthState = useXAiGrokAuthState()
 	const orbitAuth = useOrbitProviderAuthState()
+	const clinePassAuth = useClinePassAuthState()
 	const accessor = useAccessor()
 	const commandService = accessor.get('ICommandService')
 	const oldOptionsRef = useRef<ModelOption[]>([])
@@ -129,17 +144,19 @@ const MemoizedModelDropdown = ({ featureName, className }: { featureName: Featur
 			.filter((o) => authState.isAuthenticated || o.selection.providerName !== 'openAICodex')
 			.filter((o) => xAiAuthState.isAuthenticated || o.selection.providerName !== 'xAISuperGrok')
 			.filter((o) => orbitAuth.isAuthenticated || o.selection.providerName !== 'orbit')
+			.filter((o) => clinePassAuth.isAuthenticated || o.selection.providerName !== 'clinePass')
 
 		if (!optionsEqual(oldOptions, newOptions)) {
 			setMemoizedOptions(newOptions)
 		}
 		oldOptionsRef.current = newOptions
-	}, [settingsState._modelOptions, settingsState.globalSettings.chatMode, settingsState.overridesOfModel, filter, authState.isAuthenticated, xAiAuthState.isAuthenticated, orbitAuth.isAuthenticated])
+	}, [settingsState._modelOptions, settingsState.globalSettings.chatMode, settingsState.overridesOfModel, filter, authState.isAuthenticated, xAiAuthState.isAuthenticated, orbitAuth.isAuthenticated, clinePassAuth.isAuthenticated])
 
 	if (memoizedOptions.length === 0) {
 		const hasCodexModels = settingsState._modelOptions.some((o) => o.selection.providerName === 'openAICodex')
 		const hasXAiModels = settingsState._modelOptions.some((o) => o.selection.providerName === 'xAISuperGrok')
-		const hasOrbitModels = settingsState._modelOptions.some((o) => o.selection.providerName === 'orbit')
+		const hasOrbitModels = settingsState.settingsOfProvider.orbit.models.length > 0
+		const hasClinePassModels = settingsState.settingsOfProvider.clinePass.models.length > 0
 		if (!authState.isAuthenticated && hasCodexModels) {
 			return <WarningBox
 				onClick={() => commandService.executeCommand(VOID_OPENAI_CODEX_SIGN_IN_ACTION_ID)}
@@ -158,6 +175,12 @@ const MemoizedModelDropdown = ({ featureName, className }: { featureName: Featur
 				text='Sign in with GitHub to use Orbit Provider models'
 			/>
 		}
+		if (!clinePassAuth.isAuthenticated && hasClinePassModels) {
+			return <WarningBox
+				onClick={() => commandService.executeCommand(VOID_CLINE_PASS_SIGN_IN_ACTION_ID)}
+				text='Sign in to use ClinePass models'
+			/>
+		}
 		return <WarningBox text={emptyMessage?.message || 'No models available'} />
 	}
 
@@ -170,6 +193,7 @@ export const ModelDropdown = ({ featureName, className }: { featureName: Feature
 	const authState = useOpenAiCodexAuthState()
 	const xAiAuthState = useXAiGrokAuthState()
 	const orbitAuth = useOrbitProviderAuthState()
+	const clinePassAuth = useClinePassAuthState()
 
 	const accessor = useAccessor()
 	const commandService = accessor.get('ICommandService')
@@ -189,9 +213,10 @@ export const ModelDropdown = ({ featureName, className }: { featureName: Feature
 			.filter((o) => o.selection.providerName !== 'orbit')
 			.filter((o) => authState.isAuthenticated || o.selection.providerName !== 'openAICodex')
 			.filter((o) => xAiAuthState.isAuthenticated || o.selection.providerName !== 'xAISuperGrok')
+			.filter((o) => clinePassAuth.isAuthenticated || o.selection.providerName !== 'clinePass')
 			voidSettingsService.setModelSelectionOfFeature(featureName, fallbackOptions[0]?.selection ?? null)
 		}
-	}, [orbitAuth.isAuthenticated, authState.isAuthenticated, xAiAuthState.isAuthenticated, selection?.providerName, settingsState._modelOptions, settingsState.globalSettings.chatMode, settingsState.overridesOfModel, featureName, voidSettingsService])
+	}, [orbitAuth.isAuthenticated, authState.isAuthenticated, xAiAuthState.isAuthenticated, clinePassAuth.isAuthenticated, selection?.providerName, settingsState._modelOptions, settingsState.globalSettings.chatMode, settingsState.overridesOfModel, featureName, voidSettingsService])
 
 	useEffect(() => {
 		if (authState.isAuthenticated) return
@@ -202,8 +227,9 @@ export const ModelDropdown = ({ featureName, className }: { featureName: Feature
 			.filter((o) => o.selection.providerName !== 'openAICodex')
 			.filter((o) => xAiAuthState.isAuthenticated || o.selection.providerName !== 'xAISuperGrok')
 			.filter((o) => orbitAuth.isAuthenticated || o.selection.providerName !== 'orbit')
+			.filter((o) => clinePassAuth.isAuthenticated || o.selection.providerName !== 'clinePass')
 		voidSettingsService.setModelSelectionOfFeature(featureName, fallbackOptions[0]?.selection ?? null)
-	}, [authState.isAuthenticated, xAiAuthState.isAuthenticated, orbitAuth.isAuthenticated, selection?.providerName, settingsState._modelOptions, settingsState.globalSettings.chatMode, settingsState.overridesOfModel, featureName, voidSettingsService])
+	}, [authState.isAuthenticated, xAiAuthState.isAuthenticated, orbitAuth.isAuthenticated, clinePassAuth.isAuthenticated, selection?.providerName, settingsState._modelOptions, settingsState.globalSettings.chatMode, settingsState.overridesOfModel, featureName, voidSettingsService])
 
 	useEffect(() => {
 		if (xAiAuthState.isAuthenticated) return
@@ -214,8 +240,22 @@ export const ModelDropdown = ({ featureName, className }: { featureName: Feature
 			.filter((o) => o.selection.providerName !== 'xAISuperGrok')
 			.filter((o) => authState.isAuthenticated || o.selection.providerName !== 'openAICodex')
 			.filter((o) => orbitAuth.isAuthenticated || o.selection.providerName !== 'orbit')
+			.filter((o) => clinePassAuth.isAuthenticated || o.selection.providerName !== 'clinePass')
 		voidSettingsService.setModelSelectionOfFeature(featureName, fallbackOptions[0]?.selection ?? null)
-	}, [xAiAuthState.isAuthenticated, authState.isAuthenticated, orbitAuth.isAuthenticated, selection?.providerName, settingsState._modelOptions, settingsState.globalSettings.chatMode, settingsState.overridesOfModel, featureName, voidSettingsService])
+	}, [xAiAuthState.isAuthenticated, authState.isAuthenticated, orbitAuth.isAuthenticated, clinePassAuth.isAuthenticated, selection?.providerName, settingsState._modelOptions, settingsState.globalSettings.chatMode, settingsState.overridesOfModel, featureName, voidSettingsService])
+
+	useEffect(() => {
+		if (clinePassAuth.isAuthenticated) return
+		if (selection?.providerName !== 'clinePass') return
+		const { filter } = modelFilterOfFeatureName[featureName]
+		const fallbackOptions = settingsState._modelOptions
+			.filter((o) => filter(o.selection, { chatMode: settingsState.globalSettings.chatMode, overridesOfModel: settingsState.overridesOfModel }))
+			.filter((o) => o.selection.providerName !== 'clinePass')
+			.filter((o) => authState.isAuthenticated || o.selection.providerName !== 'openAICodex')
+			.filter((o) => xAiAuthState.isAuthenticated || o.selection.providerName !== 'xAISuperGrok')
+			.filter((o) => orbitAuth.isAuthenticated || o.selection.providerName !== 'orbit')
+		voidSettingsService.setModelSelectionOfFeature(featureName, fallbackOptions[0]?.selection ?? null)
+	}, [clinePassAuth.isAuthenticated, authState.isAuthenticated, xAiAuthState.isAuthenticated, orbitAuth.isAuthenticated, selection?.providerName, settingsState._modelOptions, settingsState.globalSettings.chatMode, settingsState.overridesOfModel, featureName, voidSettingsService])
 
 	const isDisabled = isFeatureNameDisabled(featureName, settingsState)
 	if (isDisabled)
