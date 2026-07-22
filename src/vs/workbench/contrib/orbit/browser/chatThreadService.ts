@@ -51,12 +51,14 @@ import { IVoidNativeNotificationService } from './nativeNotificationService.js';
 import { ISubAgentService } from './subAgentService.js';
 import { getSubAgent } from '../common/subAgentRegistry.js';
 import { ITerminalToolService } from './terminalToolService.js';
+import { IAgentProjectWorkspaceService } from './agentProjectWorkspaceService.js';
+import { resolveFoldersForThread } from '../common/agentWorkspaceContext.js';
+import { findNewestThreadIdInExactScope, isUriInsideFolders } from '../common/agentWorkspaceHelpers.js';
 import { applyTodoWrite, normalizeTodoList, todoListsEqual } from '../common/todoToolHelpers.js';
 import { getActiveWindow } from '../../../../base/browser/dom.js';
 import { findThreadComposerInWindow, focusInConnectedWindow } from './connectedWindowDom.js';
 import { getPathAccessApprovalReason } from '../common/agentToolSecurity.js';
-import { cloneStagingSelection, queuedUserMessagesEqual } from '../common/messageQueueHelpers.js';
-import type { QueuedUserMessage } from '../common/messageQueueHelpers.js';
+import { cloneStagingSelection, queuedUserMessagesEqual, type QueuedUserMessage } from '../common/messageQueueHelpers.js';
 
 export type { QueuedUserMessage } from '../common/messageQueueHelpers.js';
 
@@ -264,6 +266,14 @@ export type ThreadType = {
 	planDraft?: PlanDraft; // Ephemeral plan draft (cleared after save)
 	compaction?: ThreadCompaction; // Cursor-style summarization of older turns (persisted)
 
+	/**
+	 * Agent-window project workspace this thread belongs to.
+	 * - string: scoped to that agent workspace
+	 * - null: created in agent window under No Repo
+	 * - undefined: legacy / main-IDE thread (not agent-workspace-scoped)
+	 */
+	agentWorkspaceId?: string | null;
+
 	// this doesn't need to go in a state object, but feels right
 	state: {
 		currCheckpointIdx: number | null; // the latest checkpoint we're at (null if not at a particular checkpoint, like if the chat is streaming, or chat just finished and we haven't clicked on a checkpt)
@@ -289,6 +299,7 @@ export type ThreadType = {
 	};
 }
 
+
 type ChatThreads = {
 	[id: string]: undefined | ThreadType;
 }
@@ -297,6 +308,8 @@ type ChatThreads = {
 export type ThreadsState = {
 	allThreads: ChatThreads;
 	currentThreadId: string; // intended for internal use only
+	/** Independent selection for the standalone Agents window. */
+	agentWindowThreadId: string | null;
 }
 
 export type IsRunningType =
@@ -361,9 +374,9 @@ export type ThreadStreamState = {
 	[threadId: string]: undefined | ThreadStreamStateItem
 }
 
-const newThreadObject = () => {
+const newThreadObject = (opts?: { agentWorkspaceId?: string | null }) => {
 	const now = new Date().toISOString()
-	return {
+	const thread: ThreadType = {
 		id: generateUuid(),
 		createdAt: now,
 		lastModified: now,
@@ -376,7 +389,11 @@ const newThreadObject = () => {
 			linksOfMessageIdx: {},
 		},
 		filesWithUserChanges: new Set()
-	} satisfies ThreadType
+	}
+	if (opts && 'agentWorkspaceId' in opts) {
+		thread.agentWorkspaceId = opts.agentWorkspaceId ?? null
+	}
+	return thread
 }
 
 
@@ -394,8 +411,26 @@ export interface IChatThreadService {
 	onDidChangeStreamState: Event<{ threadId: string }>
 
 	getCurrentThread(): ThreadType;
-	openNewThread(): void;
-	switchToThread(threadId: string): void;
+	getThread(threadId: string): ThreadType | undefined;
+	getSelectedThreadId(inAgentWindow: boolean): string | null;
+	/** Ensure the Agents window has a thread in exactly this workspace scope. */
+	ensureAgentWindowThread(agentWorkspaceId: string | null): string;
+	/** Create/switch to an empty thread. Pass agentWorkspaceId when opened from the Agents window. */
+	openNewThread(opts?: { agentWorkspaceId?: string | null }): void;
+	switchToThread(threadId: string, opts?: { inAgentWindow?: boolean }): void;
+	setThreadState(threadId: string, newState: Partial<ThreadType['state']>): void;
+	getThreadMessageState(threadId: string, messageIdx: number): UserMessageState;
+	setThreadMessageState(threadId: string, messageIdx: number, newState: Partial<UserMessageState>): void;
+	setThreadFocusedMessageIdx(threadId: string, messageIdx: number | undefined): void;
+
+	/** Folder URIs for a thread (agent workspace or IDE). */
+	getFolderUrisForThread(threadId: string): URI[];
+
+	/** Whether `uri` is contained in the thread's effective workspace (agent workspace or IDE). */
+	isUriInsideThreadWorkspace(threadId: string, uri: URI): boolean;
+
+	/** True when any thread scoped to this workspace (or No Repo when null) is currently running. */
+	hasRunningThreadInWorkspace(agentWorkspaceId: string | null): boolean;
 
 	// thread selector
 	deleteThread(threadId: string): void;
@@ -615,9 +650,10 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 		@IVoidNativeNotificationService private readonly _nativeNotificationService: IVoidNativeNotificationService,
 		@ISubAgentService private readonly _subAgentService: ISubAgentService,
 		@ITerminalToolService private readonly _terminalToolService: ITerminalToolService,
+		@IAgentProjectWorkspaceService private readonly _agentProjectWorkspaceService: IAgentProjectWorkspaceService,
 	) {
 		super()
-		this.state = { allThreads: {}, currentThreadId: null as unknown as string } // default state
+		this.state = { allThreads: {}, currentThreadId: null as unknown as string, agentWindowThreadId: null } // default state
 
 		const readThreads = this._readAllThreads() || {}
 
@@ -625,6 +661,7 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 		this.state = {
 			allThreads: allThreads,
 			currentThreadId: null as unknown as string, // gets set in startNewThread()
+			agentWindowThreadId: null,
 		}
 		for (const threadId of Object.keys(allThreads)) {
 			this._turnSequenceOfThread[threadId] = 0
@@ -874,7 +911,7 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 		this._onDidChangeCurrentThread.fire()
 	}
 	resetState = () => {
-		this.state = { allThreads: {}, currentThreadId: null as unknown as string } // see constructor
+		this.state = { allThreads: {}, currentThreadId: null as unknown as string, agentWindowThreadId: null } // see constructor
 		for (const key of Object.keys(this._turnSequenceOfThread)) {
 			delete this._turnSequenceOfThread[key]
 		}
@@ -1244,10 +1281,10 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 	 * path (or undefined) on any failure so compaction still proceeds. */
 	private async _appendCompactionHistory(threadId: string, messages: ChatMessage[], existingPath: string | undefined): Promise<string | undefined> {
 		try {
-			const folder = this._workspaceContextService.getWorkspace().folders[0]
+			const folder = this._getFolderUrisForThread(threadId)[0]
 			if (!folder) return existingPath
 			const relPath = `.orbit/history/thread-${threadId}.md`
-			const fileUri = URI.joinPath(folder.uri, '.orbit', 'history', `thread-${threadId}.md`)
+			const fileUri = URI.joinPath(folder, '.orbit', 'history', `thread-${threadId}.md`)
 			const header = `\n\n---\n## Compacted ${new Date().toISOString()}\n\n`
 			const body = this._transcriptForSummarization(messages)
 			let prior = ''
@@ -1749,9 +1786,9 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 		}
 	}
 
-	private _computeMCPServerOfToolName = (toolName: string) => {
+	private _computeMCPServerOfToolName = (threadId: string, toolName: string) => {
 		// Check MCP tools first - if an MCP tool with this name exists, return its server name
-		const mcpTool = this._mcpService.getMCPTools()?.find(t => t.name === toolName)
+		const mcpTool = this._mcpService.getMCPTools(this.state.allThreads[threadId]?.agentWorkspaceId)?.find(t => t.name === toolName)
 		if (mcpTool) return mcpTool.mcpServerName
 		// If no MCP tool found, it's either a builtin tool or an unknown tool - return undefined
 		return undefined
@@ -1780,11 +1817,11 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 			// Handle multiple interrupted tools
 			if (toolCallsSoFar && toolCallsSoFar.length > 0) {
 				for (const tc of toolCallsSoFar) {
-					this._addMessageToThread(threadId, { role: 'interrupted_streaming_tool', name: tc.name, mcpServerName: this._computeMCPServerOfToolName(tc.name) })
+					this._addMessageToThread(threadId, { role: 'interrupted_streaming_tool', name: tc.name, mcpServerName: this._computeMCPServerOfToolName(threadId, tc.name) })
 				}
 			}
 			else if (toolCallSoFar) {
-				this._addMessageToThread(threadId, { role: 'interrupted_streaming_tool', name: toolCallSoFar.name, mcpServerName: this._computeMCPServerOfToolName(toolCallSoFar.name) })
+				this._addMessageToThread(threadId, { role: 'interrupted_streaming_tool', name: toolCallSoFar.name, mcpServerName: this._computeMCPServerOfToolName(threadId, toolCallSoFar.name) })
 			}
 		}
 		// add tool that's running
@@ -1908,7 +1945,8 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 		let toolResultStr: string
 
 		// Check if an MCP tool with this name exists - if so, prioritize it over builtin tools
-		const mcpTools = this._mcpService.getMCPTools()
+		const agentWorkspaceId = this.state.allThreads[threadId]?.agentWorkspaceId
+		const mcpTools = this._mcpService.getMCPTools(agentWorkspaceId)
 		const mcpTool = mcpTools?.find(t => t.name === toolName)
 
 		// Only resolve as builtin tool if:
@@ -1978,7 +2016,7 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 			// requires explicit approval — even if auto-approve is on. Prevents silent exfiltration of
 			// secrets (e.g. ~/.ssh/id_rsa) to the model.
 			if (builtinToolName && !opts.preapproved) {
-				const pathReason = getPathAccessApprovalReason(builtinToolName, toolParams, uri => this._workspaceContextService.isInsideWorkspace(uri))
+				const pathReason = getPathAccessApprovalReason(builtinToolName, toolParams, uri => this._isUriInsideThreadWorkspace(threadId, uri))
 				if (pathReason) {
 					this._updateLatestTool(threadId, { role: 'tool', type: 'tool_request', content: `(Awaiting user permission: ${pathReason})`, result: null, name: effectiveToolName, params: toolParams, id: toolId, rawParams: opts.unvalidatedToolParams, mcpServerName: effectiveMcpServerName })
 					return { awaitingUserApproval: true }
@@ -2046,6 +2084,9 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 				if (builtinToolName === 'Shell') {
 					this._toolsService.currentShellThreadId = threadId;
 				}
+				// Tie workspace-folder resolution (Glob/Grep/CodebaseSearch/Shell cwd)
+				// to THIS executing thread, not whichever thread the user is viewing.
+				this._toolsService.currentToolThreadId = threadId;
 				const toolParamsForCall = builtinToolName === 'task'
 					? { ...(toolParams as BuiltinToolCallParams['task']), internalToolId: toolId, internalThreadId: threadId }
 					: toolParams
@@ -2059,6 +2100,7 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 					if (builtinToolName === 'Shell') {
 						this._toolsService.currentShellThreadId = null;
 					}
+					this._toolsService.currentToolThreadId = null;
 				}
 				const interruptor = () => { interrupted = true; interruptTool?.() }
 				resolveInterruptor(interruptor)
@@ -2079,7 +2121,7 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 							serverName: mcpTool.mcpServerName ?? 'unknown_mcp_server',
 							toolName: effectiveToolName,
 							params: toolParams
-						}, mcpCts.token),
+						}, mcpCts.token, agentWorkspaceId),
 						mcpTimeoutMs,
 						effectiveToolName,
 					)).result
@@ -2310,11 +2352,16 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 			// turns first, then send [task + summary + recent turns] instead of the full transcript.
 			await this._maybeCompactThread(threadId, modelSelection, allThreadMessages)
 			const chatMessages = this._buildCompactedChatMessages(threadId, this.state.allThreads[threadId]?.messages ?? allThreadMessages)
+			const workspaceFolderPaths = this._getFolderUrisForThread(threadId).map(u => u.fsPath)
+			const agentWorkspaceId = this.state.allThreads[threadId]?.agentWorkspaceId
 			const { messages, separateSystemMessage } = await this._convertToLLMMessagesService.prepareLLMChatMessages({
 				chatMessages,
 				modelSelection,
 				chatMode,
 				toolPolicy: parentToolPolicy,
+				workspaceFolderPaths,
+				threadId,
+				agentWorkspaceId,
 			})
 			const finalSystemMessage = [separateSystemMessage, additionalSystemContext].filter(Boolean).join('\n\n') || undefined
 
@@ -2337,7 +2384,7 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 				let resMessageIsDonePromise: (res: ResTypes) => void // resolves when user approves this tool use (or if tool doesn't require approval)
 				const messageIsDonePromise = new Promise<ResTypes>((res, rej) => { resMessageIsDonePromise = res })
 
-				const mcpTools = this._mcpService.getMCPTools()
+				const mcpTools = this._mcpService.getMCPTools(agentWorkspaceId)
 				const mcpToolNames = new Set<string>((mcpTools ?? []).map(tool => tool.name))
 				const llmCancelToken = this._llmMessageService.sendLLMMessage({
 					messagesType: 'chatMessages',
@@ -2347,6 +2394,7 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 					modelSelectionOptions,
 					overridesOfModel,
 					toolPolicy: parentToolPolicy,
+					mcpToolsOverride: mcpTools,
 					logging: { loggingName: `Chat - ${chatMode}`, loggingExtras: { threadId, nMessagesSent, chatMode } },
 					separateSystemMessage: finalSystemMessage,
 					onText: ({ fullText, fullReasoning, toolCall, toolCalls }) => {
@@ -2418,11 +2466,11 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 
 						if (toolCallsSoFar && toolCallsSoFar.length > 0) {
 							for (const tc of toolCallsSoFar) {
-								this._addMessageToThread(threadId, { role: 'interrupted_streaming_tool', name: tc.name, mcpServerName: this._computeMCPServerOfToolName(tc.name) })
+								this._addMessageToThread(threadId, { role: 'interrupted_streaming_tool', name: tc.name, mcpServerName: this._computeMCPServerOfToolName(threadId, tc.name) })
 							}
 						}
 						else if (toolCallSoFar) {
-							this._addMessageToThread(threadId, { role: 'interrupted_streaming_tool', name: toolCallSoFar.name, mcpServerName: this._computeMCPServerOfToolName(toolCallSoFar.name) })
+							this._addMessageToThread(threadId, { role: 'interrupted_streaming_tool', name: toolCallSoFar.name, mcpServerName: this._computeMCPServerOfToolName(threadId, toolCallSoFar.name) })
 						}
 
 						this._setStreamState(threadId, { isRunning: undefined, error })
@@ -3331,15 +3379,27 @@ We only need to do it for files that were edited since `from`, ie files between 
 
 
 	getRelativeStr = (uri: URI) => {
-		const isInside = this._workspaceContextService.isInsideWorkspace(uri)
-		if (isInside) {
+		const threadId = this.state.currentThreadId
+		const thread = threadId ? this.state.allThreads[threadId] : undefined
+		const folders = threadId ? this._getFolderUrisForThread(threadId) : this._workspaceContextService.getWorkspace().folders.map(f => f.uri)
+		if (folders.length === 0) {
+			// Agent-window No Repo / empty workspace: fail closed — do not
+			// expose IDE-relative paths (matches `_isUriInsideThreadWorkspace`).
+			if (thread && thread.agentWorkspaceId !== undefined) {
+				return undefined
+			}
+			const isInside = this._workspaceContextService.isInsideWorkspace(uri)
+			if (!isInside) {
+				return undefined
+			}
 			const f = this._workspaceContextService.getWorkspace().folders.find(f => uri.fsPath.startsWith(f.uri.fsPath))
-			if (f) { return uri.fsPath.replace(f.uri.fsPath, '') }
-			else { return undefined }
+			return f ? uri.fsPath.replace(f.uri.fsPath, '') : undefined
 		}
-		else {
+		if (!isUriInsideFolders(uri, folders)) {
 			return undefined
 		}
+		const f = folders.find(folder => uri.fsPath.startsWith(folder.fsPath))
+		return f ? uri.fsPath.replace(f.fsPath, '') : undefined
 	}
 
 
@@ -3576,6 +3636,36 @@ We only need to do it for files that were edited since `from`, ie files between 
 		return thread
 	}
 
+	getThread(threadId: string): ThreadType | undefined {
+		return this.state.allThreads[threadId]
+	}
+
+	getSelectedThreadId(inAgentWindow: boolean): string | null {
+		return inAgentWindow ? this.state.agentWindowThreadId : this.state.currentThreadId
+	}
+
+	ensureAgentWindowThread(agentWorkspaceId: string | null): string {
+		const selectedId = this.state.agentWindowThreadId
+		const selected = selectedId ? this.state.allThreads[selectedId] : undefined
+		if (selected?.agentWorkspaceId === agentWorkspaceId) {
+			return selected.id
+		}
+
+		const nextId = findNewestThreadIdInExactScope(Object.values(this.state.allThreads), agentWorkspaceId)
+		const next = nextId ? this.state.allThreads[nextId] : undefined
+		if (next) {
+			this._setState({ agentWindowThreadId: next.id }, true)
+			return next.id
+		}
+
+		const newThread = newThreadObject({ agentWorkspaceId })
+		const allThreads = { ...this.state.allThreads, [newThread.id]: newThread }
+		this._turnSequenceOfThread[newThread.id] = 0
+		this._storeAllThreads(allThreads)
+		this._setState({ allThreads, agentWindowThreadId: newThread.id }, true)
+		return newThread.id
+	}
+
 	getCurrentFocusedMessageIdx() {
 		const thread = this.getCurrentThread()
 
@@ -3595,26 +3685,79 @@ We only need to do it for files that were edited since `from`, ie files between 
 		return this.getCurrentFocusedMessageIdx() !== undefined
 	}
 
-	switchToThread(threadId: string) {
+	switchToThread(threadId: string, opts?: { inAgentWindow?: boolean }) {
+		if (!this.state.allThreads[threadId]) {
+			return
+		}
+		if (opts?.inAgentWindow) {
+			this._setState({ agentWindowThreadId: threadId }, true)
+			return
+		}
 		this._setState({ currentThreadId: threadId })
 	}
 
+	/**
+	 * Resolve folder URIs for a thread. Agent-window threads (those with
+	 * `agentWorkspaceId` set, including null = No Repo) use the independent
+	 * agent project workspace; IDE threads use the main workbench folders.
+	 */
+	getFolderUrisForThread(threadId: string): URI[] {
+		const thread = this.state.allThreads[threadId]
+		if (thread && thread.agentWorkspaceId !== undefined) {
+			return resolveFoldersForThread(thread.agentWorkspaceId, this._agentProjectWorkspaceService)
+		}
+		return this._workspaceContextService.getWorkspace().folders.map(f => f.uri)
+	}
 
-	openNewThread() {
-		// if a thread with 0 messages already exists, switch to it
-		const { allThreads: currentThreads } = this.state
-		for (const threadId in currentThreads) {
-			if (currentThreads[threadId]!.messages.length === 0) {
-				if (!(threadId in this._turnSequenceOfThread)) {
-					this._turnSequenceOfThread[threadId] = 0
-				}
-				// switch to the existing empty thread and exit
-				this.switchToThread(threadId)
-				return
+	private _getFolderUrisForThread(threadId: string): URI[] {
+		return this.getFolderUrisForThread(threadId)
+	}
+
+	isUriInsideThreadWorkspace(threadId: string, uri: URI): boolean {
+		return this._isUriInsideThreadWorkspace(threadId, uri)
+	}
+
+	private _isUriInsideThreadWorkspace(threadId: string, uri: URI): boolean {
+		const folders = this._getFolderUrisForThread(threadId)
+		if (folders.length === 0) {
+			// No Repo / empty: fall back to IDE containment so IDE tools still work
+			if (this.state.allThreads[threadId]?.agentWorkspaceId === undefined) {
+				return this._workspaceContextService.isInsideWorkspace(uri)
 			}
+			return false
+		}
+		return isUriInsideFolders(uri, folders)
+	}
+
+
+	openNewThread(opts?: { agentWorkspaceId?: string | null }) {
+		// if a thread with 0 messages already exists in the same workspace scope, switch to it
+		const { allThreads: currentThreads } = this.state
+		const wantsWorkspaceField = opts && 'agentWorkspaceId' in opts
+		const targetWorkspaceId = wantsWorkspaceField ? (opts!.agentWorkspaceId ?? null) : undefined
+		for (const threadId in currentThreads) {
+			const existing = currentThreads[threadId]
+			if (!existing || existing.messages.length !== 0) {
+				continue
+			}
+			// Match workspace scope: agent-window callers only reuse empty threads
+			// in the same agent workspace; IDE callers only reuse unscoped threads.
+			if (wantsWorkspaceField) {
+				// Strict: undefined (IDE) ≠ null (No Repo).
+				if (existing.agentWorkspaceId !== targetWorkspaceId) {
+					continue
+				}
+			} else if (existing.agentWorkspaceId !== undefined) {
+				continue
+			}
+			if (!(threadId in this._turnSequenceOfThread)) {
+				this._turnSequenceOfThread[threadId] = 0
+			}
+			this.switchToThread(threadId, { inAgentWindow: wantsWorkspaceField })
+			return
 		}
 		// otherwise, start a new thread
-		const newThread = newThreadObject()
+		const newThread = newThreadObject(opts)
 
 		// update state
 		const newThreads: ChatThreads = {
@@ -3623,7 +3766,39 @@ We only need to do it for files that were edited since `from`, ie files between 
 		}
 		this._turnSequenceOfThread[newThread.id] = 0
 		this._storeAllThreads(newThreads)
-		this._setState({ allThreads: newThreads, currentThreadId: newThread.id })
+		this._setState(wantsWorkspaceField
+			? { allThreads: newThreads, agentWindowThreadId: newThread.id }
+			: { allThreads: newThreads, currentThreadId: newThread.id }, wantsWorkspaceField)
+	}
+
+	hasRunningThreadInWorkspace(agentWorkspaceId: string | null): boolean {
+		const { allThreads } = this.state
+		for (const threadId in allThreads) {
+			const thread = allThreads[threadId]
+			if (!thread) {
+				continue
+			}
+			const threadWs = thread.agentWorkspaceId ?? null
+			// Legacy/IDE threads (undefined) only count when checking No Repo? No —
+			// they are not agent-scoped, so only match when both are null AND thread
+			// explicitly has agentWorkspaceId === null.
+			if (thread.agentWorkspaceId === undefined) {
+				continue
+			}
+			if (threadWs !== agentWorkspaceId) {
+				continue
+			}
+			const running = this.streamState[threadId]?.isRunning
+			if (running === 'LLM' || running === 'tool' || running === 'idle' || running === 'awaiting_user') {
+				return true
+			}
+			// Parent loop may have finished (stream cleared) while background `task`
+			// sub-agents are still running — those must still block/confirm switches.
+			if ((this._pendingBackgroundTasks.get(threadId)?.size ?? 0) > 0) {
+				return true
+			}
+		}
+		return false
 	}
 
 
@@ -3645,9 +3820,9 @@ We only need to do it for files that were edited since `from`, ie files between 
 		this._clearQueuedUserMessages(threadId); // Q6: clear memory and the persisted queue entry
 
 		// Clean up the compaction history file for this thread
-		const folder = this._workspaceContextService.getWorkspace().folders[0];
+		const folder = this._getFolderUrisForThread(threadId)[0];
 		if (folder) {
-			const historyFile = URI.joinPath(folder.uri, '.orbit', 'history', `thread-${threadId}.md`);
+			const historyFile = URI.joinPath(folder, '.orbit', 'history', `thread-${threadId}.md`);
 			void this._fileService.del(historyFile).catch(() => { /* best-effort */ });
 		}
 
@@ -3656,31 +3831,32 @@ We only need to do it for files that were edited since `from`, ie files between 
 		delete newThreads[threadId];
 		delete this._turnSequenceOfThread[threadId]
 
+		const deletedThread = currentThreads[threadId]
+		const newestInScope = (agentWorkspaceId: string | null | undefined): string | undefined =>
+			findNewestThreadIdInExactScope(Object.values(newThreads), agentWorkspaceId)
+		const createInScope = (agentWorkspaceId: string | null | undefined): string => {
+			const replacement = newThreadObject(agentWorkspaceId === undefined ? undefined : { agentWorkspaceId })
+			newThreads[replacement.id] = replacement
+			this._turnSequenceOfThread[replacement.id] = 0
+			return replacement.id
+		}
+
 		let newCurrentThreadId = currentThreadId;
+		let newAgentWindowThreadId = this.state.agentWindowThreadId;
 		if (threadId === currentThreadId) {
-			// switch to another thread
-			const remainingThreadIds = Object.keys(newThreads);
-			if (remainingThreadIds.length > 0) {
-				// switch to the most recently modified thread
-				const sortedThreads = remainingThreadIds.sort((a, b) => {
-					const tA = newThreads[a];
-					const tB = newThreads[b];
-					if (!tA || !tB) return 0;
-					return new Date(tB.lastModified).getTime() - new Date(tA.lastModified).getTime();
-				});
-				newCurrentThreadId = sortedThreads[0];
-			} else {
-				// no threads left, create a new one
-				const newThread = newThreadObject();
-				newThreads[newThread.id] = newThread;
-				this._turnSequenceOfThread[newThread.id] = 0
-				newCurrentThreadId = newThread.id;
-			}
+			// The IDE selection may only fall back to another unscoped IDE thread.
+			newCurrentThreadId = newestInScope(undefined) ?? createInScope(undefined)
+		}
+		if (threadId === this.state.agentWindowThreadId) {
+			// The Agents selection must remain in the deleted thread's exact scope;
+			// undefined IDE threads and null No Repo threads are intentionally distinct.
+			const scope = deletedThread?.agentWorkspaceId ?? null
+			newAgentWindowThreadId = newestInScope(scope) ?? createInScope(scope)
 		}
 
 		// store the updated threads
 		this._storeAllThreads(newThreads, { immediate: true });
-		this._setState({ ...this.state, allThreads: newThreads, currentThreadId: newCurrentThreadId })
+		this._setState({ allThreads: newThreads, currentThreadId: newCurrentThreadId, agentWindowThreadId: newAgentWindowThreadId })
 	}
 
 	duplicateThread(threadId: string) {
@@ -3881,6 +4057,38 @@ We only need to do it for files that were edited since `from`, ie files between 
 			}
 		}, doNotRefreshMountInfo)
 
+	}
+
+	setThreadState(threadId: string, newState: Partial<ThreadType['state']>): void {
+		this._setThreadState(threadId, newState)
+	}
+
+	getThreadMessageState(threadId: string, messageIdx: number): UserMessageState {
+		const message = this.state.allThreads[threadId]?.messages?.[messageIdx]
+		return message?.role === 'user' ? message.state : defaultMessageState
+	}
+
+	setThreadMessageState(threadId: string, messageIdx: number, newState: Partial<UserMessageState>): void {
+		const thread = this.state.allThreads[threadId]
+		const message = thread?.messages?.[messageIdx]
+		if (!thread || message?.role !== 'user') {
+			return
+		}
+		const messages = thread.messages.map((candidate, index) =>
+			index === messageIdx && candidate.role === 'user'
+				? { ...candidate, state: { ...candidate.state, ...newState } }
+				: candidate,
+		)
+		this._setState({
+			allThreads: {
+				...this.state.allThreads,
+				[threadId]: { ...thread, messages },
+			},
+		}, true)
+	}
+
+	setThreadFocusedMessageIdx(threadId: string, messageIdx: number | undefined): void {
+		this._setThreadState(threadId, { focusedMessageIdx: messageIdx })
 	}
 
 

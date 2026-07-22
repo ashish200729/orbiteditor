@@ -145,6 +145,7 @@ export const FilesExplorerPanel = ({
 	const accessor = useAccessor();
 	const fileService = accessor.get('IFileService') as IFileService;
 	const workspaceContextService = accessor.get('IWorkspaceContextService') as IWorkspaceContextService;
+	const agentProjectWorkspaceService = accessor.get('IAgentProjectWorkspaceService');
 	const configurationService = accessor.get('IConfigurationService') as IConfigurationService;
 	const dialogService = accessor.get('IDialogService');
 	const clipboardService = accessor.get('IClipboardService');
@@ -270,13 +271,31 @@ export const FilesExplorerPanel = ({
 		return !!excludesForFolder(folder)(relPath, name, hasSibling);
 	}, [excludesForFolder]);
 
+	const getAgentFolders = React.useCallback((): IWorkspaceFolder[] => {
+		const uris = agentProjectWorkspaceService.getActiveFolders();
+		if (uris.length === 0) {
+			return [];
+		}
+		return uris.map((uri, index) => ({
+			uri,
+			name: resourceBasename(uri) || `Folder ${index + 1}`,
+			index,
+			toResource: (relativePath: string) => joinPath(uri, relativePath),
+		} as IWorkspaceFolder));
+	}, [agentProjectWorkspaceService]);
+
 	const findFolderFor = React.useCallback((resource: URI): IWorkspaceFolder | undefined => {
-		return workspaceContextService.getWorkspaceFolder(resource)
-			?? workspaceContextService.getWorkspace().folders.find(f =>
-				resource.scheme === f.uri.scheme
-				&& (resource.path === f.uri.path || resource.path.startsWith(f.uri.path.endsWith('/') ? f.uri.path : f.uri.path + '/'))
-			);
-	}, [workspaceContextService]);
+		const agentFolders = getAgentFolders();
+		const fromPool = agentFolders.find(f =>
+			resource.scheme === f.uri.scheme
+			&& (resource.path === f.uri.path || resource.path.startsWith(f.uri.path.endsWith('/') ? f.uri.path : f.uri.path + '/'))
+		);
+		if (fromPool) {
+			return fromPool;
+		}
+		// Agent window: do not fall back to IDE folders.
+		return undefined;
+	}, [getAgentFolders]);
 
 	const toChildNodes = React.useCallback((
 		parent: ExplorerNode,
@@ -313,7 +332,7 @@ export const FilesExplorerPanel = ({
 		if (!force && (key in childrenRef.current)) {
 			return childrenRef.current[key] ?? [];
 		}
-		const folder = findFolderFor(parent.uri) ?? workspaceContextService.getWorkspace().folders[0];
+		const folder = findFolderFor(parent.uri);
 		if (!folder) {
 			return [];
 		}
@@ -387,7 +406,8 @@ export const FilesExplorerPanel = ({
 			setInlineEdit(null);
 			setContextMenu(null);
 
-			const folders = workspaceContextService.getWorkspace().folders;
+			const agentFolders = getAgentFolders();
+			const folders = agentFolders;
 			if (folders.length === 0) {
 				if (rebuildGenRef.current !== gen) {
 					return;
@@ -471,6 +491,10 @@ export const FilesExplorerPanel = ({
 			excludeCacheRef.current.clear();
 			void rebuild();
 		});
+		const agentSub = agentProjectWorkspaceService.onDidChangeState(() => {
+			excludeCacheRef.current.clear();
+			void rebuild();
+		});
 		const configSub = configurationService.onDidChangeConfiguration(e => {
 			if (e.affectsConfiguration('files.exclude')) {
 				excludeCacheRef.current.clear();
@@ -482,10 +506,11 @@ export const FilesExplorerPanel = ({
 			// Invalidate in-flight rebuild without incrementing (would race next effect).
 			rebuildGenRef.current += 1;
 			folderSub.dispose();
+			agentSub.dispose();
 			configSub.dispose();
 		};
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [workspaceContextService, configurationService, loadChildren, refreshTick, findFolderFor, fileService]);
+	}, [workspaceContextService, agentProjectWorkspaceService, configurationService, loadChildren, refreshTick, findFolderFor, fileService, getAgentFolders]);
 
 	// Debounced FS watcher
 	React.useEffect(() => {
@@ -1542,7 +1567,15 @@ export const FilesExplorerPanel = ({
 				<div className="agent-workspace-placeholder">
 					<FolderOpen size={22} strokeWidth={1.5} className="agent-workspace-placeholder-icon" />
 					<div className="agent-workspace-placeholder-label">No folder open</div>
-					<div className="agent-workspace-placeholder-detail">Open a folder in the IDE to browse files here.</div>
+					<div className="agent-workspace-placeholder-detail">Select a workspace to browse files here.</div>
+					<button
+						type="button"
+						className="agent-history-icon-btn"
+						style={{ marginTop: 8, width: 'auto', padding: '4px 10px' }}
+						onClick={() => agentProjectWorkspaceService.requestOpenPicker()}
+					>
+						Select Workspace
+					</button>
 				</div>
 			</div>
 		);

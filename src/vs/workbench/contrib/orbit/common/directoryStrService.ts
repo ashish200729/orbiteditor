@@ -25,7 +25,8 @@ export interface IDirectoryStrService {
 	readonly _serviceBrand: undefined;
 
 	getDirectoryStrTool(uri: URI): Promise<string>
-	getAllDirectoriesStr(opts: { cutOffMessage: string }): Promise<string>
+	/** Overview of workspace directories. Pass `folderUris` to override IDE workspace roots (agent window). */
+	getAllDirectoriesStr(opts: { cutOffMessage: string; folderUris?: URI[] }): Promise<string>
 
 	getAllURIsInDirectory(uri: URI, opts: { maxResults: number }): Promise<URI[]>
 
@@ -336,8 +337,20 @@ class DirectoryStrService extends Disposable implements IDirectoryStrService {
 	}
 
 	async getDirectoryStrTool(uri: URI) {
-		const eRoot = await this.fileService.resolve(uri)
-		if (!eRoot) throw new Error(`The folder ${uri.fsPath} does not exist.`)
+		// Wrap the resolve + tree computation in a try/catch so a transient fs
+		// failure (permission denied, IPC error, removable drive ejected, remote
+		// auth lapse) returns a clear tool-error string instead of an uncaught
+		// throw that aborts the whole LLM tool call. #8.
+		let eRoot;
+		try {
+			eRoot = await this.fileService.resolve(uri);
+		} catch (e) {
+			const msg = e instanceof Error ? e.message : String(e);
+			return `Could not read the directory at ${uri.fsPath}: ${msg}`;
+		}
+		if (!eRoot) {
+			return `The folder ${uri.fsPath} does not exist.`;
+		}
 
 		const maxItemsPerDir = START_MAX_ITEMS_PER_DIR; // Use START_MAX_ITEMS_PER_DIR
 
@@ -374,26 +387,38 @@ class DirectoryStrService extends Disposable implements IDirectoryStrService {
 		return c
 	}
 
-	async getAllDirectoriesStr({ cutOffMessage, }: { cutOffMessage: string, }) {
+	async getAllDirectoriesStr({ cutOffMessage, folderUris }: { cutOffMessage: string; folderUris?: URI[] }) {
 		let str: string = '';
 		let cutOff = false;
-		const folders = this.workspaceContextService.getWorkspace().folders;
+		// `folderUris` provided (even `[]`) overrides IDE roots — empty means No Repo.
+		const folders = folderUris !== undefined
+			? folderUris.map((uri, index) => ({ uri, name: uri.path.split('/').filter(Boolean).pop() || 'Folder', index }))
+			: this.workspaceContextService.getWorkspace().folders;
 		if (folders.length === 0)
 			return '(NO WORKSPACE OPEN)';
 
 		// Use START_MAX_ITEMS_PER_DIR if not specified
 		const startMaxItemsPerDir = START_MAX_ITEMS_PER_DIR;
 
-		for (let i = 0; i < folders.length; i += 1) {
-			if (i > 0) str += '\n';
+	for (let i = 0; i < folders.length; i += 1) {
+		// this prioritizes filling 1st workspace before any other, etc
+		const f = folders[i];
+		const rootURI = f.uri;
 
-			// this prioritizes filling 1st workspace before any other, etc
-			const f = folders[i];
-			str += `Directory of ${f.uri.fsPath}:\n`;
-			const rootURI = f.uri;
+		let eRoot;
+		try {
+			eRoot = await this.fileService.resolve(rootURI);
+		} catch {
+			// Skip folders that can't be resolved (permissions, IPC failure,
+			// removable drive ejected) rather than aborting the whole listing. #8.
+			continue;
+		}
+		if (!eRoot) continue;
 
-			const eRoot = await this.fileService.resolve(rootURI)
-			if (!eRoot) continue;
+		// Only add the header once we know the folder resolved, otherwise a
+		// failed resolve leaves an orphan "Directory of ...:" line with no body.
+		if (i > 0) str += '\n';
+		str += `Directory of ${f.uri.fsPath}:\n`;
 
 			// First try with START_MAX_DEPTH and startMaxItemsPerDir
 			const { content: initialContent, wasCutOff: initialCutOff } = await computeAndStringifyDirectoryTree(
@@ -422,15 +447,22 @@ class DirectoryStrService extends Disposable implements IDirectoryStrService {
 			}
 
 			str += content;
-			if (wasCutOff) {
-				cutOff = true;
-				break;
-			}
+		if (wasCutOff) {
+			cutOff = true;
+			break;
 		}
-
-		const ans = cutOff ? `${str.trimEnd()}\n${cutOffMessage}` : str
-		return ans
 	}
+
+	// If every folder failed to resolve, return an explicit message rather than
+	// an empty string (which would silently strip the directory context from the
+	// system prompt). #8.
+	if (str === '') {
+		return '(NO WORKSPACE OPEN)';
+	}
+
+	const ans = cutOff ? `${str.trimEnd()}\n${cutOffMessage}` : str
+	return ans
+}
 }
 
 registerSingleton(IDirectoryStrService, DirectoryStrService, InstantiationType.Delayed);

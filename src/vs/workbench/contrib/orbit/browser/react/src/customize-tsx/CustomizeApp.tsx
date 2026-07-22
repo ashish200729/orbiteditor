@@ -124,6 +124,24 @@ const ScopeBadge = ({ scope }: { scope: MCPScope | 'user' | 'project' | 'built-i
 	</span>
 )
 
+/**
+ * Short label for a workspace-folder URI, used to attribute a project-scoped
+ * MCP server to its source folder in a multi-root agent workspace. Shows the
+ * last path segment (the folder name), or the full path for `file:` URIs that
+ * don't parse cleanly. #9.
+ */
+const folderLabelFromUri = (uriStr: string): string => {
+	try {
+		const idx = uriStr.indexOf('://');
+		const path = idx >= 0 ? uriStr.slice(idx + 3) : uriStr;
+		const cleaned = path.replace(/[\\/]+$/, '');
+		const sep = Math.max(cleaned.lastIndexOf('/'), cleaned.lastIndexOf('\\'));
+		return sep >= 0 ? cleaned.slice(sep + 1) : cleaned;
+	} catch {
+		return uriStr;
+	}
+};
+
 // ── Brand logos ──────────────────────────────────────────────────────────────
 const LOGO_PALETTE = ['#2563eb', '#7c3aed', '#db2777', '#dc2626', '#ea580c', '#16a34a', '#0891b2', '#4f46e5', '#0f766e', '#b45309']
 const hashColor = (s: string) => LOGO_PALETTE[Math.abs([...s].reduce((a, c) => (a * 31 + c.charCodeAt(0)) | 0, 7)) % LOGO_PALETTE.length]
@@ -295,8 +313,8 @@ const AddMcpDialog = ({ scope, onClose }: { scope: MCPScope; onClose: () => void
 	)
 }
 
-const McpRow = ({ name, scope, isOn, status, tools, error }: {
-	name: string; scope: MCPScope; isOn: boolean; status: string; tools: { name: string; description?: string }[]; error?: string
+const McpRow = ({ name, scope, isOn, status, tools, error, folderUri }: {
+	name: string; scope: MCPScope; isOn: boolean; status: string; tools: { name: string; description?: string }[]; error?: string; folderUri?: string
 }) => {
 	const accessor = useAccessor()
 	const mcpService = accessor.get('IMCPService')
@@ -321,8 +339,14 @@ const McpRow = ({ name, scope, isOn, status, tools, error }: {
 			`Remove "${name}" from ${scope === 'project' ? 'this workspace' : 'your user'} config? Any stored OAuth tokens are also cleared.`,
 			'Remove'
 		)
-		if (ok) mcpService.removeMCPServer(name, scope)
+		if (ok) mcpService.removeMCPServer(name, scope, folderUri)
 	}
+
+	// Derive a short folder label for project-scoped servers in multi-root
+	// workspaces so the user can see which workspace folder contributed this
+	// server. #9 — without this, two folders defining the same server name
+	// would both show an identical bare "Project" badge.
+	const folderLabel = folderUri ? folderLabelFromUri(folderUri) : undefined
 
 	return (
 		<div className='px-4 py-3 border-t border-void-border-3 first:border-t-0'>
@@ -332,6 +356,16 @@ const McpRow = ({ name, scope, isOn, status, tools, error }: {
 					<div className='flex items-center gap-2'>
 						<span className='text-void-fg-1 text-sm font-medium truncate'>{name}</span>
 						<ScopeBadge scope={scope} />
+						{folderLabel && (
+							<span
+								className='text-[10px] px-1.5 py-0.5 rounded text-void-fg-4 border border-void-border-3 truncate max-w-[160px]'
+								title={folderUri}
+								data-tooltip-id='void-tooltip'
+								data-tooltip-content={folderUri}
+							>
+								{folderLabel}
+							</span>
+						)}
 					</div>
 					<span className='text-[11px] text-void-fg-4 mt-0.5 flex items-center gap-1'>
 						{status === 'error' && <><span className='inline-block w-1.5 h-1.5 rounded-full bg-red-500' /><span className='text-red-400'>Failed to connect</span></>}
@@ -356,7 +390,7 @@ const McpRow = ({ name, scope, isOn, status, tools, error }: {
 						</button>
 					)}
 					<VoidSwitch value={isOn} size='xs' aria-label={`Enable or disable ${name}`} onChange={() => mcpService.toggleServerIsOn(name, !isOn)} />
-					<button className='p-1 rounded text-void-fg-4 hover:text-void-fg-1 transition-colors' title='Edit mcp.json' aria-label='Edit mcp.json' onClick={() => mcpService.revealMCPConfigFile(scope)}>
+					<button className='p-1 rounded text-void-fg-4 hover:text-void-fg-1 transition-colors' title='Edit mcp.json' aria-label='Edit mcp.json' onClick={() => mcpService.revealMCPConfigFile(scope, folderUri)}>
 						<ExternalLink className='w-3.5 h-3.5' />
 					</button>
 					<button className='p-1 rounded text-void-fg-4 hover:text-red-400 transition-colors' title='Remove' aria-label={`Remove ${name}`} onClick={onRemove}>
@@ -420,12 +454,13 @@ const McpTab = ({ scope, mcpScope, query, onBrowse }: { scope: OrbitCustomizeSco
 					onAction={() => setShowAdd(true)}
 				/>
 			) : (
-				<div className='rounded-lg border border-void-border-3 bg-void-bg-2 overflow-hidden'>
-					{rows.map(([name, server]) => (
-						<McpRow key={name} name={name} scope={mcpScope} isOn={mcpState.isOnOfName[name] ?? false}
-							status={server.status} tools={server.tools ?? []} error={server.error} />
-					))}
-				</div>
+			<div className='rounded-lg border border-void-border-3 bg-void-bg-2 overflow-hidden'>
+				{rows.map(([name, server]) => (
+					<McpRow key={name} name={name} scope={mcpScope} isOn={mcpState.isOnOfName[name] ?? false}
+						status={server.status} tools={server.tools ?? []} error={server.error}
+						folderUri={mcpScope === 'project' ? mcpState.projectFolderOfName?.[name] : undefined} />
+				))}
+			</div>
 			)}
 		</div>
 	)

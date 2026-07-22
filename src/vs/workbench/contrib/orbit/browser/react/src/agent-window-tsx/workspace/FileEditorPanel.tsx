@@ -22,13 +22,14 @@ import { VSBuffer } from '../../../../../../../../base/common/buffer.js';
 import { DisposableStore, IReference } from '../../../../../../../../base/common/lifecycle.js';
 import { isMacintosh } from '../../../../../../../../base/common/platform.js';
 import { Schemas } from '../../../../../../../../base/common/network.js';
+import { mainWindow } from '../../../../../../../../base/browser/window.js';
 import { relativePath as resourceRelativePath, basename as resourceBasename, joinPath } from '../../../../../../../../base/common/resources.js';
 import { ServiceCollection } from '../../../../../../../../platform/instantiation/common/serviceCollection.js';
 import { IEditorProgressService } from '../../../../../../../../platform/progress/common/progress.js';
 import { IResolvedTextEditorModel } from '../../../../../../../../editor/common/services/resolverService.js';
 import { TextFileOperationError, TextFileOperationResult } from '../../../../../../../services/textfile/common/textfiles.js';
 import { FileOperationError, FileOperationResult } from '../../../../../../../../platform/files/common/files.js';
-import { useAccessor } from '../../util/services.js';
+import { useAccessor, useAgentWorkspaceState } from '../../util/services.js';
 import { getConnectedDocument, getConnectedWindow, focusInConnectedWindow } from '../../util/connectedWindow.js';
 import type { WorkspacePanelProps } from './workspaceTypes.js';
 import { PanelPlaceholder } from './PanelPlaceholder.js';
@@ -127,11 +128,17 @@ export const FileEditorPanel = ({
 	const fileDialogService = accessor.get('IFileDialogService');
 	const configurationService = accessor.get('IConfigurationService');
 	const fileService = accessor.get('IFileService');
-	const workspaceContextService = accessor.get('IWorkspaceContextService');
+	const agentProjectWorkspaceService = accessor.get('IAgentProjectWorkspaceService');
 	const clipboardService = accessor.get('IClipboardService');
 	const nativeHostService = accessor.get('INativeHostService');
 	const notificationService = accessor.get('INotificationService');
 	const languageService = accessor.get('ILanguageService');
+
+	// Subscribe to workspace state so memoized values keyed on the active workspace
+	// (breadcrumbs) recompute when the active workspace switches even if `uri` is
+	// unchanged. Without this, breadcrumbs keep showing the old workspace's folder
+	// prefix after a switch. M5/#16.
+	const agentWorkspaceState = useAgentWorkspaceState();
 
 	const [uri, setUri] = React.useState<URI | null>(() => (tab.resource ? parseResource(tab.resource) : null));
 	const [model, setModel] = React.useState<ITextModel | null>(null);
@@ -551,7 +558,14 @@ export const FileEditorPanel = ({
 
 		if (!editorRef.current) {
 			const connectedDoc = getConnectedDocument(shell);
-			const host = connectedDoc.createElement('div');
+			// Bypass `delegateNodeFactories` (which rebinds aux `createElement` to the
+			// main document). Monaco resolves its window via `ownerDocument.defaultView`,
+			// and after adoption into the aux tree token CSS must come from the aux
+			// document — so the host must be an aux-owned element from birth.
+			// Cast through Function: Electron's Document.createElement overloads reject
+			// normal tag names when calling Document.prototype.createElement directly.
+			const createInConnectedDoc = Document.prototype.createElement.bind(connectedDoc) as (tagName: string) => HTMLElement;
+			const host = createInConnectedDoc('div');
 			host.className = 'agent-workspace-file-editor-host';
 			host.style.position = 'absolute';
 			host.style.inset = '0';
@@ -561,12 +575,45 @@ export const FileEditorPanel = ({
 			shell.appendChild(host);
 			monacoHostRef.current = host;
 
+			// Belt-and-suspenders: inject TextMate token colors into the aux document
+			// head (and keep them live). Missing `.mtkN` rules is what makes this
+			// editor render monochrome while the main IDE editor highlights fine.
+			const syncTokenStyles = (): void => {
+				try {
+					const mainTokens = mainWindow.document.head.querySelector('style.vscode-tokens-styles');
+					const css = mainTokens?.textContent;
+					if (!css) {
+						return;
+					}
+					const auxDoc = getConnectedDocument(host);
+					let local = auxDoc.getElementById('orbit-agent-file-editor-tokens') as HTMLStyleElement | null;
+					if (!local) {
+						local = createInConnectedDoc('style') as HTMLStyleElement;
+						local.id = 'orbit-agent-file-editor-tokens';
+						local.className = 'vscode-tokens-styles';
+						local.type = 'text/css';
+						auxDoc.head.appendChild(local);
+					}
+					if (local.textContent !== css) {
+						local.textContent = css;
+					}
+				} catch { /* ignore */ }
+			};
+			syncTokenStyles();
+
 			const store = new DisposableStore();
 			editorStoreRef.current = store;
 			const scopedInstantiation = instantiationService.createChild(
 				new ServiceCollection([IEditorProgressService, noopEditorProgressService]),
 			);
 			store.add(scopedInstantiation);
+
+			const mainTokensEl = mainWindow.document.head.querySelector('style.vscode-tokens-styles');
+			if (mainTokensEl) {
+				const mo = new MutationObserver(() => syncTokenStyles());
+				mo.observe(mainTokensEl, { childList: true, characterData: true, subtree: true });
+				store.add({ dispose: () => mo.disconnect() });
+			}
 			let editor: CodeEditorWidget;
 			try {
 				editor = scopedInstantiation.createInstance(
@@ -729,20 +776,33 @@ export const FileEditorPanel = ({
 		if (!uri) {
 			return [] as { label: string; uri?: URI }[];
 		}
-		const folder = workspaceContextService.getWorkspaceFolder(uri);
-		const rel = folder ? resourceRelativePath(folder.uri, uri) : undefined;
+		const agentFolders = agentProjectWorkspaceService.getActiveFolders();
+		const agentFolder = agentFolders.find(f => {
+			const fs = f.fsPath;
+			return uri.fsPath === fs || uri.fsPath.startsWith(fs.endsWith('/') || fs.endsWith('\\') ? fs : fs + (uri.fsPath.includes('\\') ? '\\' : '/'));
+		});
+		if (!agentFolder) {
+			return [{ label: resourceBasename(uri) || basename(uri.fsPath || uri.path) }];
+		}
+		const folder = { uri: agentFolder };
+		const rel = resourceRelativePath(folder.uri, uri);
 		if (!rel) {
 			return [{ label: resourceBasename(uri) || basename(uri.fsPath || uri.path) }];
 		}
 		const parts = rel.replace(/\\/g, '/').split('/').filter(Boolean);
 		const out: { label: string; uri?: URI }[] = [];
-		let acc = folder!.uri;
+		let acc = folder.uri;
 		for (let i = 0; i < parts.length; i++) {
 			acc = joinPath(acc, parts[i]);
 			out.push({ label: parts[i], uri: i < parts.length - 1 ? acc : undefined });
 		}
 		return out;
-	}, [uri, workspaceContextService]);
+		// `agentProjectWorkspaceService` is a stable service ref and never changes
+		// identity, so it alone can't bust this memo when the active workspace
+		// switches (same `uri`, different folder set). Include `activeWorkspaceId`
+		// and a stringified folder list from `agentWorkspaceState` (which IS backed
+		// by `onDidChangeState`) so the breadcrumbs recompute on switch. M5/#16.
+	}, [uri, agentProjectWorkspaceService, agentWorkspaceState.activeWorkspaceId, agentWorkspaceState.workspaces]);
 
 	const fileIndex = uri ? openFileResources.indexOf(uri.toString()) : -1;
 	const canBack = fileIndex > 0;
@@ -877,8 +937,12 @@ export const FileEditorPanel = ({
 										</button>
 										<button type="button" role="menuitem" className="agent-workspace-file-menu-item" onClick={() => {
 											setMenuOpen(false);
-											const folder = workspaceContextService.getWorkspaceFolder(uri);
-											const rel = folder ? resourceRelativePath(folder.uri, uri) : undefined;
+											const agentFolders = agentProjectWorkspaceService.getActiveFolders();
+											const agentFolder = agentFolders.find(f => {
+												const fs = f.fsPath;
+												return uri.fsPath === fs || uri.fsPath.startsWith(fs.endsWith('/') || fs.endsWith('\\') ? fs : fs + (uri.fsPath.includes('\\') ? '\\' : '/'));
+											});
+											const rel = agentFolder ? resourceRelativePath(agentFolder, uri) : undefined;
 											void clipboardService.writeText(rel?.replace(/\\/g, '/') || uri.fsPath || uri.path);
 										}}>
 											Copy Relative Path

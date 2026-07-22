@@ -46,6 +46,8 @@ import {
 } from '../common/planDraftHelpers.js'
 import { planFileLock } from '../common/planFileLock.js'
 import { IChatThreadService } from './chatThreadService.js'
+import { IAgentProjectWorkspaceService } from './agentProjectWorkspaceService.js'
+import { resolveFoldersForThread } from '../common/agentWorkspaceContext.js'
 
 import { encodeBase64, VSBuffer } from '../../../../base/common/buffer.js'
 import { IVoidSettingsService } from '../common/orbitSettingsService.js'
@@ -185,6 +187,15 @@ export class ToolsService implements IToolsService {
 	/** Set by chatThreadService before Shell callTool so shells can be tied to a thread. */
 	public currentShellThreadId: string | null = null;
 
+	/**
+	 * Set by chatThreadService around EVERY builtin tool invocation. Workspace
+	 * folder resolution must key off the EXECUTING thread, not the UI-selected
+	 * thread — agent loops keep running after the user switches threads, and
+	 * resolving against `state.currentThreadId` makes a background thread's
+	 * Glob/Grep/Shell run against whatever thread the user is now viewing.
+	 */
+	public currentToolThreadId: string | null = null;
+
 	// Mutex to serialize mutating/terminal tool calls
 	private _mutatingToolInProgress: boolean = false;
 	private _currentMutatingTool: string | null = null;
@@ -202,7 +213,7 @@ export class ToolsService implements IToolsService {
 	}
 
 	private _getCurrentThreadId(): string | null {
-		return this.chatThreadService.state.currentThreadId;
+		return this.currentToolThreadId ?? this.chatThreadService.state.currentThreadId;
 	}
 
 	private _resolveActivePlanPath(): string | null {
@@ -280,8 +291,20 @@ export class ToolsService implements IToolsService {
 		@ISubAgentService private readonly _subAgentService: ISubAgentService,
 		@ILogService private readonly logService: ILogService,
 		@ISemanticRetrievalService private readonly semanticRetrievalService: ISemanticRetrievalService,
+		@IAgentProjectWorkspaceService private readonly _agentProjectWorkspaceService: IAgentProjectWorkspaceService,
 	) {
 		const queryBuilder = this._instantiationService.createInstance(QueryBuilder);
+
+		const getEffectiveWorkspaceFolders = (): URI[] => {
+			// Prefer the executing thread (set around every builtin callTool);
+			// fall back to the UI-selected thread only for direct/external calls.
+			const threadId = this.currentToolThreadId ?? this._getCurrentThreadId();
+			const thread = threadId ? this.chatThreadService.state.allThreads[threadId] : undefined;
+			if (thread && thread.agentWorkspaceId !== undefined) {
+				return resolveFoldersForThread(thread.agentWorkspaceId, this._agentProjectWorkspaceService);
+			}
+			return workspaceContextService.getWorkspace().folders.map(f => f.uri);
+		};
 
 		this.validateParams = {
 			Read: (params: RawToolParamsObj) => {
@@ -556,11 +579,11 @@ export class ToolsService implements IToolsService {
 			},
 
 			Glob: async ({ globPattern, targetDirectory }) => {
-				const workspaceFolders = workspaceContextService.getWorkspace().folders.map(f => f.uri)
+				const workspaceFolders = getEffectiveWorkspaceFolders()
 				const searchFolders = targetDirectory ? [targetDirectory] : workspaceFolders
 
 				if (searchFolders.length === 0) {
-					throw new Error('Glob requires either a workspace folder or an explicit target_directory.')
+					throw new Error('Glob requires either a workspace folder or an explicit target_directory. Select a workspace in the Agents window, or open a folder in the IDE.')
 				}
 
 				const normalizedPattern = normalizeGlobPattern(globPattern)
@@ -580,7 +603,7 @@ export class ToolsService implements IToolsService {
 			Grep: async ({ pattern, path, glob: globPattern, outputMode, beforeContext, afterContext, caseInsensitive, type, headLimit, offset, multiline }) => {
 				const tokenSource = new CancellationTokenSource()
 				const resultPromise = (async () => {
-					const workspaceFolders = workspaceContextService.getWorkspace().folders.map(f => f.uri)
+					const workspaceFolders = getEffectiveWorkspaceFolders()
 					let searchFolders = workspaceFolders
 					let exactFilePath: string | null = null
 
@@ -599,7 +622,7 @@ export class ToolsService implements IToolsService {
 					}
 
 					if (searchFolders.length === 0) {
-						throw new Error('Grep requires either a workspace folder or an explicit path.')
+						throw new Error('Grep requires either a workspace folder or an explicit path. Select a workspace in the Agents window, or open a folder in the IDE.')
 					}
 
 					const typeGlobs = type ? grepTypeGlobMap[type] : null
@@ -748,8 +771,17 @@ export class ToolsService implements IToolsService {
 
 			CodebaseSearch: async ({ query, path, topK }) => {
 				const controller = new AbortController()
+				const folderRoots = getEffectiveWorkspaceFolders()
 				return {
-					result: this.semanticRetrievalService.search(query, { path, topK, signal: controller.signal }),
+					result: this.semanticRetrievalService.search(query, {
+						path,
+						topK,
+						signal: controller.signal,
+						// Always pass folderRoots so No Repo (empty) fails closed.
+						// An explicit `path` narrows within those roots — it must not
+						// escape confinement by omitting folderRoots.
+						folderRoots,
+					}),
 					interruptTool: () => controller.abort(),
 				}
 			},
@@ -763,6 +795,7 @@ export class ToolsService implements IToolsService {
 			// ---
 
 		StrReplace: async ({ path, oldString, newString, replaceAll }) => {
+			const toolThreadId = this._getCurrentThreadId();
 			this._acquireMutatingLock('StrReplace');
 			// Release-once guard: the lock is released as soon as the mutation is
 			// durable/dispatched (not held through lint waits or block windows).
@@ -780,7 +813,7 @@ export class ToolsService implements IToolsService {
 				// edit arbitrary files. Now the guard always fires in plan mode; the
 				// scoping decision is centralized in resolvePlanModeEditDecision.
 				if (this._isPlanMode()) {
-					const threadId = this._getCurrentThreadId();
+					const threadId = toolThreadId;
 					const draft = threadId ? this.chatThreadService.getThreadPlanDraft(threadId) : undefined;
 					const linkedPath = threadId ? (this.chatThreadService.state.allThreads[threadId]?.linkedPlanPath ?? null) : null;
 					const decision = resolvePlanModeEditDecision(path.fsPath, !!(draft && !draft.savedPlanPath), linkedPath);
@@ -823,7 +856,7 @@ export class ToolsService implements IToolsService {
 					try {
 						await this._waitForLintSettle(path, 2000)
 						const { lintErrors } = this._getLintErrors(path)
-						const syncThreadId = this._getCurrentThreadId();
+						const syncThreadId = toolThreadId;
 						if (syncThreadId && this._isPlanMode() && isPlanFilePath(path.fsPath, this.chatThreadService.state.allThreads[syncThreadId]?.linkedPlanPath)) {
 							await this._syncSavedPlanFileToThread(syncThreadId, path);
 						}
@@ -841,6 +874,7 @@ export class ToolsService implements IToolsService {
 			},
 
 		Write: async ({ path, contents }) => {
+			const toolThreadId = this._getCurrentThreadId();
 			this._acquireMutatingLock('Write');
 			// Release-once guard: the lock is released as soon as the mutation is
 			// durable/dispatched (not held through lint waits or block windows).
@@ -856,7 +890,7 @@ export class ToolsService implements IToolsService {
 				// for the rationale. Gating on `threadId` left a hole where a missing
 				// current thread let arbitrary file writes through.
 				if (this._isPlanMode()) {
-					const threadId = this._getCurrentThreadId();
+					const threadId = toolThreadId;
 					const draft = threadId ? this.chatThreadService.getThreadPlanDraft(threadId) : undefined;
 					const linkedPath = threadId ? (this.chatThreadService.state.allThreads[threadId]?.linkedPlanPath ?? null) : null;
 					const decision = resolvePlanModeEditDecision(path.fsPath, !!(draft && !draft.savedPlanPath), linkedPath);
@@ -913,7 +947,7 @@ export class ToolsService implements IToolsService {
 					try {
 						await this._waitForLintSettle(path, 2000)
 						const { lintErrors } = this._getLintErrors(path)
-						const syncThreadId = this._getCurrentThreadId();
+						const syncThreadId = toolThreadId;
 						if (syncThreadId && this._isPlanMode() && isPlanFilePath(path.fsPath, this.chatThreadService.state.allThreads[syncThreadId]?.linkedPlanPath)) {
 							await this._syncSavedPlanFileToThread(syncThreadId, path);
 						}
@@ -953,16 +987,28 @@ export class ToolsService implements IToolsService {
 					throw new Error('Shell requires an active chat thread.');
 				}
 
+					const thread = this.chatThreadService.state.allThreads[threadId];
+					let shellWorkingDirectory = params.workingDirectory;
+					if (!shellWorkingDirectory) {
+						const folders = getEffectiveWorkspaceFolders();
+						if (folders.length > 0) {
+							shellWorkingDirectory = folders[0].fsPath;
+						} else if (thread && thread.agentWorkspaceId !== undefined) {
+							releaseLockOnce();
+							throw new Error('Select a workspace to run shell commands. Use the workspace picker in the Agents window.');
+						}
+					}
+
 					const { shellId, pid } = await this.terminalToolService.getOrCreateShellForThread({
 						threadId,
 						proposedShellId: params.shellId,
-						workingDirectory: params.workingDirectory,
+						workingDirectory: shellWorkingDirectory,
 					});
 
 					const shell = this.terminalToolService.getShell(shellId);
 					const { command, workingDirectory } = buildShellCommandWithCwd(
 						params.command,
-						params.workingDirectory,
+						shellWorkingDirectory,
 						shell?.workingDirectory ?? null,
 					);
 
@@ -1111,9 +1157,9 @@ export class ToolsService implements IToolsService {
 			create_plan: async (params: BuiltinToolCallParams['create_plan']) => {
 				const { name, overview, plan, todos } = params;
 
-				const folders = workspaceContextService.getWorkspace().folders;
+				const folders = getEffectiveWorkspaceFolders();
 				if (folders.length === 0) {
-					throw new Error('No workspace folder open. Please open a folder to create a plan.');
+					throw new Error('No workspace folder open. Select a workspace in the Agents window, or open a folder in the IDE to create a plan.');
 				}
 
 				// Fix #5: a plan draft is meaningless without a thread to pin it to —

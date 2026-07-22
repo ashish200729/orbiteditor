@@ -49,41 +49,36 @@ const useGitStatus = () => {
 	const gitService = accessor.get('IAgentGitService');
 
 	const [root, setRoot] = React.useState<string | null | undefined>(undefined);
+	const [roots, setRoots] = React.useState<string[]>([]);
 	const [status, setStatus] = React.useState<GitRepoStatus | null>(null);
 	const [totals, setTotals] = React.useState<{ added: number; removed: number }>({ added: 0, removed: 0 });
 	const [error, setError] = React.useState<string | null>(null);
 	const [refreshKey, setRefreshKey] = React.useState(0);
 
-	React.useEffect(() => {
-		let cancelled = false;
-		(async () => {
-			try {
-				const r = await gitService.resolveRepoRoot();
-				if (!cancelled) { setRoot(r); }
-			} catch {
-				if (!cancelled) { setRoot(null); }
-			}
-		})();
-		return () => { cancelled = true; };
+	const resolveRoots = React.useCallback(async () => {
+		try {
+			const all = await gitService.resolveRepoRoots();
+			setRoots(all);
+			setRoot(prev => {
+				if (prev && all.includes(prev)) {
+					return prev;
+				}
+				return all[0] ?? null;
+			});
+		} catch {
+			setRoots([]);
+			setRoot(null);
+		}
 	}, [gitService]);
 
-	// Once we've resolved "not a repo yet", keep re-checking whenever the SCM
-	// service signals a change (e.g. the built-in git extension picks up a
-	// `git init` run from the agent's terminal) — otherwise this gets stuck on
-	// "Not a git repository" forever even after a repo appears.
 	React.useEffect(() => {
-		if (root !== null) { return; }
-		let cancelled = false;
+		void resolveRoots();
 		const sub = gitService.onDidChange(() => {
-			void (async () => {
-				try {
-					const r = await gitService.resolveRepoRoot();
-					if (!cancelled) { setRoot(r); }
-				} catch { /* still not a repo */ }
-			})();
+			void resolveRoots();
+			setRefreshKey(k => k + 1);
 		});
-		return () => { cancelled = true; sub.dispose(); };
-	}, [root, gitService]);
+		return () => sub.dispose();
+	}, [gitService, resolveRoots]);
 
 	// Guards against an in-flight reload's response landing after a newer one's
 	// (e.g. a manual refresh fired right as a debounced onDidChange reload was
@@ -104,7 +99,10 @@ const useGitStatus = () => {
 	}, [gitService]);
 
 	React.useEffect(() => {
-		if (!root) { return; }
+		if (!root) {
+			setStatus(null);
+			return;
+		}
 		void reload(root);
 		const sub = gitService.onDidChange(() => {
 			void reload(root);
@@ -114,10 +112,15 @@ const useGitStatus = () => {
 	}, [root, gitService, reload]);
 
 	const manualRefresh = React.useCallback(() => {
+		void resolveRoots();
 		if (root) { void reload(root); setRefreshKey(k => k + 1); }
-	}, [root, reload]);
+	}, [root, reload, resolveRoots]);
 
-	return { gitService, root, status, totals, error, refreshKey, manualRefresh };
+	const selectRoot = React.useCallback((next: string) => {
+		setRoot(next);
+	}, []);
+
+	return { gitService, root, roots, selectRoot, status, totals, error, refreshKey, manualRefresh };
 };
 
 /* ---------------------------------------------------------------------------- */
@@ -129,9 +132,9 @@ export const ChangesPanel = ({ openInWorkspace, isActive }: WorkspacePanelProps)
 	const notificationService = accessor.get('INotificationService');
 	const openerService = accessor.get('IOpenerService');
 	const dialogService = accessor.get('IDialogService');
-	const workspaceContextService = accessor.get('IWorkspaceContextService');
+	const agentProjectWorkspaceService = accessor.get('IAgentProjectWorkspaceService');
 	const doc = useConnectedDocument();
-	const { gitService, root, status, totals, error, refreshKey, manualRefresh } = useGitStatus();
+	const { gitService, root, roots, selectRoot, status, totals, error, refreshKey, manualRefresh } = useGitStatus();
 
 	const [busy, setBusy] = React.useState<string | null>(null);
 	const [message, setMessage] = React.useState('');
@@ -149,18 +152,38 @@ export const ChangesPanel = ({ openInWorkspace, isActive }: WorkspacePanelProps)
 	const [layoutSubOpen, setLayoutSubOpen] = React.useState(false);
 	const [commitMenuOpen, setCommitMenuOpen] = React.useState(false);
 	const [branchMenuOpen, setBranchMenuOpen] = React.useState(false);
+	const [repoMenuOpen, setRepoMenuOpen] = React.useState(false);
 	const [branches, setBranches] = React.useState<string[]>([]);
 
 	const overflowRef = React.useRef<HTMLDivElement | null>(null);
 	const commitRef = React.useRef<HTMLDivElement | null>(null);
 	const branchRef = React.useRef<HTMLDivElement | null>(null);
+	const repoRef = React.useRef<HTMLDivElement | null>(null);
 	const listRef = React.useRef<HTMLDivElement | null>(null);
 	const sectionRefs = React.useRef<Record<string, HTMLDivElement | null>>({});
 
 	const repoName = React.useMemo(() => {
-		const folder = workspaceContextService.getWorkspace().folders[0];
-		return folder ? folder.name : (root ? splitPath(root).name : 'repo');
-	}, [workspaceContextService, root]);
+		if (root) {
+			const agent = agentProjectWorkspaceService.getActiveWorkspace();
+			const match = agent?.folders.find(f => {
+				try {
+					const fs = URI.parse(f.uri).fsPath;
+					return root === fs || root.startsWith(fs.endsWith('/') || fs.endsWith('\\') ? fs : fs + (root.includes('\\') ? '\\' : '/'));
+				} catch {
+					return false;
+				}
+			});
+			if (match) {
+				return match.name;
+			}
+			return splitPath(root).name;
+		}
+		const agent = agentProjectWorkspaceService.getActiveWorkspace();
+		if (agent?.folders[0]) {
+			return agent.folders[0].name;
+		}
+		return 'repo';
+	}, [agentProjectWorkspaceService, root]);
 
 	const files = React.useMemo(() => (status?.files ?? []).slice().sort((a, b) => a.path.localeCompare(b.path)), [status]);
 	const visibleFiles = React.useMemo(() => {
@@ -184,17 +207,17 @@ export const ChangesPanel = ({ openInWorkspace, isActive }: WorkspacePanelProps)
 
 	/* ------- close menus on outside click ------- */
 	React.useEffect(() => {
-		if (!overflowOpen && !commitMenuOpen && !branchMenuOpen) { return; }
+		if (!overflowOpen && !commitMenuOpen && !branchMenuOpen && !repoMenuOpen) { return; }
 		const onDown = (e: MouseEvent) => {
 			const t = e.target as Node;
-			if (overflowRef.current?.contains(t) || commitRef.current?.contains(t) || branchRef.current?.contains(t)) { return; }
-			setOverflowOpen(false); setLayoutSubOpen(false); setCommitMenuOpen(false); setBranchMenuOpen(false);
+			if (overflowRef.current?.contains(t) || commitRef.current?.contains(t) || branchRef.current?.contains(t) || repoRef.current?.contains(t)) { return; }
+			setOverflowOpen(false); setLayoutSubOpen(false); setCommitMenuOpen(false); setBranchMenuOpen(false); setRepoMenuOpen(false);
 		};
-		const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { setOverflowOpen(false); setLayoutSubOpen(false); setCommitMenuOpen(false); setBranchMenuOpen(false); } };
+		const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { setOverflowOpen(false); setLayoutSubOpen(false); setCommitMenuOpen(false); setBranchMenuOpen(false); setRepoMenuOpen(false); } };
 		doc.addEventListener('mousedown', onDown, true);
 		doc.addEventListener('keydown', onKey, true);
 		return () => { doc.removeEventListener('mousedown', onDown, true); doc.removeEventListener('keydown', onKey, true); };
-	}, [overflowOpen, commitMenuOpen, branchMenuOpen, doc]);
+	}, [overflowOpen, commitMenuOpen, branchMenuOpen, repoMenuOpen, doc]);
 
 	/* ------- keyboard: ⌘F find, ⌘R refresh ------- */
 	// Panels stay MOUNTED (display:none) while another tab is active — gate on
@@ -398,7 +421,38 @@ export const ChangesPanel = ({ openInWorkspace, isActive }: WorkspacePanelProps)
 			{/* row 1 — scope / repo / branch / … / primary */}
 			<div className="agent-git-topbar">
 				<span className="agent-git-scope"><Monitor size={13} strokeWidth={1.75} /> Local</span>
-				<span className="agent-git-repo">{repoName}</span>
+				{roots.length > 1 ? (
+					<div className="agent-git-branch-wrap" ref={repoRef}>
+						<button
+							type="button"
+							className="agent-git-repo agent-git-branch"
+							onClick={() => { setRepoMenuOpen(v => !v); setBranchMenuOpen(false); setOverflowOpen(false); setCommitMenuOpen(false); }}
+							title="Switch repository"
+						>
+							<span className="agent-git-branch-name">{repoName}</span>
+							<ChevronDown size={11} strokeWidth={2} className="agent-git-branch-caret" />
+						</button>
+						{repoMenuOpen && (
+							<div className="agent-git-menu" role="menu">
+								{roots.map(r => (
+									<div
+										key={r}
+										className={`agent-git-menu-item${r === root ? ' active' : ''}`}
+										role="menuitem"
+										tabIndex={0}
+										onClick={() => { selectRoot(r); setRepoMenuOpen(false); }}
+									>
+										<GitBranch size={13} strokeWidth={1.5} className="agent-git-menu-lead" />
+										<span className="agent-git-menu-label">{splitPath(r).name}</span>
+										{r === root && <Check size={13} strokeWidth={2.5} className="agent-git-menu-check" />}
+									</div>
+								))}
+							</div>
+						)}
+					</div>
+				) : (
+					<span className="agent-git-repo">{repoName}</span>
+				)}
 				<div className="agent-git-branch-wrap" ref={branchRef}>
 					<button type="button" className="agent-git-branch" onClick={openBranchMenu} title="Switch branch">
 						<span className="agent-git-branch-name">{status?.branch ?? (status?.detachedHead ? status.detachedHead : '…')}</span>

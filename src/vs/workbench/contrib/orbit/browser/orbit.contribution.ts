@@ -18,6 +18,7 @@ import './quickEditActions.js'
 import './agentWindowService.js'
 import './agentWindowActions.js'
 import './agentWindowTerminalStore.js'
+import './agentProjectWorkspaceService.js'
 import './media/agentWindow.css'
 
 

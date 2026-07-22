@@ -81,6 +81,7 @@ export interface ITerminalToolService {
 	killShellsForThread(threadId: string): Promise<void>;
 	interruptShell(shellId: string): void;
 	listShellIds(): string[];
+	listShellIdsForThread(threadId: string): string[];
 	shellExists(shellId: string): boolean;
 	getShell(shellId: string): ShellInstance | undefined;
 
@@ -138,6 +139,10 @@ export class TerminalToolService extends Disposable implements ITerminalToolServ
 
 	listShellIds(): string[] {
 		return Object.keys(this.shellInstanceOfId);
+	}
+
+	listShellIdsForThread(threadId: string): string[] {
+		return this._listShellsForThread(threadId).map(shell => shell.id);
 	}
 
 	shellExists(shellId: string): boolean {
@@ -219,10 +224,24 @@ export class TerminalToolService extends Disposable implements ITerminalToolServ
 		shell.notifyWatchers = [];
 	}
 
+	/**
+	 * Default cwd for shells that did not pass an explicit working directory.
+	 * Uses the IDE workspace only — agent/thread-scoped shells must resolve cwd
+	 * via ToolsService (`getEffectiveWorkspaceFolders`) before createShell.
+	 * Preferring the Agents active project here leaked agent cwd into main-IDE
+	 * "Run in terminal" actions and overflow file writes.
+	 */
+	private _defaultCwdUri(): URI | undefined {
+		return this.workspaceContextService.getWorkspace().folders[0]?.uri;
+	}
+
 	private async _createTerminal(props: { cwd: string | null, config: ICreateTerminalOptions['config'] }) {
 		const { cwd: override_cwd, config } = props;
 
-		const cwd: URI | string | undefined = (override_cwd ?? undefined) ?? this.workspaceContextService.getWorkspace().folders[0]?.uri;
+		const cwd: URI | string | undefined = (override_cwd ?? undefined) ?? this._defaultCwdUri();
+		if (!cwd && !override_cwd) {
+			throw new Error('Select a workspace to run shell commands. Use the workspace picker in the Agents window, or open a folder in the IDE.');
+		}
 
 		const options: ICreateTerminalOptions = {
 			cwd,
@@ -307,7 +326,7 @@ export class TerminalToolService extends Disposable implements ITerminalToolServ
 		}
 
 		if (!shell.terminal.xterm) {
-			return this._capOutput(removeAnsiEscapeCodes(shell.outputBuffer));
+			return this._capOutput(removeAnsiEscapeCodes(shell.outputBuffer), shell.workingDirectory);
 		}
 
 		const lines: string[] = [];
@@ -317,10 +336,10 @@ export class TerminalToolService extends Disposable implements ITerminalToolServ
 
 		const result = removeAnsiEscapeCodes(lines.join('\n'));
 		shell.outputBuffer = result;
-		return this._capOutput(result);
+		return this._capOutput(result, shell.workingDirectory);
 	};
 
-	private async _capOutput(result: string): Promise<string> {
+	private async _capOutput(result: string, workingDirectory?: string | null): Promise<string> {
 		if (result.length <= MAX_TERMINAL_CHARS) return result;
 
 		const fullLen = result.length;
@@ -332,7 +351,7 @@ export class TerminalToolService extends Disposable implements ITerminalToolServ
 		// (Cursor's "write long output to a file, let the agent tail/read it" pattern). Awaited
 		// so the path we hand back is guaranteed to be readable by the time we return it — a
 		// fire-and-forget write let the agent race the write and read a stale/empty file.
-		const relPath = await this._writeFullOutputFile(result);
+		const relPath = await this._writeFullOutputFile(result, workingDirectory);
 		const note = relPath
 			? `\n\n[Output truncated: ${fullLen} chars total, showing first & last ${half}. Full output saved to ${relPath} — read that file for the omitted middle.]\n\n`
 			: `\n\n...[truncated ${fullLen - MAX_TERMINAL_CHARS} chars]...\n\n`;
@@ -341,13 +360,21 @@ export class TerminalToolService extends Disposable implements ITerminalToolServ
 
 	/** Writes the full command output to a bounded ring of files under .orbit/history and
 	 * resolves once the write has landed, so the returned path is safe to read immediately. */
-	private async _writeFullOutputFile(fullOutput: string): Promise<string | undefined> {
+	private async _writeFullOutputFile(fullOutput: string, workingDirectory?: string | null): Promise<string | undefined> {
 		try {
-			const folder = this.workspaceContextService.getWorkspace().folders[0];
+			let folder: URI | undefined;
+			if (workingDirectory) {
+				try {
+					folder = URI.file(workingDirectory);
+				} catch {
+					folder = undefined;
+				}
+			}
+			folder ??= this._defaultCwdUri();
 			if (!folder) return undefined;
 			const seq = this._shellOutputFileSeq++ % 20; // ring buffer: cap clutter at 20 files
 			const relPath = `.orbit/history/shell-output-${seq}.log`;
-			const uri = URI.joinPath(folder.uri, '.orbit', 'history', `shell-output-${seq}.log`);
+			const uri = URI.joinPath(folder, '.orbit', 'history', `shell-output-${seq}.log`);
 			await this.fileService.writeFile(uri, VSBuffer.fromString(fullOutput));
 			return relPath;
 		} catch {
@@ -357,9 +384,9 @@ export class TerminalToolService extends Disposable implements ITerminalToolServ
 
 	/** Best-effort cleanup of all shell output overflow files from .orbit/history. */
 	private _cleanupShellOutputFiles(): void {
-		const folder = this.workspaceContextService.getWorkspace().folders[0];
+		const folder = this._defaultCwdUri();
 		if (!folder) return;
-		const historyDir = URI.joinPath(folder.uri, '.orbit', 'history');
+		const historyDir = URI.joinPath(folder, '.orbit', 'history');
 		void this.fileService.resolve(historyDir).then(stat => {
 			if (!stat.children) return;
 			for (const child of stat.children) {
@@ -640,7 +667,7 @@ export class TerminalToolService extends Disposable implements ITerminalToolServ
 		if (!(shellId in this.shellInstanceOfId)) {
 			return {
 				kind: 'done',
-				result: await this._capOutput(this._getBufferText(shell)),
+				result: await this._capOutput(this._getBufferText(shell), shell.workingDirectory),
 				exitCode: shell.lastExitCode ?? 0,
 				shellId,
 				durationMs: Date.now() - startedAt,
@@ -745,7 +772,7 @@ export class TerminalToolService extends Disposable implements ITerminalToolServ
 				shell.workingDirectory = prevWorkingDirectory;
 			}
 			const result = removeAnsiEscapeCodes(cmdOutput ? cmdOutput : await readResult());
-			return { kind: 'done', result: await this._capOutput(result), exitCode, shellId, durationMs };
+			return { kind: 'done', result: await this._capOutput(result, shell.workingDirectory), exitCode, shellId, durationMs };
 		}
 
 		// C2 fix: the command is still running (timeout or released to
@@ -759,7 +786,7 @@ export class TerminalToolService extends Disposable implements ITerminalToolServ
 		if (resolveReason === 'background') {
 			return {
 				kind: 'backgrounded',
-				result: await this._capOutput(result),
+				result: await this._capOutput(result, shell.workingDirectory),
 				shellId,
 				durationMs,
 				pid: shell.pid ?? undefined,
@@ -768,7 +795,7 @@ export class TerminalToolService extends Disposable implements ITerminalToolServ
 
 		return {
 			kind: 'timeout',
-			result: await this._capOutput(result),
+			result: await this._capOutput(result, shell.workingDirectory),
 			shellId,
 			durationMs,
 			elapsedMs: opts.blockUntilMs,

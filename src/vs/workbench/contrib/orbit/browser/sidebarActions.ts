@@ -24,6 +24,10 @@ import { IChatThreadService } from './chatThreadService.js';
 import { IViewsService } from '../../../services/views/common/viewsService.js';
 import { StagingSelectionItem } from '../common/chatThreadServiceTypes.js';
 import { HISTORY_DROPDOWN_TOGGLE_EVENT } from './historyDropdownService.js';
+import { IAgentWindowService } from './agentWindowService.js';
+import { IAgentProjectWorkspaceService } from './agentProjectWorkspaceService.js';
+import { isAuxiliaryWindow } from '../../../../base/browser/window.js';
+import { getActiveWindow as getActiveDomWindow } from '../../../../base/browser/dom.js';
 
 // ---------- Register commands and keybindings ----------
 
@@ -215,6 +219,8 @@ registerAction2(class extends Action2 {
 		const metricsService = accessor.get(IMetricsService)
 		const chatThreadsService = accessor.get(IChatThreadService)
 		const editorService = accessor.get(ICodeEditorService)
+		const agentWindowService = accessor.get(IAgentWindowService)
+		const agentProjectWorkspaceService = accessor.get(IAgentProjectWorkspaceService)
 		metricsService.capture('Chat Navigation', { type: 'Start New Chat' })
 
 		// get current selections and value to transfer
@@ -226,8 +232,19 @@ registerAction2(class extends Action2 {
 		const oldSelns = oldThread?.state.stagingSelections
 		const oldVal = oldUI?.textAreaRef?.current?.value
 
-		// open and focus new thread
-		chatThreadsService.openNewThread()
+	// open and focus new thread — scope to the agent workspace ONLY when the
+	// command was invoked from the Agents window itself. Gating on
+	// `isOpen()` would mis-scope main-IDE chats whenever the pop-out is
+	// merely open in the background (worst case: No Repo mode gives IDE
+	// chats zero workspace folders, breaking Glob/Grep/Shell).
+	const invokedFromAgentWindow = agentWindowService.isOpen() && isAuxiliaryWindow(getActiveDomWindow())
+		if (invokedFromAgentWindow) {
+			chatThreadsService.openNewThread({
+				agentWorkspaceId: agentProjectWorkspaceService.getState().activeWorkspaceId,
+			})
+		} else {
+			chatThreadsService.openNewThread()
+		}
 		await chatThreadsService.focusCurrentChat()
 
 

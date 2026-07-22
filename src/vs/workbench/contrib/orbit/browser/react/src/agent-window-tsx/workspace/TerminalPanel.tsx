@@ -44,14 +44,12 @@ const canStealFocus = (host: HTMLElement): boolean => {
 };
 
 const resolveCwd = (
-	historyService: { getLastActiveWorkspaceRoot: (scheme?: string) => URI | undefined },
-	workspaceContextService: { getWorkspace: () => { folders: { uri: URI }[] } },
+	agentFolders: URI[],
 ): URI | undefined => {
-	const lastActive = historyService.getLastActiveWorkspaceRoot();
-	if (lastActive) {
-		return lastActive;
+	if (agentFolders.length > 0) {
+		return agentFolders[0];
 	}
-	return workspaceContextService.getWorkspace().folders[0]?.uri;
+	return undefined;
 };
 
 export const TerminalPanel = ({ tab, isActive, setTitle }: WorkspacePanelProps) => {
@@ -59,8 +57,7 @@ export const TerminalPanel = ({ tab, isActive, setTitle }: WorkspacePanelProps) 
 	const terminalInstanceService = accessor.get('ITerminalInstanceService');
 	const terminalService = accessor.get('ITerminalService');
 	const terminalConfigService = accessor.get('ITerminalConfigurationService');
-	const workspaceContextService = accessor.get('IWorkspaceContextService');
-	const historyService = accessor.get('IHistoryService');
+	const agentProjectWorkspaceService = accessor.get('IAgentProjectWorkspaceService');
 	const terminalStore = accessor.get('IAgentWindowTerminalStore');
 	const notificationService = accessor.get('INotificationService');
 
@@ -70,6 +67,10 @@ export const TerminalPanel = ({ tab, isActive, setTitle }: WorkspacePanelProps) 
 	const handleRef = React.useRef<{ setPtyId: (id: number) => void; setTitle: (t: string) => void; dispose: () => void } | null>(null);
 	const [error, setError] = React.useState<string | null>(null);
 	const [exited, setExited] = React.useState<number | boolean | null>(null);
+	// True when this panel skipped spawning a shell because no agent workspace
+	// folder is selected (No Repo / empty state). Renders an actionable
+	// placeholder instead of a blank black surface. M3.
+	const [noWorkspace, setNoWorkspace] = React.useState(false);
 	// The mount effect below runs once ([] deps) but its body resumes after an
 	// `await`; by then the `isActive` value closed over at mount time can be
 	// stale (the user may have already switched tabs). Read the current value
@@ -139,6 +140,13 @@ export const TerminalPanel = ({ tab, isActive, setTitle }: WorkspacePanelProps) 
 					return;
 				}
 
+				// Wait for the store's (shared) reattach pass so a workspace switch
+				// or IDE reload can stash surviving ptys before we decide to spawn.
+				await terminalStore.reattachOnStartup();
+				if (disposed) {
+					return;
+				}
+
 				// 1) Adopt a reattached instance if the store pre-created one for
 				//    this tab id (happens after an IDE reload with a surviving pty).
 				let instance = terminalStore.takeReattachedInstance(tab.id);
@@ -152,8 +160,17 @@ export const TerminalPanel = ({ tab, isActive, setTitle }: WorkspacePanelProps) 
 					// survived) over the generic last-active-root fallback, so a fresh
 					// shell reopens where the old one was rather than at the workspace
 					// root.
-					const persistedCwd = terminalStore.entries.find(e => e.id === tab.id)?.cwd;
-					const cwd = persistedCwd ?? resolveCwd(historyService, workspaceContextService);
+				const persistedCwd = terminalStore.entries.find(e => e.id === tab.id)?.cwd;
+				const cwd = persistedCwd ?? resolveCwd(agentProjectWorkspaceService.getActiveFolders());
+				if (!cwd && !persistedCwd) {
+					// No Repo / empty workspace: surface an actionable placeholder
+					// instead of silently rendering a blank, dead terminal surface.
+					// M3. The retry effect below watches the workspace service and
+					// re-runs this mount logic once a folder is selected.
+					setTitle?.('Terminal');
+					if (!disposed) { setNoWorkspace(true); }
+					return;
+				}
 					instance = terminalInstanceService.createInstance(
 						{
 							cwd,
@@ -243,11 +260,12 @@ export const TerminalPanel = ({ tab, isActive, setTitle }: WorkspacePanelProps) 
 
 			const inst = instanceRef.current;
 			instanceRef.current = null;
-			if (terminalStore.windowTeardownActive) {
-				// The whole agents window is closing — this is NOT a tab close.
-				// Detach the surface and the process but keep the pty AND the
-				// persisted store entry alive so reopening the window (or the
-				// next IDE launch) reattaches this shell exactly as it was.
+			if (terminalStore.windowTeardownActive || terminalStore.workspaceTransitionActive) {
+				// Agents window closing, OR active workspace just switched — this is
+				// NOT a user tab close. Detach the surface/process but keep the pty
+				// (and do NOT dispose the store handle: during a workspace switch
+				// `_storageKey()` already points at the NEW workspace, so removeEntry
+				// would corrupt that workspace's persisted terminals).
 				if (inst) {
 					try { inst.detachFromElement(); } catch { /* ignore */ }
 					try { inst.detachProcessAndDispose(TerminalExitReason.User); } catch { /* ignore */ }
@@ -300,14 +318,36 @@ export const TerminalPanel = ({ tab, isActive, setTitle }: WorkspacePanelProps) 
 				handleRef.current?.dispose();
 				handleRef.current = null;
 			}
-			// Remove the dynamically created xterm host (created in the aux doc).
-			if (termHostRef.current && termHostRef.current.parentNode) {
-				termHostRef.current.parentNode.removeChild(termHostRef.current);
+		// Remove the dynamically created xterm host (created in the aux doc).
+		if (termHostRef.current && termHostRef.current.parentNode) {
+			termHostRef.current.parentNode.removeChild(termHostRef.current);
+		}
+		termHostRef.current = null;
+	};
+	// Re-run the mount effect when `noWorkspace` flips back to false (after the
+	// user picks a workspace). On the initial mount `noWorkspace` is false, so
+	// this runs once; if it bailed with noWorkspace=true and the retry effect
+	// below clears it, this re-runs and spawns the shell. M3.
+	// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [noWorkspace]);
+
+	// Retry: when this panel bailed with `noWorkspace=true`, watch the workspace
+	// service and clear the flag the moment a folder becomes available so the
+	// mount effect above re-runs and spawns the shell. M3.
+	React.useEffect(() => {
+		if (!noWorkspace) {
+			return;
+		}
+		const check = () => {
+			if (agentProjectWorkspaceService.getActiveFolders().length > 0) {
+				setNoWorkspace(false);
 			}
-			termHostRef.current = null;
 		};
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, []);
+		check();
+		const d1 = agentProjectWorkspaceService.onDidChangeActiveWorkspace(check);
+		const d2 = agentProjectWorkspaceService.onDidChangeState(check);
+		return () => { d1.dispose(); d2.dispose(); };
+	}, [noWorkspace, agentProjectWorkspaceService]);
 
 	// Pause rendering + relayout/focus when this tab becomes active/inactive.
 	// setVisible(false) stops the xterm WebGL renderer and data processing while
@@ -348,6 +388,21 @@ export const TerminalPanel = ({ tab, isActive, setTitle }: WorkspacePanelProps) 
 					{typeof exited === 'number' && (
 						<div className="agent-workspace-placeholder-detail">Exit code {exited}</div>
 					)}
+				</div>
+			) : noWorkspace ? (
+				<div className="agent-workspace-placeholder">
+					<SquareTerminal size={22} strokeWidth={1.5} className="agent-workspace-placeholder-icon" />
+					<div className="agent-workspace-placeholder-label">No workspace selected</div>
+					<div className="agent-workspace-placeholder-detail">
+						Select a workspace to start a terminal.
+					</div>
+					<button
+						type="button"
+						className="agent-workspace-placeholder-action"
+						onClick={() => agentProjectWorkspaceService.requestOpenPicker()}
+					>
+						Open Workspace
+					</button>
 				</div>
 			) : (
 				<div className="agent-workspace-terminal-surface" ref={hostRef} />

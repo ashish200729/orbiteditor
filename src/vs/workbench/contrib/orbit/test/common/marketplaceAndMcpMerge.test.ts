@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------*/
 
 import * as assert from 'assert';
-import { mergeMcpConfigs, MCPConfigFileJSON } from '../../common/mcpServiceTypes.js';
+import { mergeMcpConfigs, mergeMcpConfigsForProjects, MCPConfigFileJSON } from '../../common/mcpServiceTypes.js';
 import { BUNDLED_MARKETPLACE_CATALOG } from '../../common/marketplace/catalog.js';
 
 suite('mergeMcpConfigs', () => {
@@ -31,6 +31,22 @@ suite('mergeMcpConfigs', () => {
 		assert.strictEqual(onlyUser.scopeOfName['x'], 'user');
 		const onlyProject = mergeMcpConfigs(null, { mcpServers: { y: { command: 'c' } } });
 		assert.strictEqual(onlyProject.scopeOfName['y'], 'project');
+	});
+
+	test('preserves project scope and folder attribution across multiple project files', () => {
+		const merged = mergeMcpConfigsForProjects(
+			{ mcpServers: { userOnly: { command: 'user' } } },
+			[
+				{ folderUri: 'file:///workspace/a', config: { mcpServers: { fromA: { command: 'a' }, shared: { command: 'a-shared' } } } },
+				{ folderUri: 'file:///workspace/b', config: { mcpServers: { fromB: { command: 'b' }, shared: { command: 'b-shared' } } } },
+			],
+		);
+		assert.strictEqual(merged.scopeOfName.userOnly, 'user');
+		assert.strictEqual(merged.scopeOfName.fromA, 'project');
+		assert.strictEqual(merged.scopeOfName.fromB, 'project');
+		assert.strictEqual(merged.mcpServers.shared.command, 'b-shared');
+		assert.strictEqual(merged.projectFolderOfName.fromA, 'file:///workspace/a');
+		assert.strictEqual(merged.projectFolderOfName.shared, 'file:///workspace/b');
 	});
 });
 

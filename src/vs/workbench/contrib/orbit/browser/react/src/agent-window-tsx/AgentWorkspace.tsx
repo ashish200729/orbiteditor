@@ -8,7 +8,7 @@ import { Plus, X } from 'lucide-react';
 import { URI } from '../../../../../../../base/common/uri.js';
 import { StorageScope, StorageTarget } from '../../../../../../../platform/storage/common/storage.js';
 import { ConnectedWindowProvider, useConnectedDocument } from '../sidebar-tsx/contexts/ConnectedWindowContext.js';
-import { useAccessor } from '../util/services.js';
+import { useAccessor, useAgentWorkspaceState } from '../util/services.js';
 import { VsCodeFileIcon } from '../sidebar-tsx/utils/fileIcons.js';
 import {
 	PANEL_METAS,
@@ -69,6 +69,7 @@ const basename = (p: string): string => {
 const AgentWorkspaceInner = () => {
 	const doc = useConnectedDocument();
 	const accessor = useAccessor();
+	const agentWorkspaceState = useAgentWorkspaceState();
 	const terminalStore = accessor.get('IAgentWindowTerminalStore');
 	const agentWindowService = accessor.get('IAgentWindowService');
 	const storageService = accessor.get('IStorageService');
@@ -79,6 +80,9 @@ const AgentWorkspaceInner = () => {
 	const tabsRef = React.useRef(tabs);
 	tabsRef.current = tabs;
 	const [activeId, setActiveId] = React.useState<string | null>(null);
+	const workspaceTabsRef = React.useRef(new Map<string, WorkspaceTab[]>());
+	const workspaceActiveTabRef = React.useRef(new Map<string, string | null>());
+	const previousWorkspaceKeyRef = React.useRef(agentWorkspaceState.activeWorkspaceId ?? 'no-repo');
 	const [addMenuOpen, setAddMenuOpen] = React.useState(false);
 	const [explorerVisible, setExplorerVisible] = React.useState(() => {
 		try {
@@ -112,22 +116,50 @@ const AgentWorkspaceInner = () => {
 	// the same `ws-<kind>-<n>` scheme, and this counter would otherwise reset
 	// to 0 on every mount while persisted ids survive across reloads.
 	const idCounter = React.useRef(0);
-	const idCounterSeeded = React.useRef(false);
-	if (!idCounterSeeded.current) {
-		idCounterSeeded.current = true;
-		let maxId = 0;
-		for (const e of terminalStore.entries) {
-			const m = /-(\d+)$/.exec(e.id);
-			if (m) { maxId = Math.max(maxId, parseInt(m[1], 10)); }
+	const bumpIdCounterFromIds = React.useCallback((ids: Iterable<string>) => {
+		let maxId = idCounter.current;
+		for (const id of ids) {
+			const m = /-(\d+)$/.exec(id);
+			if (m) {
+				maxId = Math.max(maxId, parseInt(m[1], 10));
+			}
 		}
 		idCounter.current = maxId;
-	}
+	}, []);
+	// Initial seed from whatever the store already loaded for the active workspace.
+	React.useEffect(() => {
+		bumpIdCounterFromIds(terminalStore.entries.map(e => e.id));
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, []);
 	const addBtnRef = React.useRef<HTMLButtonElement | null>(null);
 	const addMenuRef = React.useRef<HTMLDivElement | null>(null);
 	const tabsListRef = React.useRef<HTMLDivElement | null>(null);
 	const sideExplorerRef = React.useRef<HTMLElement | null>(null);
 	// Tab ids with a close currently in flight (dialog open / save pending).
 	const closingTabsRef = React.useRef<Set<string>>(new Set());
+
+	// File/browser/changes tabs belong to the workspace that opened them. Swap
+	// them as a unit on workspace changes so an editor from repo A is never left
+	// mounted and writable while repo B (or No Repo) is selected. Terminal tabs
+	// are restored independently by AgentWindowTerminalStore.
+	React.useEffect(() => {
+		const previousKey = previousWorkspaceKeyRef.current;
+		const nextKey = agentWorkspaceState.activeWorkspaceId ?? 'no-repo';
+		if (previousKey === nextKey) {
+			return;
+		}
+		workspaceTabsRef.current.set(previousKey, tabsRef.current.filter(tab => tab.kind !== 'terminal'));
+		workspaceActiveTabRef.current.set(previousKey, activeId);
+		const restored = workspaceTabsRef.current.get(nextKey) ?? [];
+		const restoredActive = workspaceActiveTabRef.current.get(nextKey) ?? null;
+		previousWorkspaceKeyRef.current = nextKey;
+		fileHandlesRef.current.clear();
+		closingTabsRef.current.clear();
+		setTabs(restored);
+		setActiveId(restoredActive && restored.some(tab => tab.id === restoredActive)
+			? restoredActive
+			: (restored[0]?.id ?? null));
+	}, [agentWorkspaceState.activeWorkspaceId, activeId]);
 
 	const toggleExplorer = React.useCallback(() => {
 		setExplorerVisible(v => {
@@ -147,13 +179,22 @@ const AgentWorkspaceInner = () => {
 		return () => sub.dispose();
 	}, [textFileService]);
 
-	// Reattach agent-window terminals after IDE reload.
+	// Reattach agent-window terminals after IDE reload AND after each workspace
+	// switch (the store resets its once-per-session reattach guard on switch).
 	React.useEffect(() => {
 		let cancelled = false;
 		(async () => {
 			try {
 				const entries = await terminalStore.reattachOnStartup();
-				if (cancelled || entries.length === 0) {
+				if (cancelled) {
+					return;
+				}
+				bumpIdCounterFromIds([
+					...terminalStore.entries.map(e => e.id),
+					...entries.map(e => e.id),
+					...tabsRef.current.map(t => t.id),
+				]);
+				if (entries.length === 0) {
 					return;
 				}
 				setTabs(prev => {
@@ -171,11 +212,73 @@ const AgentWorkspaceInner = () => {
 				setActiveId(cur => cur ?? entries[0]?.id ?? null);
 			} catch {
 				// best-effort
+			} finally {
+				if (!cancelled) {
+					terminalStore.endWorkspaceTransition();
+				}
 			}
 		})();
 		return () => { cancelled = true; };
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, []);
+	}, [terminalStore, agentWorkspaceState.activeWorkspaceId, bumpIdCounterFromIds]);
+
+	// Keep the tab strip in sync with the terminal store's persisted entries.
+	// `agentWindowTerminalStore` fires `onDidChangeEntries` on register/remove
+	// AND on active-workspace switch (where it reloads `entries` from the new
+	// workspace's storage key). Without this subscription, terminals added or
+	// removed by another code path — or the entire terminal set swapped in by a
+	// workspace switch — never reach `tabs`, so the strip shows stale tabs (or
+	// no tabs) until the user manually clicks +. #7.
+	React.useEffect(() => {
+		const syncFromStore = () => {
+			const storeEntries = terminalStore.entries;
+			// Compute the next tabs list once, outside the setState updater, so
+			// the active-tab fallback below can check the SAME list (reading
+			// `tabsRef.current` inside setActiveId would see the pre-update
+			// tabs and could keep an activeId pointing at a tab we just dropped).
+			const storeIds = new Set(storeEntries.map(e => e.id));
+			const byId = new Map(tabsRef.current.map(t => [t.id, t]));
+			const seen = new Set<string>();
+			let next = tabsRef.current.filter(t => t.kind !== 'terminal' || storeIds.has(t.id));
+			for (const entry of storeEntries) {
+				if (seen.has(entry.id)) {
+					continue;
+				}
+				const existing = byId.get(entry.id);
+				if (existing && existing.kind === 'terminal') {
+					const newTitle = entry.title || 'Terminal';
+					if (existing.title !== newTitle) {
+						next = next.map(t => t.id === entry.id ? { ...t, title: newTitle } : t);
+					}
+					seen.add(entry.id);
+					continue;
+				}
+				next.push({ id: entry.id, kind: 'terminal' as PanelKind, title: entry.title || 'Terminal' });
+				seen.add(entry.id);
+			}
+			// Keep id minting above every persisted / visible tab id so a new
+			// terminal after a workspace switch cannot collide with reloaded ids.
+			bumpIdCounterFromIds([
+				...next.map(t => t.id),
+				...storeEntries.map(e => e.id),
+			]);
+			setTabs(next);
+			setActiveId(cur => {
+				if (!cur) {
+					return storeEntries[0]?.id ?? null;
+				}
+				if (next.some(t => t.id === cur)) {
+					return cur;
+				}
+				const firstTerminal = next.find(t => t.kind === 'terminal')?.id ?? null;
+				return firstTerminal;
+			});
+		};
+		const sub = terminalStore.onDidChangeEntries(syncFromStore);
+		// Run once on mount so a workspace switch that happened between the
+		// reattach effect above and this subscription is reflected immediately.
+		syncFromStore();
+		return () => sub.dispose();
+	}, [terminalStore, bumpIdCounterFromIds]);
 
 	const openPanel = React.useCallback((kind: PanelKind, resource?: string, opts?: { reuseExisting?: boolean }) => {
 		setAddMenuOpen(false);

@@ -37,6 +37,7 @@ import {
 } from '../common/semanticRetrievalHelpers.js';
 import { SemanticChunk, SemanticIndexStatus, SemanticSearchResult } from '../common/semanticRetrievalTypes.js';
 import { SemanticVectorIndex } from '../common/semanticVectorIndex.js';
+import { IAgentProjectWorkspaceService } from './agentProjectWorkspaceService.js';
 
 interface IndexedChunk extends SemanticChunk { vector: number[] }
 interface PersistedIndex {
@@ -66,7 +67,7 @@ export interface ISemanticRetrievalService {
 	readonly _serviceBrand: undefined;
 	readonly onDidChangeStatus: Event<SemanticIndexStatus>;
 	getStatus(): SemanticIndexStatus;
-	search(query: string, opts?: { path?: URI | null; topK?: number; signal?: AbortSignal }): Promise<SemanticSearchResult>;
+	search(query: string, opts?: { path?: URI | null; folderRoots?: URI[]; topK?: number; signal?: AbortSignal }): Promise<SemanticSearchResult>;
 	rebuild(): Promise<void>;
 	pause(): void;
 	deleteIndex(): Promise<void>;
@@ -83,6 +84,7 @@ export class SemanticRetrievalService extends Disposable implements ISemanticRet
 	private chunks: IndexedChunk[] = [];
 	private readonly vectorIndex = new SemanticVectorIndex();
 	private indexedFiles = 0;
+	private indexedRootKeys = new Set<string>();
 	private generation = 0;
 	private abortController: AbortController | undefined;
 	private lastSettingsFingerprint = '';
@@ -104,19 +106,24 @@ export class SemanticRetrievalService extends Disposable implements ISemanticRet
 		@IVoidSettingsService private readonly settingsService: IVoidSettingsService,
 		@ILogService private readonly logService: ILogService,
 		@IMainProcessService mainProcessService: IMainProcessService,
+		@IAgentProjectWorkspaceService private readonly agentProjectWorkspaceService: IAgentProjectWorkspaceService,
 	) {
 		super();
 		this.embeddingChannel = mainProcessService.getChannel(SEMANTIC_EMBEDDING_CHANNEL);
 		this.queryBuilder = instantiationService.createInstance(QueryBuilder);
 		this.changeScheduler = this._register(new RunOnceScheduler(() => void this.processScheduledChanges(), 900));
 		this._register(this.fileService.onDidFilesChange(event => {
-			if (!this.settingsService.state.globalSettings.semanticSearchEnabled || !this.workspaceContextService.getWorkspace().folders.some(folder => event.affects(folder.uri))) return;
+			if (!this.settingsService.state.globalSettings.semanticSearchEnabled || !this.indexRoots().some(folder => event.affects(folder))) return;
 			const resources = [...event.rawAdded, ...event.rawUpdated, ...event.rawDeleted];
 			if (resources.some(resource => resource.path.endsWith('/.orbitignore'))) this.fullRebuildScheduled = true;
 			else for (const resource of resources) this.pendingChangedResources.set(resource.toString(), resource);
 			this.changeScheduler.schedule();
 		}));
 		this._register(this.workspaceContextService.onDidChangeWorkspaceFolders(() => {
+			this.fullRebuildScheduled = true;
+			this.changeScheduler.schedule(0);
+		}));
+		this._register(this.agentProjectWorkspaceService.onDidChangeState(() => {
 			this.fullRebuildScheduled = true;
 			this.changeScheduler.schedule(0);
 		}));
@@ -155,6 +162,25 @@ export class SemanticRetrievalService extends Disposable implements ISemanticRet
 		return `${settings.semanticEmbeddingProvider}:${settings.semanticEmbeddingEndpoint}:${settings.semanticEmbeddingModel}`;
 	}
 
+	private indexRoots(): URI[] {
+		const roots: URI[] = [];
+		const seen = new Set<string>();
+		const add = (uri: URI) => {
+			const key = uri.toString();
+			if (!seen.has(key)) {
+				seen.add(key);
+				roots.push(uri);
+			}
+		};
+		for (const folder of this.workspaceContextService.getWorkspace().folders) add(folder.uri);
+		for (const workspace of Object.values(this.agentProjectWorkspaceService.getState().workspaces)) {
+			for (const folder of workspace.folders) {
+				try { add(URI.parse(folder.uri)); } catch { /* skip stale serialized URI */ }
+			}
+		}
+		return roots;
+	}
+
 	private async initialize(): Promise<void> {
 		if (!this.settingsService.state.globalSettings.semanticSearchEnabled) return;
 		this.wasEnabled = true;
@@ -177,6 +203,7 @@ export class SemanticRetrievalService extends Disposable implements ISemanticRet
 			this.chunks = [];
 			this.vectorIndex.rebuild([]);
 			this.indexedFiles = 0;
+			this.indexedRootKeys.clear();
 			this.setStatus({ state: 'disabled', indexedFiles: 0, indexedChunks: 0 });
 			this.wasEnabled = false;
 			return;
@@ -196,6 +223,7 @@ export class SemanticRetrievalService extends Disposable implements ISemanticRet
 			this.chunks = [];
 			this.vectorIndex.rebuild([]);
 			this.indexedFiles = 0;
+			this.indexedRootKeys.clear();
 			this.fullRebuildScheduled = true;
 			this.changeScheduler.schedule(0);
 		}
@@ -229,6 +257,9 @@ export class SemanticRetrievalService extends Disposable implements ISemanticRet
 			this.chunks = parsed.chunks.map(chunk => ({ ...chunk, uri: URI.parse(chunk.uri), vector: this.decodeVector(chunk.vector) }));
 			this.vectorIndex.rebuild(this.chunks.map(chunk => chunk.vector));
 			this.indexedFiles = new Set(this.chunks.map(chunk => chunk.uri.toString())).size;
+			this.indexedRootKeys = new Set(this.indexRoots()
+				.filter(root => this.chunks.some(chunk => relativePath(root, chunk.uri) !== undefined))
+				.map(root => root.toString()));
 			this.setStatus({ state: 'ready', indexedFiles: this.indexedFiles, indexedChunks: this.chunks.length, lastIndexedAt: parsed.lastIndexedAt });
 		} catch (error) {
 			// A missing cache is the normal first-run path; a corrupt one is safe to rebuild from source.
@@ -321,7 +352,7 @@ export class SemanticRetrievalService extends Disposable implements ISemanticRet
 	}
 
 	private workspaceRootFor(uri: URI): URI | undefined {
-		return this.workspaceContextService.getWorkspace().folders.map(folder => folder.uri).find(folder => relativePath(folder, uri) !== undefined);
+		return this.indexRoots().find(folder => relativePath(folder, uri) !== undefined);
 	}
 
 	private async isIgnoredByOrbitFile(uri: URI, root: URI): Promise<boolean> {
@@ -421,7 +452,7 @@ export class SemanticRetrievalService extends Disposable implements ISemanticRet
 			this.setStatus({ state: 'error', indexedFiles: this.indexedFiles, indexedChunks: this.chunks.length, error: 'Enter an embedding model before indexing.' });
 			return;
 		}
-		const workspaceFolders = this.workspaceContextService.getWorkspace().folders.map(folder => folder.uri);
+		const workspaceFolders = this.indexRoots();
 		if (!workspaceFolders.length) {
 			this.setStatus({ state: 'error', indexedFiles: 0, indexedChunks: 0, error: 'Open a folder or workspace to build a semantic index.' });
 			return;
@@ -505,6 +536,7 @@ export class SemanticRetrievalService extends Disposable implements ISemanticRet
 			this.chunks = next;
 			this.vectorIndex.rebuild(next.map(chunk => chunk.vector));
 			this.indexedFiles = new Set(next.map(chunk => chunk.uri.toString())).size;
+			this.indexedRootKeys = new Set(workspaceFolders.map(root => root.toString()));
 			const lastIndexedAt = Date.now();
 			this.reportProgress({ state: 'indexing', phase: 'saving', operation: 'full', progress: 100, processedFiles, totalFiles: uris.length, recentFiles: [...recentFiles], indexedFiles: this.indexedFiles, indexedChunks: next.length, startedAt, lastIndexedAt: previousLastIndexedAt }, true);
 			await this.persistIndex(lastIndexedAt);
@@ -531,6 +563,7 @@ export class SemanticRetrievalService extends Disposable implements ISemanticRet
 		this.chunks = [];
 		this.vectorIndex.rebuild([]);
 		this.indexedFiles = 0;
+		this.indexedRootKeys.clear();
 		const target = this.indexResource();
 		await Promise.all([
 			this.fileService.del(target).catch(() => undefined),
@@ -539,9 +572,12 @@ export class SemanticRetrievalService extends Disposable implements ISemanticRet
 		this.setStatus({ state: this.settingsService.state.globalSettings.semanticSearchEnabled ? 'empty' : 'disabled', indexedFiles: 0, indexedChunks: 0 });
 	}
 
-	async search(query: string, opts?: { path?: URI | null; topK?: number; signal?: AbortSignal }): Promise<SemanticSearchResult> {
+	async search(query: string, opts?: { path?: URI | null; folderRoots?: URI[]; topK?: number; signal?: AbortSignal }): Promise<SemanticSearchResult> {
 		const trimmed = query.trim();
 		if (!trimmed) throw new Error('CodebaseSearch query must not be empty.');
+		if (opts?.folderRoots?.length && opts.folderRoots.some(root => !this.indexedRootKeys.has(root.toString()))) {
+			await this.rebuild();
+		}
 		if (this.status.state !== 'ready' || !this.chunks.length) {
 			return { ...this.status, matches: [], message: this.status.error ?? 'Semantic index is not ready. Continue with Grep, Glob, and Read.' };
 		}
@@ -557,10 +593,28 @@ export class SemanticRetrievalService extends Disposable implements ISemanticRet
 			return { state: 'ready', matches: [], indexedFiles: this.indexedFiles, indexedChunks: this.chunks.length, message: `Semantic search is temporarily unavailable (${message}). Use Grep, Glob, and Read instead.` };
 		}
 		const pathPrefix = opts?.path?.toString();
+		// Distinguish "not provided" (unconstrained) from "explicitly empty"
+		// (No Repo threads — fail closed, match nothing; an unconstrained search
+		// would leak the IDE workspace's semantic index into the thread).
+		if (opts?.folderRoots !== undefined && opts.folderRoots.length === 0) {
+			return { state: 'ready', matches: [], indexedFiles: this.indexedFiles, indexedChunks: this.chunks.length, message: 'No workspace folder is available to search.' };
+		}
+		const folderPrefixes = (opts?.folderRoots ?? []).map(u => u.toString());
 		const topK = Math.max(1, Math.min(SEMANTIC_MAX_RESULTS, opts?.topK ?? 8));
+		const inFolderRoots = (uriStr: string): boolean => {
+			if (opts?.folderRoots === undefined) {
+				return true;
+			}
+			return folderPrefixes.some(prefix => uriStr === prefix || uriStr.startsWith(`${prefix}/`));
+		};
 		const candidateChunks = pathPrefix
-			? this.chunks.filter(chunk => chunk.uri.toString() === pathPrefix || chunk.uri.toString().startsWith(`${pathPrefix}/`))
-			: this.vectorIndex.candidates(queryVector).map(index => this.chunks[index]);
+			? this.chunks.filter(chunk => {
+				const uriStr = chunk.uri.toString();
+				return (uriStr === pathPrefix || uriStr.startsWith(`${pathPrefix}/`)) && inFolderRoots(uriStr);
+			})
+			: this.vectorIndex.candidates(queryVector)
+				.map(index => this.chunks[index])
+				.filter(chunk => inFolderRoots(chunk.uri.toString()));
 		const matches = candidateChunks
 			.map(chunk => ({ ...chunk, score: cosineSimilarity(queryVector, chunk.vector) + lexicalBoost(trimmed, chunk) }))
 			.sort((a, b) => b.score - a.score)

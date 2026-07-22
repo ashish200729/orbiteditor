@@ -172,6 +172,8 @@ export type ServiceSendLLMMessageParams = {
 	onAbort: OnAbort;
 	/** When true, main process skips IPC onText events (e.g. sub-agents). */
 	suppressStreamingEvents?: boolean;
+	/** Thread-scoped MCP tool set; avoids consulting the UI workspace at send time. */
+	mcpToolsOverride?: InternalToolInfo[];
 } & SendLLMType & SendLLMPolicyType;
 
 // params to the true sendLLMMessage function
@@ -294,6 +296,5 @@ export type MainClinePassProviderListParams<modelResponse> = Omit<ModelListParam
 
 export type EventModelListOnSuccessParams<modelResponse> = Parameters<ModelListParams<modelResponse>['onSuccess']>[0] & { requestId: string }
 export type EventModelListOnErrorParams<modelResponse> = Parameters<ModelListParams<modelResponse>['onError']>[0] & { requestId: string }
-
 
 

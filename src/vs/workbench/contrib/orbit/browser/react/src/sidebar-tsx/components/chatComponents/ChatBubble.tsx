@@ -70,6 +70,7 @@ const _ChatBubble = React.memo(({ threadId, chatMessage, currCheckpointIdx, chec
 			isCheckpointGhost={isCheckpointGhost}
 			messageIdx={messageIdx}
 			isCommitted={isCommitted}
+			threadId={threadId}
 		/>
 	}
 	else if (role === 'tool') {

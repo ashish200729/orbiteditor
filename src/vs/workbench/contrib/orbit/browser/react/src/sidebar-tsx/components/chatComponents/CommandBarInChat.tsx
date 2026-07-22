@@ -9,7 +9,7 @@ import { useAccessor, useChatThreadsState, useChatThreadsStreamState, useCommand
 import { IconShell1, StatusIndicator } from '../../../markdown/ApplyBlockHoverButtons.js';
 import { getBasename, voidOpenFileFn } from '../../utils/fileUtils.js';
 
-export const CommandBarInChat = () => {
+export const CommandBarInChat = ({ threadId }: { threadId: string }) => {
 	const { stateOfURI: commandBarStateOfURI, sortedURIs: sortedCommandBarURIs } = useCommandBarState()
 	const numFilesChanged = sortedCommandBarURIs.length
 
@@ -18,7 +18,7 @@ export const CommandBarInChat = () => {
 	const commandService = accessor.get('ICommandService')
 	const chatThreadsState = useChatThreadsState()
 	const commandBarState = useCommandBarState()
-	const chatThreadsStreamState = useChatThreadsStreamState(chatThreadsState.currentThreadId)
+	const chatThreadsStreamState = useChatThreadsStreamState(threadId)
 
 	// (
 	// 	<IconShell1
@@ -67,7 +67,7 @@ export const CommandBarInChat = () => {
 		if (!pendingId) {
 			return false;
 		}
-		const thread = chatThreadsState.allThreads[chatThreadsState.currentThreadId];
+		const thread = chatThreadsState.allThreads[threadId];
 		const pending = thread?.messages.find(
 			(m) => m.role === 'tool' && m.type === 'tool_request' && m.id === pendingId,
 		);

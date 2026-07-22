@@ -6,7 +6,6 @@
 import React from 'react';
 import { ChatMessage } from '../../../../../../common/chatThreadServiceTypes.js';
 import { ChatMarkdownRender, ChatMessageLocation } from '../../../markdown/ChatMarkdownRender.js';
-import { useAccessor } from '../../../util/services.js';
 import { ProseWrapper } from '../wrappers/ProseWrapper.js';
 import { SmallProseWrapper } from '../wrappers/SmallProseWrapper.js';
 import { ReasoningWrapper } from './ReasoningWrapper.js';
@@ -19,20 +18,16 @@ const isDisplayContentEmpty = (displayContent: string | undefined | null): boole
 	return trimmed.length === 0 || trimmed === EMPTY_MESSAGE_PLACEHOLDER;
 };
 
-export const AssistantMessageComponent = React.memo(({ chatMessage, isCheckpointGhost, isCommitted, messageIdx }: { chatMessage: ChatMessage & { role: 'assistant' }, isCheckpointGhost: boolean, messageIdx: number, isCommitted: boolean }) => {
+export const AssistantMessageComponent = React.memo(({ chatMessage, isCheckpointGhost, isCommitted, messageIdx, threadId }: { chatMessage: ChatMessage & { role: 'assistant' }, isCheckpointGhost: boolean, messageIdx: number, isCommitted: boolean, threadId: string }) => {
 
-	const accessor = useAccessor()
-	const chatThreadsService = accessor.get('IChatThreadService')
 	const isReadOnlyChat = useIsReadOnlyChat()
 
 	const reasoningStr = chatMessage.reasoning?.trim() || null
 	const hasReasoning = !!reasoningStr
 	const hasDisplayContent = !isDisplayContentEmpty(chatMessage.displayContent)
 	const isDoneReasoning = hasDisplayContent
-	const thread = chatThreadsService.getCurrentThread()
-
 	const chatMessageLocation: ChatMessageLocation | undefined = isReadOnlyChat ? undefined : {
-		threadId: thread.id,
+		threadId,
 		messageIdx: messageIdx,
 	}
 	const isLinkDetectionEnabled = !isReadOnlyChat

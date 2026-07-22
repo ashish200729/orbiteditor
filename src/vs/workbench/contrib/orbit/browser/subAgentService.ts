@@ -21,8 +21,8 @@ import { IConvertToLLMMessageService } from './convertToLLMMessageService.js';
 import { IVoidNativeNotificationService } from './nativeNotificationService.js';
 import { withTimeout } from '../common/asyncUtils.js';
 import { CancellationTokenSource } from '../../../../base/common/cancellation.js';
-import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { getPathAccessApprovalReason } from '../common/agentToolSecurity.js';
+import { IChatThreadService } from './chatThreadService.js';
 
 export interface ISubAgentService {
 	readonly _serviceBrand: undefined;
@@ -98,6 +98,7 @@ export class SubAgentService extends Disposable implements ISubAgentService {
 	_serviceBrand: undefined;
 
 	private _toolsService: IToolsService | undefined;
+	private _chatThreadService: IChatThreadService | undefined;
 	private readonly _backgroundRuns = new Map<string, ActiveSubAgentRun>();
 	private readonly _foregroundRuns = new Map<string, ActiveSubAgentRun>();
 
@@ -117,7 +118,6 @@ export class SubAgentService extends Disposable implements ISubAgentService {
 		@IMCPService private readonly _mcpService: IMCPService,
 		@IConvertToLLMMessageService private readonly _convertService: IConvertToLLMMessageService,
 		@IVoidNativeNotificationService private readonly _notificationService: IVoidNativeNotificationService,
-		@IWorkspaceContextService private readonly _workspaceContextService: IWorkspaceContextService,
 	) {
 		super();
 	}
@@ -127,6 +127,15 @@ export class SubAgentService extends Disposable implements ISubAgentService {
 			this._toolsService = this._instantiationService.invokeFunction(accessor => accessor.get(IToolsService));
 		}
 		return this._toolsService;
+	}
+
+	// Lazily resolved to avoid a circular DI dependency:
+	// ChatThreadService → ToolsService → SubAgentService → ChatThreadService
+	private _getChatThreadService(): IChatThreadService {
+		if (!this._chatThreadService) {
+			this._chatThreadService = this._instantiationService.invokeFunction(accessor => accessor.get(IChatThreadService));
+		}
+		return this._chatThreadService;
 	}
 
 	cancelBackgroundRun(toolId: string): boolean {
@@ -335,11 +344,20 @@ export class SubAgentService extends Disposable implements ISubAgentService {
 			this._throwIfCancelled(activeRun);
 			turns++;
 
+			// Scope the system message to the PARENT thread's workspace (agent
+			// project workspace or IDE) — otherwise a sub-agent of a No Repo /
+			// agent-window thread gets the IDE's folders and directory tree.
+			const workspaceFolderPaths = this._getChatThreadService().getFolderUrisForThread(threadId).map(u => u.fsPath);
+			const agentWorkspaceId = this._getChatThreadService().getThread(threadId)?.agentWorkspaceId;
+			const scopedMcpTools = this._mcpService.getMCPTools(agentWorkspaceId);
 			const { messages, separateSystemMessage } = await this._convertService.prepareLLMChatMessages({
 				chatMessages,
 				chatMode: 'agent',
 				modelSelection,
 				toolPolicy,
+				workspaceFolderPaths,
+				threadId,
+				agentWorkspaceId,
 			});
 
 			const agentSystemPrompt = agent.getSystemPrompt();
@@ -360,6 +378,7 @@ export class SubAgentService extends Disposable implements ISubAgentService {
 					modelSelectionOptions,
 					overridesOfModel,
 					toolPolicy,
+					mcpToolsOverride: scopedMcpTools,
 					separateSystemMessage: finalSystemMessage,
 					suppressStreamingEvents: true,
 					logging: { loggingName: `SubAgent:${agent.agentType}`, loggingExtras: { agentType: agent.agentType, description } },
@@ -447,7 +466,9 @@ export class SubAgentService extends Disposable implements ISubAgentService {
 						const pathReason = getPathAccessApprovalReason(
 							builtinName,
 							params,
-							uri => this._workspaceContextService.isInsideWorkspace(uri),
+							// Use the parent thread's effective workspace, not the IDE's —
+							// sub-agent path gating must agree with the parent agent.
+							uri => this._getChatThreadService().isUriInsideThreadWorkspace(threadId, uri),
 						);
 						if (pathReason) {
 							resultStr = `Tool '${toolName}' requires user approval for ${pathReason} and cannot run inside a sub-agent.`;
@@ -466,15 +487,29 @@ export class SubAgentService extends Disposable implements ISubAgentService {
 							continue;
 						}
 
-						const { result: toolResult, interruptTool } = await toolsService.callTool[builtinName](params as any);
-						this._setCancelable(activeRun, abortRef, interruptTool ?? null);
-						const resolved = await toolResult;
-						this._throwIfCancelled(activeRun);
-						this._setCancelable(activeRun, abortRef, null);
-						resultStr = toolsService.stringOfResult[builtinName](params as any, resolved as any);
-						appendChatMessage({ role: 'tool', type: 'success', name: builtinName, params: params as any, result: resolved as any, content: resultStr, id: callId, rawParams: toolCall.rawParams, mcpServerName: undefined });
+						// Scope Glob/Grep/Shell/CodebaseSearch to THIS parent thread —
+						// not whichever thread the user is currently viewing.
+						toolsService.currentToolThreadId = threadId;
+						if (builtinName === 'Shell') {
+							toolsService.currentShellThreadId = threadId;
+						}
+						try {
+							const { result: toolResult, interruptTool } = await toolsService.callTool[builtinName](params as any);
+							this._setCancelable(activeRun, abortRef, interruptTool ?? null);
+							const resolved = await toolResult;
+							this._throwIfCancelled(activeRun);
+							this._setCancelable(activeRun, abortRef, null);
+							resultStr = toolsService.stringOfResult[builtinName](params as any, resolved as any);
+							appendChatMessage({ role: 'tool', type: 'success', name: builtinName, params: params as any, result: resolved as any, content: resultStr, id: callId, rawParams: toolCall.rawParams, mcpServerName: undefined });
+						} finally {
+							if (builtinName === 'Shell') {
+								toolsService.currentShellThreadId = null;
+							}
+							toolsService.currentToolThreadId = null;
+						}
 					} else {
-						const mcpTool = this._mcpService.getMCPTools()?.find(t => t.name === toolName);
+						const agentWorkspaceId = this._getChatThreadService().getThread(threadId)?.agentWorkspaceId;
+						const mcpTool = this._mcpService.getMCPTools(agentWorkspaceId)?.find(t => t.name === toolName);
 						if (mcpTool) {
 							if (agent.permissionMode === 'read_only' && !isMCPToolReadOnly(mcpTool)) {
 								resultStr = `MCP tool '${toolName}' is not marked read-only and is blocked for the ${agent.agentType} agent.`;
@@ -498,7 +533,7 @@ export class SubAgentService extends Disposable implements ISubAgentService {
 							let mcpResult;
 							try {
 								mcpResult = await withTimeout(
-									this._mcpService.callMCPTool({ serverName: mcpTool.mcpServerName ?? 'unknown', toolName, params: toolCall.rawParams }, mcpCts.token),
+									this._mcpService.callMCPTool({ serverName: mcpTool.mcpServerName ?? 'unknown', toolName, params: toolCall.rawParams }, mcpCts.token, agentWorkspaceId),
 									mcpTimeoutMs,
 									toolName,
 								);

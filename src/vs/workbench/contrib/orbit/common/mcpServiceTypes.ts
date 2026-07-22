@@ -157,6 +157,28 @@ export function mergeMcpConfigs(
 	return { mcpServers, scopeOfName };
 }
 
+/** Merge user config with an ordered multi-root project sequence without ever
+ * reclassifying servers contributed by an earlier project as user-scoped. */
+export function mergeMcpConfigsForProjects(
+	userConfig: MCPConfigFileJSON | null | undefined,
+	projects: Array<{ config: MCPConfigFileJSON | null | undefined; folderUri: string }>,
+): {
+	mcpServers: Record<string, MCPConfigFileEntryJSON>;
+	scopeOfName: { [name: string]: 'user' | 'project' };
+	projectFolderOfName: { [name: string]: string | undefined };
+} {
+	const { mcpServers, scopeOfName } = mergeMcpConfigs(userConfig, null);
+	const projectFolderOfName: { [name: string]: string | undefined } = {};
+	for (const { config, folderUri } of projects) {
+		for (const [name, entry] of Object.entries(config?.mcpServers ?? {})) {
+			mcpServers[name] = entry;
+			scopeOfName[name] = 'project';
+			projectFolderOfName[name] = folderUri;
+		}
+	}
+	return { mcpServers, scopeOfName, projectFolderOfName };
+}
+
 
 // SERVER EVENT TYPES ------------------------------------------
 

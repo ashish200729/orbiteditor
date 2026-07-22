@@ -835,6 +835,24 @@
 	font-size: 12px;
 	max-width: 240px;
 }
+.void-agent-workspace-placeholder-action {
+	margin-top: 6px;
+	padding: 5px 12px;
+	border-radius: 4px;
+	border: 1px solid var(--vscode-button-border, transparent);
+	background: var(--vscode-button-background, #0e639c);
+	color: var(--vscode-button-foreground, #fff);
+	font-size: 12px;
+	font-weight: 500;
+	cursor: pointer;
+	transition: background 0.12s ease, opacity 0.12s ease;
+}
+.void-agent-workspace-placeholder-action:hover {
+	background: var(--vscode-button-hoverBackground, #1177bb);
+}
+.void-agent-workspace-placeholder-action:active {
+	opacity: 0.9;
+}
 
 /* --- Side file explorer (Cursor right column) --- */
 .void-agent-workspace-explorer {
@@ -2176,4 +2194,823 @@
    any timing edge where the button briefly renders before the effect runs. */
 .agent-window .chat-history-customize {
 	display: none !important;
+}
+
+/* --- Agent multi-project workspace header / picker / banner / history filter
+   (Agents window only) --------------------------------------------------------
+   NOTE: React classes are rewritten by scope-tailwind with a `void-` prefix
+   (and state modifiers like `active`/`stale`/`selected`/`is-open` become
+   `void-active`/`void-stale`/`void-selected`/`void-is-open`). Selectors here
+   MUST match the emitted DOM class names. Portaled menus are global `.void-…`
+   rules (not nested under .agent-window). Backgrounds MUST be fully opaque so
+   chat content never bleeds through the dropdown. */
+
+/* ============================ Header ======================================
+   Compact Cursor-style controls sitting above the composer — not a full-width
+   title bar. No border, no drag region, no shortcut badge. */
+.void-agent-workspace-header {
+	flex: 0 0 auto;
+	position: relative;
+	display: flex;
+	align-items: center;
+	gap: 2px;
+	height: auto;
+	min-height: 0;
+	padding: 0 2px;
+	border: none;
+	background: transparent;
+	-webkit-app-region: no-drag;
+	z-index: 5;
+}
+
+.void-agent-workspace-header-btn {
+	display: inline-flex !important;
+	flex-direction: row !important;
+	align-items: center;
+	gap: 4px;
+	height: 22px;
+	padding: 0 6px;
+	border: none;
+	border-radius: 5px;
+	background: transparent;
+	color: var(--vscode-foreground);
+	font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, "Segoe WPC", "Segoe UI", system-ui, "Ubuntu", "Droid Sans", sans-serif);
+	font-size: 12px;
+	font-weight: 500;
+	line-height: 1;
+	letter-spacing: 0;
+	cursor: pointer;
+	min-width: 0;
+	max-width: 200px;
+	white-space: nowrap;
+	transition: background-color 0.12s ease, color 0.12s ease;
+}
+.void-agent-workspace-header-btn span {
+	font-family: inherit !important;
+}
+.void-agent-workspace-header-btn-icon {
+	display: block;
+	flex: 0 0 auto;
+	opacity: 0.65;
+}
+.void-agent-workspace-header-btn-label {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	min-width: 0;
+}
+.void-agent-workspace-header-btn-chevron {
+	flex: 0 0 auto;
+	opacity: 0.4;
+	transition: transform 0.14s ease, opacity 0.12s ease;
+}
+.void-agent-workspace-header-btn.void-is-open .void-agent-workspace-header-btn-chevron {
+	transform: rotate(180deg);
+	opacity: 0.75;
+}
+
+.void-agent-workspace-header-btn--primary:hover,
+.void-agent-workspace-header-btn--primary.void-is-open {
+	background: var(--vscode-toolbar-hoverBackground, color-mix(in srgb, var(--vscode-foreground) 8%, transparent));
+}
+.void-agent-workspace-header-btn--primary.void-is-placeholder {
+	color: var(--vscode-descriptionForeground, var(--vscode-foreground));
+	font-weight: 500;
+}
+
+.void-agent-workspace-header-btn--env {
+	flex: 0 0 auto;
+	max-width: 120px;
+	color: var(--vscode-descriptionForeground, var(--vscode-foreground));
+	font-weight: 400;
+	opacity: 0.9;
+}
+.void-agent-workspace-header-btn--env:disabled {
+	opacity: 0.75;
+	cursor: default;
+}
+
+.void-agent-workspace-header-btn:focus-visible {
+	outline: none;
+	box-shadow: inset 0 0 0 1px var(--vscode-focusBorder, #0078d4);
+}
+
+@media (max-width: 420px) {
+	.void-agent-workspace-header-btn--env .void-agent-workspace-header-btn-label { display: none; }
+	.void-agent-workspace-header-btn--env { padding: 0 6px; }
+}
+
+/* ============================ Picker ======================================
+   FORCE opaque fill. Theme tokens on vibrancy windows often carry alpha, which
+   lets the chat chrome bleed through. Strip alpha via relative color syntax and
+   never animate opacity. */
+.void-agent-workspace-picker {
+	position: fixed;
+	z-index: 10050;
+	display: flex;
+	flex-direction: column;
+	min-height: 0;
+	border-radius: 10px;
+	border: 1px solid var(--vscode-widget-border, rgba(0, 0, 0, 0.12));
+	/* Opaque at all costs — do not use translucent menu/vibrancy tokens. */
+	background-color: #ffffff;
+	background-color: rgb(from var(--vscode-editor-background, #ffffff) r g b / 1);
+	background-image: none !important;
+	backdrop-filter: none !important;
+	-webkit-backdrop-filter: none !important;
+	opacity: 1 !important;
+	box-shadow: 0 4px 8px color-mix(in srgb, var(--vscode-widget-shadow, #000) 28%, transparent);
+	color: var(--vscode-foreground);
+	/* Portaled to body (outside .void-scope) — must set UI font explicitly.
+	   Without this, UA button/input styles fall back to serif. */
+	font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, "Segoe WPC", "Segoe UI", system-ui, "Ubuntu", "Droid Sans", sans-serif);
+	font-size: 13px;
+	font-weight: 400;
+	line-height: 1.3;
+	-webkit-font-smoothing: antialiased;
+	overflow: hidden;
+	isolation: isolate;
+	animation: void-agent-workspace-picker-in 0.12s cubic-bezier(0.22, 1, 0.36, 1);
+}
+/* Buttons/inputs do not inherit font-family by default outside Tailwind preflight. */
+.void-agent-workspace-picker button,
+.void-agent-workspace-picker input,
+.void-agent-workspace-picker kbd,
+.void-agent-workspace-picker span {
+	font-family: inherit !important;
+}
+.monaco-workbench.vs-dark .void-agent-workspace-picker,
+.monaco-workbench.hc-black .void-agent-workspace-picker,
+.vs-dark .void-agent-workspace-picker,
+.hc-black .void-agent-workspace-picker {
+	background-color: #252526;
+	background-color: rgb(from var(--vscode-editor-background, #252526) r g b / 1);
+	border-color: rgba(255, 255, 255, 0.12);
+	box-shadow: 0 4px 8px color-mix(in srgb, var(--vscode-widget-shadow, #000) 52%, transparent);
+}
+@keyframes void-agent-workspace-picker-in {
+	from { transform: translateY(-3px); }
+	to { transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+	.void-agent-workspace-picker { animation: none; }
+}
+
+.void-agent-workspace-picker-search {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	flex: 0 0 auto;
+	padding: 8px 10px;
+	border-bottom: 1px solid color-mix(in srgb, var(--vscode-foreground) 10%, transparent);
+	background-color: inherit;
+}
+.void-agent-workspace-picker-search-icon {
+	flex: 0 0 auto;
+	color: var(--vscode-descriptionForeground, var(--vscode-foreground));
+	opacity: 0.55;
+}
+.void-agent-workspace-picker-search-input {
+	flex: 1 1 auto;
+	min-width: 0;
+	height: 22px;
+	border: none;
+	outline: none;
+	background: transparent;
+	color: var(--vscode-input-foreground, var(--vscode-foreground));
+	font-size: 13px;
+	font-family: inherit !important;
+	font-weight: 400;
+	line-height: 1.3;
+}
+.void-agent-workspace-picker-search-input::placeholder {
+	color: var(--vscode-input-placeholderForeground, var(--vscode-descriptionForeground));
+}
+.void-agent-workspace-picker-search-clear {
+	display: inline-flex !important;
+	align-items: center;
+	justify-content: center;
+	flex: 0 0 auto;
+	width: 18px;
+	height: 18px;
+	padding: 0;
+	border: none;
+	border-radius: 4px;
+	background: transparent;
+	color: var(--vscode-foreground);
+	opacity: 0.45;
+	cursor: pointer;
+}
+.void-agent-workspace-picker-search-clear:hover {
+	opacity: 1;
+	background: var(--vscode-toolbar-hoverBackground, color-mix(in srgb, var(--vscode-foreground) 10%, transparent));
+}
+
+.void-agent-workspace-picker-body {
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow-y: auto;
+	overflow-x: hidden;
+	padding: 4px 0 6px;
+	background-color: inherit;
+}
+.void-agent-workspace-picker-body::-webkit-scrollbar { width: 10px; }
+.void-agent-workspace-picker-body::-webkit-scrollbar-thumb {
+	background: var(--vscode-scrollbarSlider-background, rgba(127,127,127,0.3));
+	border-radius: 6px;
+	border: 2px solid transparent;
+	background-clip: padding-box;
+}
+.void-agent-workspace-picker-body::-webkit-scrollbar-thumb:hover {
+	background: var(--vscode-scrollbarSlider-hoverBackground, rgba(127,127,127,0.5));
+	border: 2px solid transparent;
+	background-clip: padding-box;
+}
+
+.void-agent-workspace-picker-section {
+	padding: 2px 0 4px;
+}
+.void-agent-workspace-picker-section + .void-agent-workspace-picker-section {
+	border-top: 1px solid color-mix(in srgb, var(--vscode-foreground) 10%, transparent);
+	margin-top: 2px;
+	padding-top: 4px;
+}
+.void-agent-workspace-picker-section-label {
+	padding: 6px 12px 4px;
+	font-family: inherit !important;
+	font-size: 11px;
+	font-weight: 600;
+	letter-spacing: 0.02em;
+	text-transform: none;
+	color: var(--vscode-descriptionForeground, var(--vscode-foreground));
+	opacity: 0.7;
+	user-select: none;
+}
+
+.void-agent-workspace-picker-item {
+	display: flex !important;
+	flex-direction: row !important;
+	align-items: center;
+	gap: 9px;
+	width: calc(100% - 12px);
+	min-height: 30px;
+	margin: 1px 6px;
+	padding: 6px 8px;
+	border: none;
+	border-radius: 5px;
+	background: transparent;
+	color: var(--vscode-foreground);
+	font-family: inherit !important;
+	font-size: 13px;
+	font-weight: 400;
+	text-align: left;
+	cursor: pointer;
+	line-height: 1.3;
+	transition: background-color 0.12s ease, color 0.12s ease, box-shadow 0.12s ease;
+}
+.void-agent-workspace-picker-item:hover:not(:disabled),
+.void-agent-workspace-picker-item.void-active {
+	/* Some light and high-contrast themes expose a transparent list-hover token.
+	   Mix in foreground so the whole-row hit target always remains visible. */
+	background-color: color-mix(
+		in srgb,
+		var(--vscode-list-hoverBackground, transparent) 82%,
+		var(--vscode-foreground) 8%
+	) !important;
+	color: var(--vscode-list-hoverForeground, var(--vscode-foreground));
+	box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--vscode-foreground) 7%, transparent);
+}
+.void-agent-workspace-picker-item:active:not(:disabled) {
+	background-color: color-mix(
+		in srgb,
+		var(--vscode-list-activeSelectionBackground, transparent) 82%,
+		var(--vscode-foreground) 12%
+	) !important;
+}
+.void-agent-workspace-picker-item:hover:disabled {
+	background-color: color-mix(in srgb, var(--vscode-foreground) 4%, transparent) !important;
+	box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--vscode-foreground) 5%, transparent);
+}
+.void-agent-workspace-picker-item:hover:not(:disabled) .void-agent-workspace-picker-item-icon,
+.void-agent-workspace-picker-item.void-active .void-agent-workspace-picker-item-icon {
+	opacity: 1;
+}
+.void-agent-workspace-picker-item:hover:not(:disabled) .void-agent-workspace-picker-chevron,
+.void-agent-workspace-picker-item.void-active .void-agent-workspace-picker-chevron {
+	opacity: 0.85;
+	transform: translateX(1px);
+}
+.void-agent-workspace-picker-item:disabled,
+.void-agent-workspace-picker-item.void-disabled {
+	opacity: 0.42;
+	cursor: not-allowed;
+}
+.void-agent-workspace-picker-item:focus-visible {
+	outline: none;
+	box-shadow: inset 0 0 0 1px var(--vscode-focusBorder, #0078d4);
+}
+.void-agent-workspace-picker-item-icon {
+	flex: 0 0 auto;
+	display: inline-flex !important;
+	align-items: center;
+	justify-content: center;
+	width: 16px;
+	height: 16px;
+	opacity: 0.7;
+}
+.void-agent-workspace-picker-item-label {
+	flex: 1 1 auto;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-family: inherit !important;
+	font-size: 13px;
+	font-weight: 400;
+	letter-spacing: 0;
+}
+.void-agent-workspace-picker-check {
+	flex: 0 0 auto;
+	display: block;
+	color: var(--vscode-focusBorder, #0078d4);
+	opacity: 0.95;
+}
+.void-agent-workspace-picker-chevron {
+	flex: 0 0 auto;
+	opacity: 0.4;
+	transition: opacity 0.12s ease, transform 0.12s ease;
+}
+.void-agent-workspace-picker-item.void-selected .void-agent-workspace-picker-item-label {
+	font-weight: 500;
+}
+
+.void-agent-workspace-picker-badge {
+	flex: 0 0 auto;
+	padding: 1px 6px;
+	border-radius: 999px;
+	font-size: 10px;
+	font-weight: 600;
+	letter-spacing: 0.01em;
+	white-space: nowrap;
+	user-select: none;
+}
+.void-agent-workspace-picker-badge.void-stale {
+	color: var(--vscode-errorForeground, #f14c4c);
+	background: color-mix(in srgb, var(--vscode-errorForeground, #f14c4c) 12%, transparent);
+}
+.void-agent-workspace-picker-badge.void-soon {
+	color: var(--vscode-descriptionForeground, var(--vscode-foreground));
+	background: color-mix(in srgb, var(--vscode-foreground) 8%, transparent);
+	opacity: 0.75;
+	font-weight: 500;
+}
+.void-agent-workspace-picker-item.void-stale {
+	opacity: 0.58;
+}
+.void-agent-workspace-picker-item.void-stale .void-agent-workspace-picker-item-icon {
+	color: var(--vscode-errorForeground, #f14c4c);
+	opacity: 0.55;
+}
+
+.void-agent-workspace-picker-empty {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	gap: 4px;
+	padding: 20px 16px;
+	text-align: center;
+	color: var(--vscode-descriptionForeground, var(--vscode-foreground));
+}
+.void-agent-workspace-picker-empty-title {
+	font-size: 12.5px;
+	font-weight: 500;
+	color: var(--vscode-foreground);
+}
+.void-agent-workspace-picker-empty-detail {
+	font-size: 11.5px;
+	opacity: 0.7;
+}
+
+.void-agent-workspace-picker-loading {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 10px 14px;
+	font-size: 12px;
+	color: var(--vscode-descriptionForeground, var(--vscode-foreground));
+	opacity: 0.8;
+}
+.void-agent-workspace-picker-spinner {
+	animation: void-agent-workspace-picker-spin 0.8s linear infinite;
+}
+@keyframes void-agent-workspace-picker-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+	.void-agent-workspace-picker-spinner { animation: none; }
+	.void-agent-workspace-picker-item,
+	.void-agent-workspace-picker-chevron { transition: none; }
+}
+@media (forced-colors: active) {
+	.void-agent-workspace-picker-item:hover,
+	.void-agent-workspace-picker-item.void-active {
+		outline: 1px solid Highlight;
+		outline-offset: -1px;
+	}
+	.void-agent-workspace-picker-item:focus-visible {
+		outline: 2px solid Highlight;
+		outline-offset: -2px;
+	}
+}
+
+/* ============================ Select-workspace banner ==================== */
+.void-agent-select-workspace-banner {
+	display: flex !important;
+	flex-direction: row !important;
+	align-items: center;
+	gap: 10px;
+	width: 100%;
+	padding: 10px 12px;
+	border-radius: 8px;
+	border: 1px solid color-mix(in srgb, var(--vscode-foreground) 14%, transparent);
+	background-color: rgb(from var(--vscode-input-background, var(--vscode-editor-background)) r g b / 1);
+	color: var(--vscode-foreground);
+	cursor: pointer;
+	text-align: left;
+	transition: border-color 0.12s ease, background-color 0.12s ease;
+}
+.void-agent-select-workspace-banner:hover {
+	border-color: color-mix(in srgb, var(--vscode-foreground) 28%, transparent);
+	background: var(--vscode-list-hoverBackground, color-mix(in srgb, var(--vscode-foreground) 6%, transparent));
+}
+.void-agent-select-workspace-banner:focus-visible {
+	outline: none;
+	border-color: var(--vscode-focusBorder, #0078d4);
+	box-shadow: 0 0 0 1px var(--vscode-focusBorder, #0078d4);
+}
+.void-agent-select-workspace-banner-icon {
+	flex: 0 0 auto;
+	opacity: 0.7;
+	color: var(--vscode-foreground);
+}
+.void-agent-select-workspace-banner-text {
+	display: flex;
+	flex-direction: column;
+	flex: 1 1 auto;
+	min-width: 0;
+	gap: 1px;
+}
+.void-agent-select-workspace-banner-title {
+	font-size: 12.5px;
+	font-weight: 500;
+	line-height: 1.25;
+	color: var(--vscode-foreground);
+}
+.void-agent-select-workspace-banner-sub {
+	font-size: 11px;
+	line-height: 1.3;
+	color: var(--vscode-descriptionForeground, var(--vscode-foreground));
+	opacity: 0.8;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.void-agent-select-workspace-banner-kbd {
+	flex: 0 0 auto;
+	padding: 2px 6px;
+	border-radius: 4px;
+	font-family: var(--vscode-editor-font-family, var(--vscode-font-family));
+	font-size: 10px;
+	font-weight: 500;
+	line-height: 1.3;
+	color: var(--vscode-descriptionForeground, var(--vscode-foreground));
+	background: color-mix(in srgb, var(--vscode-foreground) 6%, transparent);
+	border: 1px solid color-mix(in srgb, var(--vscode-foreground) 10%, transparent);
+	opacity: 0.65;
+}
+@media (max-width: 460px) {
+	.void-agent-select-workspace-banner-kbd { display: none; }
+}
+
+/* ============================ Chat history controls ====================== */
+.void-agent-history-section-toolbar {
+	display: flex !important;
+	flex-direction: row !important;
+	align-items: center;
+	justify-content: flex-end;
+	gap: 6px;
+	min-height: 30px;
+	padding: 3px 12px 2px;
+}
+.void-agent-history-section-toolbar--empty {
+	justify-content: flex-end;
+}
+.void-agent-history-bucket-header {
+	display: flex;
+	align-items: center;
+	min-height: 30px;
+}
+.void-agent-history-bucket-header > :first-child {
+	flex: 1 1 auto;
+	min-width: 0;
+}
+.void-agent-history-bucket-header--with-actions {
+	padding-right: 12px;
+}
+.void-agent-history-section-actions {
+	display: inline-flex;
+	align-items: center;
+	gap: 3px;
+	flex: 0 0 auto;
+}
+.void-agent-history-icon-btn {
+	display: inline-flex !important;
+	align-items: center;
+	justify-content: center;
+	width: 26px;
+	height: 26px;
+	padding: 0;
+	border: none;
+	border-radius: 7px;
+	background: transparent;
+	color: var(--vscode-icon-foreground, var(--vscode-foreground));
+	cursor: pointer;
+	opacity: 0.65;
+	transition: background-color 0.12s ease, opacity 0.12s ease;
+}
+.void-agent-history-workspace-btn {
+	width: 30px;
+	height: 30px;
+	margin-block: -2px;
+	background: color-mix(in srgb, var(--vscode-foreground) 5%, transparent);
+}
+.void-agent-history-icon-btn:hover,
+.void-agent-history-icon-btn.void-active {
+	opacity: 1;
+	background: var(--vscode-toolbar-hoverBackground, color-mix(in srgb, var(--vscode-foreground) 10%, transparent));
+}
+.void-agent-history-icon-btn:focus-visible {
+	outline: none;
+	box-shadow: inset 0 0 0 1px var(--vscode-focusBorder, #0078d4);
+}
+
+.void-agent-history-filter-menu {
+	position: fixed;
+	z-index: 10050;
+	padding: 4px;
+	border-radius: 8px;
+	border: 1px solid var(--vscode-widget-border, rgba(0, 0, 0, 0.12));
+	background-color: #ffffff;
+	background-color: rgb(from var(--vscode-editor-background, #ffffff) r g b / 1);
+	background-image: none !important;
+	backdrop-filter: none !important;
+	-webkit-backdrop-filter: none !important;
+	opacity: 1 !important;
+	box-shadow:
+		0 0 0 1px rgba(0, 0, 0, 0.04),
+		0 10px 28px rgba(0, 0, 0, 0.18);
+	color: var(--vscode-foreground);
+	font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, "Segoe WPC", "Segoe UI", system-ui, "Ubuntu", "Droid Sans", sans-serif);
+	font-size: 13px;
+	font-weight: 400;
+	line-height: 1.3;
+	-webkit-font-smoothing: antialiased;
+	isolation: isolate;
+	animation: void-agent-workspace-picker-in 0.12s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.void-agent-history-filter-menu button,
+.void-agent-history-filter-menu span {
+	font-family: inherit !important;
+}
+.monaco-workbench.vs-dark .void-agent-history-filter-menu,
+.monaco-workbench.hc-black .void-agent-history-filter-menu,
+.vs-dark .void-agent-history-filter-menu,
+.hc-black .void-agent-history-filter-menu {
+	background-color: #252526;
+	background-color: rgb(from var(--vscode-editor-background, #252526) r g b / 1);
+	border-color: rgba(255, 255, 255, 0.12);
+}
+.void-agent-history-filter-menu.void-agent-history-filter-menu--anchored {
+	right: auto;
+}
+@media (prefers-reduced-motion: reduce) {
+	.void-agent-history-filter-menu { animation: none; }
+}
+
+.void-agent-history-filter-item {
+	display: flex !important;
+	flex-direction: row !important;
+	align-items: center;
+	justify-content: space-between;
+	gap: 10px;
+	width: 100%;
+	padding: 7px 8px;
+	border: none;
+	border-radius: 5px;
+	background: transparent;
+	color: var(--vscode-foreground);
+	font-family: inherit !important;
+	font-size: 13px;
+	font-weight: 400;
+	cursor: pointer;
+	text-align: left;
+}
+.void-agent-history-filter-item:hover,
+.void-agent-history-filter-item.void-active {
+	background: var(--vscode-list-hoverBackground, color-mix(in srgb, var(--vscode-foreground) 8%, transparent));
+}
+.void-agent-history-filter-item:focus-visible {
+	outline: none;
+	box-shadow: inset 0 0 0 1px var(--vscode-focusBorder, #0078d4);
+}
+.void-agent-history-filter-item-text {
+	display: flex;
+	flex-direction: column;
+	flex: 1 1 auto;
+	min-width: 0;
+	gap: 1px;
+}
+.void-agent-history-filter-item-label {
+	font-weight: 500;
+	white-space: nowrap;
+}
+.void-agent-history-filter-item-hint {
+	font-size: 10.5px;
+	color: var(--vscode-descriptionForeground, var(--vscode-foreground));
+	opacity: 0.65;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.void-agent-history-filter-item-check {
+	flex: 0 0 auto;
+	color: var(--vscode-focusBorder, #0078d4);
+}
+.void-agent-history-filter-item.void-selected .void-agent-history-filter-item-label {
+	font-weight: 600;
+}
+
+.void-agent-history-organize-row {
+	display: flex !important;
+	flex-direction: row !important;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	width: 100%;
+	padding: 7px 8px;
+	border: none;
+	border-radius: 5px;
+	background: transparent;
+	color: var(--vscode-foreground);
+	font-family: inherit !important;
+	font-size: 13px;
+	cursor: pointer;
+	text-align: left;
+}
+.void-agent-history-organize-row:hover,
+.void-agent-history-organize-row.void-active {
+	background: var(--vscode-list-hoverBackground, color-mix(in srgb, var(--vscode-foreground) 8%, transparent));
+}
+.void-agent-history-organize-row:focus-visible {
+	outline: none;
+	box-shadow: inset 0 0 0 1px var(--vscode-focusBorder, #0078d4);
+}
+.void-agent-history-organize-row:disabled {
+	opacity: 0.45;
+	cursor: default;
+}
+.void-agent-history-organize-row:disabled:hover {
+	background: transparent;
+}
+.void-agent-history-organize-row-label {
+	flex: 1 1 auto;
+	min-width: 0;
+	font-weight: 400;
+	white-space: nowrap;
+}
+.void-agent-history-organize-row-value {
+	display: inline-flex;
+	align-items: center;
+	gap: 2px;
+	flex: 0 0 auto;
+	max-width: 55%;
+	color: var(--vscode-descriptionForeground, var(--vscode-foreground));
+	opacity: 0.85;
+	font-size: 12.5px;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.void-agent-history-organize-divider {
+	height: 1px;
+	margin: 4px 6px;
+	background: var(--vscode-menu-separatorBackground, color-mix(in srgb, var(--vscode-foreground) 12%, transparent));
+}
+.void-agent-history-filter-flyout {
+	right: auto;
+}
+.void-agent-history-flyout-item {
+	display: flex !important;
+	flex-direction: row !important;
+	align-items: center;
+	gap: 8px;
+	width: 100%;
+	padding: 7px 8px;
+	border: none;
+	border-radius: 5px;
+	background: transparent;
+	color: var(--vscode-foreground);
+	font-family: inherit !important;
+	font-size: 13px;
+	cursor: pointer;
+	text-align: left;
+}
+.void-agent-history-flyout-item:hover {
+	background: var(--vscode-list-hoverBackground, color-mix(in srgb, var(--vscode-foreground) 8%, transparent));
+}
+.void-agent-history-flyout-item:focus-visible {
+	outline: none;
+	box-shadow: inset 0 0 0 1px var(--vscode-focusBorder, #0078d4);
+}
+.void-agent-history-flyout-item-icon {
+	display: inline-flex;
+	flex: 0 0 auto;
+	opacity: 0.75;
+	color: var(--vscode-foreground);
+}
+.void-agent-history-flyout-item-label {
+	flex: 1 1 auto;
+	min-width: 0;
+	font-weight: 400;
+	white-space: nowrap;
+}
+.void-agent-history-flyout-item.void-selected .void-agent-history-flyout-item-label {
+	font-weight: 600;
+}
+.void-agent-history-flyout-item--stacked {
+	align-items: flex-start;
+}
+.void-agent-history-flyout-item--stacked .void-agent-history-flyout-item-icon {
+	margin-top: 2px;
+}
+.void-agent-history-flyout-item--stacked .void-agent-history-filter-item-check {
+	margin-top: 2px;
+}
+
+.void-agent-history-bucket-toggle {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	border: none;
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	cursor: pointer;
+	text-align: left;
+	border-radius: 4px;
+}
+.void-agent-history-bucket-toggle:hover {
+	opacity: 1;
+	color: var(--vscode-foreground);
+}
+.void-agent-history-bucket-toggle:focus-visible {
+	outline: none;
+	box-shadow: inset 0 0 0 1px var(--vscode-focusBorder, #0078d4);
+}
+.void-agent-history-bucket-chevron {
+	flex: 0 0 auto;
+	opacity: 0.7;
+	transition: transform 0.12s ease;
+}
+.void-agent-history-bucket-chevron.void-collapsed {
+	transform: rotate(-90deg);
+}
+@media (prefers-reduced-motion: reduce) {
+	.void-agent-history-bucket-chevron { transition: none; }
+}
+.void-agent-history-bucket-count {
+	margin-left: 2px;
+	opacity: 0.65;
+	font-variant-numeric: tabular-nums;
+}
+
+.void-agent-history-unassigned-banner {
+	margin: 6px 10px;
+	padding: 8px 10px;
+	border-radius: 6px;
+	font-size: 11px;
+	line-height: 1.35;
+	color: var(--vscode-foreground);
+	opacity: 0.9;
+	background: var(--vscode-inputValidation-infoBackground, rgba(0, 120, 212, 0.1));
+	border: 1px solid var(--vscode-inputValidation-infoBorder, rgba(0, 120, 212, 0.25));
+}
+.void-agent-history-workspace-badge {
+	flex: 0 0 auto;
+	max-width: 72px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-size: 10px;
+	opacity: 0.55;
+	margin-left: 4px;
 }

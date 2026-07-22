@@ -10,12 +10,32 @@ import { Sidebar } from '../sidebar-tsx/Sidebar.js';
 import { VoidTooltip } from '../orbit-tooltip/orbitTooltip.js';
 import { AgentWorkspace } from './AgentWorkspace.js';
 import ErrorBoundary from '../sidebar-tsx/ErrorBoundary.js';
+import { useAccessor, useAgentWorkspaceState, useChatThreadsState } from '../util/services.js';
 
 export type AgentWindowPortalTargets = {
 	sidebarEl: HTMLElement;
 	mainEl: HTMLElement;
 	tooltipEl: HTMLElement;
 	workspaceEl: HTMLElement;
+};
+
+const AgentWindowChat = () => {
+	const accessor = useAccessor();
+	const workspaceState = useAgentWorkspaceState();
+	const threadsState = useChatThreadsState();
+	const chatThreadService = accessor.get('IChatThreadService');
+	const selected = threadsState.agentWindowThreadId
+		? threadsState.allThreads[threadsState.agentWindowThreadId]
+		: undefined;
+	const isReady = selected?.agentWorkspaceId === workspaceState.activeWorkspaceId;
+
+	React.useEffect(() => {
+		chatThreadService.ensureAgentWindowThread(workspaceState.activeWorkspaceId);
+	}, [chatThreadService, workspaceState.activeWorkspaceId]);
+
+	// Never mount an enabled composer against the IDE selection while the scoped
+	// Agents selection is being established or changed.
+	return isReady ? <Sidebar className="" isAgentWindow /> : null;
 };
 
 /**
@@ -32,8 +52,8 @@ export const AgentWindowPortal = ({ sidebarEl, mainEl, tooltipEl, workspaceEl }:
 	// blank window.
 	return (
 		<>
-			{createPortal(<ErrorBoundary><ChatHistory /></ErrorBoundary>, sidebarEl)}
-			{createPortal(<ErrorBoundary><Sidebar className="" /></ErrorBoundary>, mainEl)}
+			{createPortal(<ErrorBoundary><ChatHistory isAgentWindow /></ErrorBoundary>, sidebarEl)}
+			{createPortal(<ErrorBoundary><AgentWindowChat /></ErrorBoundary>, mainEl)}
 			{createPortal(<ErrorBoundary><AgentWorkspace /></ErrorBoundary>, workspaceEl)}
 			{createPortal(<ErrorBoundary><VoidTooltip /></ErrorBoundary>, tooltipEl)}
 		</>

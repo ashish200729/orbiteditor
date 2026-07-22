@@ -15,6 +15,7 @@ import { IDirectoryStrService } from '../common/directoryStrService.js';
 import { ITerminalToolService } from './terminalToolService.js';
 import { IVoidModelService } from '../common/orbitModelService.js';
 import { URI } from '../../../../base/common/uri.js';
+import { relativePath } from '../../../../base/common/resources.js';
 import { EndOfLinePreference } from '../../../../editor/common/model.js';
 import { ToolName } from '../common/toolsServiceTypes.js';
 import { IMCPService } from '../common/mcpService.js';
@@ -928,7 +929,7 @@ const prepareMessages = (params: {
 export interface IConvertToLLMMessageService {
 	readonly _serviceBrand: undefined;
 	prepareLLMSimpleMessages: (opts: { simpleMessages: SimpleLLMMessage[], systemMessage: string, modelSelection: ModelSelection | null, featureName: FeatureName }) => { messages: LLMChatMessage[], separateSystemMessage: string | undefined }
-	prepareLLMChatMessages: (opts: { chatMessages: ChatMessage[], chatMode: ChatMode, modelSelection: ModelSelection | null, toolPolicy?: ToolPolicy }) => Promise<{ messages: LLMChatMessage[], separateSystemMessage: string | undefined }>
+	prepareLLMChatMessages: (opts: { chatMessages: ChatMessage[], chatMode: ChatMode, modelSelection: ModelSelection | null, toolPolicy?: ToolPolicy, workspaceFolderPaths?: string[], threadId?: string, agentWorkspaceId?: string | null }) => Promise<{ messages: LLMChatMessage[], separateSystemMessage: string | undefined }>
 	prepareFIMMessage(opts: { messages: LLMFIMMessage, metadata?: { fileName?: string, languageId?: string, enclosingContext?: string, importsContext?: string } }): { prefix: string, suffix: string, stopTokens: string[] }
 }
 
@@ -952,12 +953,14 @@ class ConvertToLLMMessageService extends Disposable implements IConvertToLLMMess
 	}
 
 	// Read .orbitrules files from workspace folders
-	private _getOrbitRulesFileContents(): string {
+	private _getOrbitRulesFileContents(workspaceFolderPaths?: string[]): string {
 		try {
-			const workspaceFolders = this.workspaceContextService.getWorkspace().folders;
+			const workspaceFolders = workspaceFolderPaths === undefined
+				? this.workspaceContextService.getWorkspace().folders.map(folder => folder.uri)
+				: workspaceFolderPaths.map(path => URI.file(path));
 			let orbitRules = '';
 			for (const folder of workspaceFolders) {
-				const uri = URI.joinPath(folder.uri, '.orbitrules')
+				const uri = URI.joinPath(folder, '.orbitrules')
 				const { model } = this.voidModelService.getModel(uri)
 				if (!model) continue
 				orbitRules += model.getValue(EndOfLinePreference.LF) + '\n\n';
@@ -970,9 +973,9 @@ class ConvertToLLMMessageService extends Disposable implements IConvertToLLMMess
 	}
 
 	// Get combined AI instructions from settings and .orbitrules files
-	private _getCombinedAIInstructions(): string {
+	private _getCombinedAIInstructions(workspaceFolderPaths?: string[]): string {
 		const globalAIInstructions = this.voidSettingsService.state.globalSettings.aiInstructions;
-		const orbitRulesFileContent = this._getOrbitRulesFileContents();
+		const orbitRulesFileContent = this._getOrbitRulesFileContents(workspaceFolderPaths);
 
 		const ans: string[] = []
 		if (globalAIInstructions) ans.push(globalAIInstructions)
@@ -982,30 +985,39 @@ class ConvertToLLMMessageService extends Disposable implements IConvertToLLMMess
 
 
 	// system message
-	private _generateChatMessagesSystemMessage = async (chatMode: ChatMode, specialToolFormat: 'openai-style' | 'anthropic-style' | 'gemini-style' | undefined, modelInfo?: { providerName: string, modelName: string }, toolPolicy?: ToolPolicy) => {
-		const workspaceFolders = this.workspaceContextService.getWorkspace().folders.map(f => f.uri.fsPath)
+	private _generateChatMessagesSystemMessage = async (chatMode: ChatMode, specialToolFormat: 'openai-style' | 'anthropic-style' | 'gemini-style' | undefined, modelInfo?: { providerName: string, modelName: string }, toolPolicy?: ToolPolicy, workspaceFolderPaths?: string[], threadId?: string, agentWorkspaceId?: string | null) => {
+		const workspaceFolders = workspaceFolderPaths !== undefined
+			? workspaceFolderPaths
+			: this.workspaceContextService.getWorkspace().folders.map(f => f.uri.fsPath)
 
-		const openedURIs = this.modelService.getModels().filter(m => m.isAttachedToEditor()).map(m => m.uri.fsPath) || [];
-		const activeURI = this.editorService.activeEditor?.resource?.fsPath;
+		const isAgentThread = agentWorkspaceId !== undefined;
+		const agentRoots = isAgentThread ? workspaceFolders.map(path => URI.file(path)) : [];
+		const isInAgentRoots = (uri: URI): boolean => agentRoots.some(root => relativePath(root, uri) !== undefined);
+		const openedURIs = isAgentThread
+			? this.modelService.getModels().filter(m => m.isAttachedToEditor() && isInAgentRoots(m.uri)).map(m => m.uri.fsPath)
+			: this.modelService.getModels().filter(m => m.isAttachedToEditor()).map(m => m.uri.fsPath);
+		const editorResource = this.editorService.activeEditor?.resource;
+		const activeURI = editorResource && (!isAgentThread || isInAgentRoots(editorResource)) ? editorResource.fsPath : undefined;
 
+		// Pass through even when empty so No Repo does not leak IDE directory trees.
+		const folderUris = workspaceFolderPaths !== undefined
+			? workspaceFolderPaths.map(p => URI.file(p))
+			: undefined
 		const directoryStr = await this.directoryStrService.getAllDirectoriesStr({
 			cutOffMessage: chatMode === 'agent' || chatMode === 'plan' ?
 				`...Directories string cut off, use tools to read more...`
-				: `...Directories string cut off, ask user for more if necessary...`
+				: `...Directories string cut off, ask user for more if necessary...`,
+			folderUris,
 		})
 
 		const includeXMLToolDefinitions = !specialToolFormat
 
-		const mcpTools = this.mcpService.getMCPTools()
+		const mcpTools = this.mcpService.getMCPTools(agentWorkspaceId)
 
-		const shellIds = this.terminalToolService.listShellIds()
+		const shellIds = isAgentThread
+			? (threadId ? this.terminalToolService.listShellIdsForThread(threadId) : [])
+			: this.terminalToolService.listShellIds()
 		const systemMessage = chat_systemMessage({ workspaceFolders, openedURIs, directoryStr, activeURI, shellIds, chatMode, mcpTools, includeXMLToolDefinitions, modelInfo, toolPolicy })
-
-		// Debug logging (can be disabled in production)
-		// console.log('=== SYSTEM MESSAGE (first 3000 chars) ===\n', systemMessage.substring(0, 3000))
-		// console.log('=== SYSTEM MESSAGE (last 1000 chars) ===\n', systemMessage.substring(systemMessage.length - 1000))
-		// console.log('=== includeXMLToolDefinitions ===', includeXMLToolDefinitions)
-		// console.log('=== chatMode ===', chatMode)
 
 		return systemMessage
 	}
@@ -1086,7 +1098,7 @@ class ConvertToLLMMessageService extends Disposable implements IConvertToLLMMess
 		})
 		return { messages, separateSystemMessage };
 	}
-	prepareLLMChatMessages: IConvertToLLMMessageService['prepareLLMChatMessages'] = async ({ chatMessages, chatMode, modelSelection, toolPolicy }) => {
+	prepareLLMChatMessages: IConvertToLLMMessageService['prepareLLMChatMessages'] = async ({ chatMessages, chatMode, modelSelection, toolPolicy, workspaceFolderPaths, threadId, agentWorkspaceId }) => {
 		if (modelSelection === null) return { messages: [], separateSystemMessage: undefined }
 
 		const { overridesOfModel } = this.voidSettingsService.state
@@ -1105,13 +1117,13 @@ class ConvertToLLMMessageService extends Disposable implements IConvertToLLMMess
 			: rawSpecialToolFormat
 
 		const { disableSystemMessage } = this.voidSettingsService.state.globalSettings;
-		const fullSystemMessage = await this._generateChatMessagesSystemMessage(chatMode, specialToolFormat, { providerName, modelName }, toolPolicy)
+		const fullSystemMessage = await this._generateChatMessagesSystemMessage(chatMode, specialToolFormat, { providerName, modelName }, toolPolicy, workspaceFolderPaths, threadId, agentWorkspaceId)
 		const systemMessage = disableSystemMessage ? '' : fullSystemMessage;
 
 		const modelSelectionOptions = this.voidSettingsService.state.optionsOfModelSelection['Chat'][modelSelection.providerName]?.[modelSelection.modelName]
 
 		// Get combined AI instructions
-		const aiInstructions = this._getCombinedAIInstructions();
+		const aiInstructions = this._getCombinedAIInstructions(workspaceFolderPaths);
 		const isReasoningEnabled = getIsReasoningEnabledState('Chat', providerName, modelName, modelSelectionOptions, overridesOfModel)
 		const reservedOutputTokenSpace = getReservedOutputTokenSpace(providerName, modelName, { isReasoningEnabled, overridesOfModel })
 		// Per-turn harness context (mode reminder + timestamp + <user_query> wrap) on the latest

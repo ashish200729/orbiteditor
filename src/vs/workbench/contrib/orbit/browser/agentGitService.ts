@@ -10,7 +10,7 @@ import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
-import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
+import { IAgentProjectWorkspaceService } from './agentProjectWorkspaceService.js';
 import { ISCMService, ISCMRepository } from '../../scm/common/scm.js';
 import { IVoidSettingsService } from '../common/orbitSettingsService.js';
 import { IConvertToLLMMessageService } from './convertToLLMMessageService.js';
@@ -43,8 +43,11 @@ export interface IAgentGitService {
 	/** Debounced signal that the repo state may have changed. */
 	readonly onDidChange: Event<void>;
 
-	/** Resolve the git root for the current workspace, or null when not a repo. */
+	/** Resolve the git root for the current agent workspace, or null when not a repo. */
 	resolveRepoRoot(): Promise<string | null>;
+
+	/** Resolve all git roots under active agent folders (multi-root workspaces). */
+	resolveRepoRoots(): Promise<string[]>;
 
 	getStatus(root: string): Promise<GitRepoStatus>;
 	getDiff(root: string, options: GitDiffOptions): Promise<string>;
@@ -88,7 +91,7 @@ class AgentGitService extends Disposable implements IAgentGitService {
 
 	constructor(
 		@IMainProcessService mainProcessService: IMainProcessService,
-		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
+		@IAgentProjectWorkspaceService private readonly agentProjectWorkspaceService: IAgentProjectWorkspaceService,
 		@ISCMService private readonly scmService: ISCMService,
 		@IVoidSettingsService private readonly voidSettingsService: IVoidSettingsService,
 		@IConvertToLLMMessageService private readonly convertToLLMMessageService: IConvertToLLMMessageService,
@@ -98,6 +101,11 @@ class AgentGitService extends Disposable implements IAgentGitService {
 		this.channel = ProxyChannel.toService<IVoidSCMService>(mainProcessService.getChannel('void-channel-scm'));
 
 		this.debouncer = this._register(new RunOnceScheduler(() => this._onDidChange.fire(), 250));
+
+		this._register(this.agentProjectWorkspaceService.onDidChangeState(() => {
+			this.cachedRoot = null;
+			this.scheduleChange();
+		}));
 
 		// Track existing + future SCM repositories for change signals.
 		for (const repo of this.scmService.repositories) {
@@ -142,10 +150,12 @@ class AgentGitService extends Disposable implements IAgentGitService {
 	}
 
 	async resolveRepoRoot(): Promise<string | null> {
-		// Multi-root: the first folder is not necessarily the git repo — walk
-		// the folders in order and use the first that resolves to a repo root.
-		const folders = this.workspaceContextService.getWorkspace().folders.filter(f => f.uri.scheme === 'file');
+		// Agent-window only — never fall back to the IDE workspace (No Repo = no repo).
+		const folders = this.agentProjectWorkspaceService.getActiveFolders()
+			.filter(u => u.scheme === 'file')
+			.map(uri => ({ uri }));
 		if (folders.length === 0) {
+			this.cachedRoot = null;
 			return null;
 		}
 		for (const folder of folders) {
@@ -164,6 +174,27 @@ class AgentGitService extends Disposable implements IAgentGitService {
 		}
 		this.cachedRoot = { path: folders[0].uri.fsPath, root: null };
 		return null;
+	}
+
+	/** All git roots under the active agent folders (multi-root). */
+	async resolveRepoRoots(): Promise<string[]> {
+		const folders = this.agentProjectWorkspaceService.getActiveFolders().filter(u => u.scheme === 'file');
+		// Parallelize the per-folder getRepoRoot IPC calls — a sequential await
+		// loop costs N round-trips end-to-end, which is noticeable for multi-root
+		// workspaces (each getRepoRoot spawns a git process in the main process).
+		// Order is preserved by mapping back to the folder order before dedup. L1.
+		const rootsPerFolder = await Promise.all(
+			folders.map(uri => this.channel.getRepoRoot(uri.fsPath).catch((): string | null => null))
+		);
+		const roots: string[] = [];
+		const seen = new Set<string>();
+		for (const root of rootsPerFolder) {
+			if (root !== null && !seen.has(root)) {
+				seen.add(root);
+				roots.push(root);
+			}
+		}
+		return roots;
 	}
 
 	getStatus(root: string): Promise<GitRepoStatus> { return this.channel.getStatus(root); }

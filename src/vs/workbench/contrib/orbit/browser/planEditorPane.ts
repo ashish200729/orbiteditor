@@ -384,6 +384,11 @@ export class PlanEditorPane extends EditorPane {
 		try {
 			// Lazy import to avoid a circular dependency at module load.
 			const { savePlanDraftToWorkspace } = await import('./planDraftActions.js');
+			const folders = this.chatThreadService.getFolderUrisForThread(threadId);
+			const thread = this.chatThreadService.state.allThreads[threadId];
+			const workspaceRoot = thread && thread.agentWorkspaceId !== undefined
+				? (folders[0] ?? null)
+				: folders[0];
 			const result = await savePlanDraftToWorkspace({
 				threadId,
 				draft,
@@ -394,6 +399,7 @@ export class PlanEditorPane extends EditorPane {
 				settingsService: this.settingsService,
 				editorService: this.editorService,
 				openEditor: false, // current editor already shows the draft
+				workspaceRoot,
 			});
 			this.notificationService.info(`Saved plan to ${result.planName}`);
 		} catch (error) {

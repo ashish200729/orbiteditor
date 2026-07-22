@@ -57,13 +57,23 @@ export async function savePlanDraftToWorkspace(deps: {
 	settingsService: IVoidSettingsService;
 	editorService: IEditorService;
 	openEditor?: boolean;
+	/**
+	 * Override IDE workspace root (agent-window multi-project).
+	 * - `URI` → save under this root
+	 * - `null` → No Repo / empty agent workspace — fail closed (do not use IDE)
+	 * - `undefined` → fall back to IDE folders[0]
+	 */
+	workspaceRoot?: URI | null;
 }): Promise<SavePlanDraftResult> {
-	const folders = deps.workspaceContextService.getWorkspace().folders;
-	if (folders.length === 0) {
-		throw new Error('No workspace folder open. Please open a folder to save the plan.');
+	if (deps.workspaceRoot === null) {
+		throw new Error('No workspace folder open. Select a workspace in the Agents window to save the plan.');
+	}
+	const workspaceRoot = deps.workspaceRoot
+		?? deps.workspaceContextService.getWorkspace().folders[0]?.uri;
+	if (!workspaceRoot) {
+		throw new Error('No workspace folder open. Select a workspace in the Agents window, or open a folder in the IDE to save the plan.');
 	}
 
-	const workspaceRoot = folders[0].uri;
 	const model = deps.settingsService.state.modelSelectionOfFeature.Chat?.modelName;
 	const { content, planUri: proposedPlanUri, planName } = preparePlanDraftSave(deps.draft, workspaceRoot, model);
 

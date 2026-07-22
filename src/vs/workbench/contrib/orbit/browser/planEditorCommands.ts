@@ -57,6 +57,12 @@ async function saveDraftForThread(accessor: ServicesAccessor, threadId: string, 
 		throw new Error('No active plan draft for this thread.');
 	}
 
+	const folders = chatThreadService.getFolderUrisForThread(threadId);
+	const thread = chatThreadService.state.allThreads[threadId];
+	const workspaceRoot = thread && thread.agentWorkspaceId !== undefined
+		? (folders[0] ?? null)
+		: folders[0];
+
 	return savePlanDraftToWorkspace({
 		threadId,
 		draft,
@@ -67,6 +73,7 @@ async function saveDraftForThread(accessor: ServicesAccessor, threadId: string, 
 		settingsService: accessor.get(IVoidSettingsService),
 		editorService: accessor.get(IEditorService),
 		openEditor,
+		workspaceRoot,
 	});
 }
 

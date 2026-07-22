@@ -53,7 +53,9 @@ import { IChatThreadService, IsRunningType, QueuedUserMessage, ThreadsState, Thr
 import { ITerminalToolService } from '../../../terminalToolService.js'
 import { IAgentWindowTerminalStore } from '../../../agentWindowTerminalStore.js'
 import { IAgentWindowService } from '../../../agentWindowService.js'
+import { IAgentProjectWorkspaceService } from '../../../agentProjectWorkspaceService.js'
 import { IAgentGitService } from '../../../agentGitService.js'
+import type { AgentWorkspaceState } from '../../../../common/agentProjectWorkspaceTypes.js'
 import { ISubAgentService } from '../../../subAgentService.js'
 import { ISkillImportService } from '../../../skillImportService.js'
 import { ISubAgentImportService } from '../../../subAgentImportService.js'
@@ -93,6 +95,10 @@ let chatThreadsStateServiceRef: IChatThreadService | undefined
 
 let runningThreadIds: { [threadId: string]: IsRunningType | undefined } = {}
 const runningThreadIdsListeners: Set<() => void> = new Set()
+
+let agentWorkspaceState: AgentWorkspaceState | undefined
+const agentWorkspaceStateListeners: Set<(s: AgentWorkspaceState) => void> = new Set()
+let agentWorkspaceServiceRef: IAgentProjectWorkspaceService | undefined
 
 const _recomputeRunningThreadIds = () => {
 	const next: { [threadId: string]: IsRunningType | undefined } = {}
@@ -189,6 +195,16 @@ export const _registerServices = (accessor: ServicesAccessor) => {
 
 	const { settingsStateService, chatThreadsStateService, refreshModelService, themeService, workbenchThemeService, editCodeService, voidCommandBarService, modelService, mcpService, openAiCodexAuthService, xAiGrokAuthService, gitHubAuthService, orbitProviderAuthService, clinePassAuthService } = stateServices
 	chatThreadsStateServiceRef = chatThreadsStateService
+
+	const agentProjectWorkspaceService = accessor.get(IAgentProjectWorkspaceService)
+	agentWorkspaceServiceRef = agentProjectWorkspaceService
+	agentWorkspaceState = agentProjectWorkspaceService.getState()
+	disposables.push(
+		agentProjectWorkspaceService.onDidChangeState(() => {
+			agentWorkspaceState = agentProjectWorkspaceService.getState()
+			agentWorkspaceStateListeners.forEach(l => l(agentWorkspaceState!))
+		})
+	)
 
 
 
@@ -429,6 +445,7 @@ const getReactAccessor = (accessor: ServicesAccessor) => {
 		ITerminalConfigurationService: accessor.get(ITerminalConfigurationService),
 		IAgentWindowTerminalStore: accessor.get(IAgentWindowTerminalStore),
 		IAgentWindowService: accessor.get(IAgentWindowService),
+		IAgentProjectWorkspaceService: accessor.get(IAgentProjectWorkspaceService),
 		IAgentGitService: accessor.get(IAgentGitService),
 		IExtensionManagementService: accessor.get(IExtensionManagementService),
 		IExtensionTransferService: accessor.get(IExtensionTransferService),
@@ -481,17 +498,23 @@ export const useChatThreadsState = () => {
 		return () => { chatThreadsStateListeners.delete(ss) }
 	}, [ss])
 	return s
-	// allow user to set state natively in react
-	// const ss: React.Dispatch<React.SetStateAction<ThreadsState>> = (action)=>{
-	// 	_ss(action)
-	// 	if (typeof action === 'function') {
-	// 		const newState = action(chatThreadsState)
-	// 		chatThreadsState = newState
-	// 	} else {
-	// 		chatThreadsState = action
-	// 	}
-	// }
-	// return [s, ss] as const
+}
+
+export const useAgentWorkspaceState = (): AgentWorkspaceState => {
+	const [s, ss] = useState(() => agentWorkspaceState ?? agentWorkspaceServiceRef?.getState() ?? {
+		activeWorkspaceId: null,
+		workspaces: {},
+		recents: [] as string[],
+	})
+	useEffect(() => {
+		const current = agentWorkspaceServiceRef?.getState() ?? agentWorkspaceState
+		if (current) {
+			ss(current)
+		}
+		agentWorkspaceStateListeners.add(ss)
+		return () => { agentWorkspaceStateListeners.delete(ss) }
+	}, [ss])
+	return s
 }
 
 

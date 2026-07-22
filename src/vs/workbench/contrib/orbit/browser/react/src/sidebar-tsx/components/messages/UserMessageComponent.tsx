@@ -55,17 +55,17 @@ export const UserMessageComponent = React.memo(({ chatMessage, messageIdx, isChe
 	let setStagingSelections = (_: StagingSelectionItem[]) => { }
 
 	if (messageIdx !== undefined) {
-		const _state = chatThreadsService.getCurrentMessageState(messageIdx)
+		const _state = chatThreadsService.getThreadMessageState(threadId, messageIdx)
 		isBeingEdited = _state.isBeingEdited
 		editingWindowId = _state.editingWindowId
 		stagingSelections = _state.stagingSelections
-		setIsBeingEdited = (v) => chatThreadsService.setCurrentMessageState(messageIdx, {
+		setIsBeingEdited = (v) => chatThreadsService.setThreadMessageState(threadId, messageIdx, {
 			isBeingEdited: v,
 			editingWindowId: v
 				? (connectedDocument.defaultView as (Window & { vscodeWindowId?: number }) | null)?.vscodeWindowId
 				: undefined,
 		})
-		setStagingSelections = (s) => chatThreadsService.setCurrentMessageState(messageIdx, { stagingSelections: s })
+		setStagingSelections = (s) => chatThreadsService.setThreadMessageState(threadId, messageIdx, { stagingSelections: s })
 	}
 
 
@@ -107,7 +107,7 @@ export const UserMessageComponent = React.memo(({ chatMessage, messageIdx, isChe
 			// Re-stage slash tokens that were injected when this message was originally sent.
 			const present = new Set(parseSlashTokenNames(chatMessage.displayContent || ''))
 			const injected = chatMessage.injectedSlashTokens ?? []
-			chatThreadsService.setCurrentThreadState({
+			chatThreadsService.setThreadState(threadId, {
 				stagedSlashTokens: injected.filter(n => present.has(n)),
 			})
 
@@ -147,20 +147,20 @@ export const UserMessageComponent = React.memo(({ chatMessage, messageIdx, isChe
 
 	const onOpenEdit = () => {
 		stagedSlashTokensBeforeEditRef.current = [
-			...(chatThreadsService.getCurrentThreadState().stagedSlashTokens ?? []),
+			...(chatThreadsService.getThread(threadId)?.state.stagedSlashTokens ?? []),
 		]
 		setIsBeingEdited(true)
-		chatThreadsService.setCurrentlyFocusedMessageIdx(messageIdx)
+		chatThreadsService.setThreadFocusedMessageIdx(threadId, messageIdx)
 		_justEnabledEdit.current = true
 	}
 	const onCloseEdit = () => {
 		setIsFocused(false)
 		setIsHovered(false)
 		setIsBeingEdited(false)
-		chatThreadsService.setCurrentlyFocusedMessageIdx(undefined)
+		chatThreadsService.setThreadFocusedMessageIdx(threadId, undefined)
 		_mustInitialize.current = true
 		if (stagedSlashTokensBeforeEditRef.current !== undefined) {
-			chatThreadsService.setCurrentThreadState({
+			chatThreadsService.setThreadState(threadId, {
 				stagedSlashTokens: [...stagedSlashTokensBeforeEditRef.current],
 			})
 			stagedSlashTokensBeforeEditRef.current = undefined
@@ -283,13 +283,11 @@ export const UserMessageComponent = React.memo(({ chatMessage, messageIdx, isChe
 			if (messageIdx === undefined) return;
 
 			// cancel any streams on this thread
-			const threadId = chatThreadsService.state.currentThreadId
-
 			await chatThreadsService.abortRunning(threadId)
 
 			// update state
 			setIsBeingEdited(false)
-			chatThreadsService.setCurrentlyFocusedMessageIdx(undefined)
+			chatThreadsService.setThreadFocusedMessageIdx(threadId, undefined)
 			stagedSlashTokensBeforeEditRef.current = undefined // submit consumes tokens; don't restore composer snapshot
 
 			// stream the edit
@@ -314,7 +312,6 @@ export const UserMessageComponent = React.memo(({ chatMessage, messageIdx, isChe
 		}
 
 		const onAbort = async () => {
-			const threadId = chatThreadsService.state.currentThreadId
 			await chatThreadsService.abortRunning(threadId)
 		}
 
@@ -353,7 +350,7 @@ export const UserMessageComponent = React.memo(({ chatMessage, messageIdx, isChe
 				onChangeText={onEditChangeText}
 				onFocus={() => {
 					setIsFocused(true)
-					chatThreadsService.setCurrentlyFocusedMessageIdx(messageIdx);
+					chatThreadsService.setThreadFocusedMessageIdx(threadId, messageIdx);
 				}}
 				onBlur={() => {
 					setIsFocused(false)

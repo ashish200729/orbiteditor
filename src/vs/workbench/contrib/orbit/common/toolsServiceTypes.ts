@@ -167,6 +167,14 @@ export interface IToolsService {
 	stringOfResult: BuiltinToolResultToString;
 	readonly onShellNotify: Event<{ shellId: string; matchedText: string; reason: string }>;
 	currentShellThreadId: string | null;
+	/**
+	 * The id of the thread whose tool call is currently executing. Used by
+	 * `getEffectiveWorkspaceFolders()` so Glob/Grep/CodebaseSearch/Shell cwd
+	 * resolve folders for the *running* thread instead of whichever thread the
+	 * user happens to be viewing in the UI. Set by chatThreadService before
+	 * each builtin tool call and reset to null in the finally block. #4.
+	 */
+	currentToolThreadId: string | null;
 }
 
 export const IToolsService = createDecorator<IToolsService>('ToolsService');

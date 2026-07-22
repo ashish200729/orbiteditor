@@ -3,18 +3,29 @@
  *  Licensed under the Apache License, Version 2.0. See LICENSE.txt for more information.
  *--------------------------------------------------------------------------------------*/
 
-import { useState, useMemo, memo, useEffect, useRef } from 'react';
-import { useIsDark, useAccessor, useChatThreadsState, useRunningThreadIds, useIsChatHistoryVisible } from '../util/services.js';
+import { useState, useMemo, memo, useEffect, useRef, useCallback } from 'react';
+import { useIsDark, useAccessor, useChatThreadsState, useRunningThreadIds, useIsChatHistoryVisible, useAgentWorkspaceState } from '../util/services.js';
 import '../styles.css';
 import ErrorBoundary from '../sidebar-tsx/ErrorBoundary.js';
 import { IconShell1 } from '../markdown/ApplyBlockHoverButtons.js';
 import { IconLoadingSpinner } from '../sidebar-tsx/components/icons/IconLoadingSpinner.js';
-import { getConnectedWindow } from '../util/connectedWindow.js';
 import { OrbitUserProfileFooter } from '../shared/OrbitUserProfileFooter.js';
-import { Check, CheckCircle2, CircleDashed, Copy, MessageCircleQuestion, MessageSquarePlus, Trash2, X, MoreHorizontal, LayoutGrid, Search } from 'lucide-react';
+import { Check, CheckCircle2, CircleDashed, Copy, FolderPlus, MessageCircleQuestion, MessageSquarePlus, Trash2, X, MoreHorizontal, LayoutGrid, Search, ListFilter, ChevronDown } from 'lucide-react';
 import { IsRunningType, ThreadType } from '../../../chatThreadService.js';
+import { filterThreadsByWorkspaceId } from '../../../../common/agentWorkspaceHelpers.js';
+import {
+	AgentHistoryListPrefs,
+	compareThreadsByOrdering,
+	DEFAULT_AGENT_HISTORY_LIST_PREFS,
+	groupThreads,
+	parseAgentHistoryListPrefs,
+} from '../../../../common/agentHistoryListHelpers.js';
+import { AGENT_HISTORY_LIST_PREFS_STORAGE_KEY } from '../../../../common/storageKeys.js';
+import { AgentChatHistoryFilterMenu } from '../agent-window-tsx/AgentChatHistoryFilterMenu.js';
+import { AgentWorkspacePicker } from '../agent-window-tsx/AgentWorkspacePicker.js';
+import { StorageScope, StorageTarget } from '../../../../../../../platform/storage/common/storage.js';
 
-export const ChatHistory = ({ className }: { className?: string }) => {
+export const ChatHistory = ({ className, isAgentWindow = false }: { className?: string; isAgentWindow?: boolean }) => {
 	const isDark = useIsDark();
 
 	return (
@@ -31,29 +42,13 @@ export const ChatHistory = ({ className }: { className?: string }) => {
 			>
 				<div className={`w-full h-full flex flex-col`}>
 					<ErrorBoundary>
-						<ChatHistoryContent />
+						<ChatHistoryContent inAgentWindow={isAgentWindow} />
 					</ErrorBoundary>
 				</div>
 			</div>
 		</div>
 	);
 };
-
-const DAY_MS = 86_400_000;
-
-const getDateBucket = (ts: number): string => {
-	const now = new Date();
-	const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-	const startOfYesterday = startOfToday - DAY_MS;
-	const startOfSevenDaysAgo = startOfToday - 7 * DAY_MS;
-
-	if (ts >= startOfToday) return 'Today';
-	if (ts >= startOfYesterday) return 'Yesterday';
-	if (ts >= startOfSevenDaysAgo) return 'Last 7 Days';
-	return 'Older';
-};
-
-const BUCKET_ORDER: string[] = ['Today', 'Yesterday', 'Last 7 Days', 'Older'];
 
 // A thread is a "draft" when the user has sent a message but no assistant response exists yet.
 const isDraftThread = (t: ThreadType): boolean => {
@@ -62,23 +57,96 @@ const isDraftThread = (t: ThreadType): boolean => {
 	return hasUser && !hasAssistant;
 };
 
-const ChatHistoryContent = () => {
+const ChatHistoryContent = ({ inAgentWindow }: { inAgentWindow: boolean }) => {
 	const [visibleCount, setVisibleCount] = useState(5);
 	const [searchQuery, setSearchQuery] = useState('');
 	const [isSearchFocused, setIsSearchFocused] = useState(false);
+	const [filterMenuOpen, setFilterMenuOpen] = useState(false);
+	const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false);
+	const [dismissedUnassignedBanner, setDismissedUnassignedBanner] = useState(false);
+	const [collapsedGroups, setCollapsedGroups] = useState<Record<string, true>>({});
+	const filterBtnRef = useRef<HTMLButtonElement>(null);
+	const workspaceButtonRef = useRef<HTMLButtonElement>(null);
 
 	const accessor = useAccessor();
 	const chatThreadsService = accessor.get('IChatThreadService');
+	const workspaceService = accessor.get('IAgentProjectWorkspaceService');
+	const storageService = accessor.get('IStorageService');
+	const agentWorkspaceState = useAgentWorkspaceState();
+
+	const [listPrefs, setListPrefs] = useState<AgentHistoryListPrefs>(() => {
+		try {
+			return parseAgentHistoryListPrefs(
+				storageService.get(AGENT_HISTORY_LIST_PREFS_STORAGE_KEY, StorageScope.APPLICATION),
+			);
+		} catch {
+			return { ...DEFAULT_AGENT_HISTORY_LIST_PREFS };
+		}
+	});
+
+	const updateListPrefs = useCallback((next: AgentHistoryListPrefs) => {
+		setListPrefs(next);
+		setVisibleCount(5);
+		try {
+			storageService.store(
+				AGENT_HISTORY_LIST_PREFS_STORAGE_KEY,
+				JSON.stringify(next),
+				StorageScope.APPLICATION,
+				StorageTarget.USER,
+			);
+		} catch {
+			// Preference persistence is best-effort; list still updates in-memory.
+		}
+	}, [storageService]);
+
+	const filterMode = listPrefs.filterMode;
+	const effectiveListPrefs = inAgentWindow ? listPrefs : DEFAULT_AGENT_HISTORY_LIST_PREFS;
 
 	const threadsState = useChatThreadsState();
-	const { allThreads, currentThreadId } = threadsState;
+	const { allThreads } = threadsState;
+	const currentThreadId = inAgentWindow ? threadsState.agentWindowThreadId : threadsState.currentThreadId;
 
 	const runningThreadIds = useRunningThreadIds();
+	const composerWorkspacePickerAvailable = inAgentWindow
+		&& !!allThreads?.[currentThreadId]
+		&& allThreads[currentThreadId].messages.length === 0;
 
-	// Handle new thread creation
+	useEffect(() => {
+		if (!inAgentWindow) {
+			setFilterMenuOpen(false);
+			setWorkspacePickerOpen(false);
+		}
+	}, [inAgentWindow]);
+
+	useEffect(() => {
+		// The landing-page composer owns command-triggered picker requests while
+		// mounted. For active threads, this always-mounted compact history control
+		// is the fallback host. The service request is one-shot, so only one portal
+		// opens even as the composer and history update across a thread transition.
+		if (!inAgentWindow || composerWorkspacePickerAvailable) {
+			return;
+		}
+		const openRequestedPicker = () => {
+			if (workspaceService.consumePendingOpenPicker()) {
+				setFilterMenuOpen(false);
+				setWorkspacePickerOpen(true);
+			}
+		};
+		openRequestedPicker();
+		const disposable = workspaceService.onDidRequestOpenPicker(openRequestedPicker);
+		return () => disposable.dispose();
+	}, [inAgentWindow, composerWorkspacePickerAvailable, workspaceService]);
+
+	// Handle new thread creation — attach agent workspace when in Agents window
 	const handleNewThread = () => {
 		try {
-			chatThreadsService.openNewThread();
+			if (inAgentWindow) {
+				chatThreadsService.openNewThread({
+					agentWorkspaceId: agentWorkspaceState.activeWorkspaceId,
+				});
+			} else {
+				chatThreadsService.openNewThread();
+			}
 		} catch (error) {
 			console.error('Error creating new thread:', error);
 		}
@@ -90,12 +158,10 @@ const ChatHistoryContent = () => {
 			return [];
 		}
 
-		// Filter threads: non-empty and matching search query
-		return (Object.values(allThreads) as ThreadType[])
+		let threads = (Object.values(allThreads) as ThreadType[])
 			.filter((thread) => {
 				if (!thread || thread.messages.length === 0) return false;
 
-				// Apply search filter
 				if (searchQuery.trim()) {
 					const firstUserMsg = thread.messages.find((msg) => msg.role === 'user');
 					const content = (firstUserMsg?.role === 'user' && firstUserMsg.displayContent) || '';
@@ -103,14 +169,175 @@ const ChatHistoryContent = () => {
 				}
 
 				return true;
-			})
-			.sort((a, b) => {
-				const time1 = a.lastModified ? new Date(a.lastModified).getTime() : 0;
-				const time2 = b.lastModified ? new Date(b.lastModified).getTime() : 0;
-				return time1 > time2 ? -1 : 1;
 			});
-	}, [allThreads, searchQuery]);
 
+		// Agent window: scope by workspace (main IDE shows all threads unchanged)
+		if (inAgentWindow) {
+			threads = filterThreadsByWorkspaceId(
+				threads,
+				agentWorkspaceState.activeWorkspaceId,
+				filterMode,
+			);
+		}
+
+		return threads.sort((a, b) => compareThreadsByOrdering(a, b, effectiveListPrefs.ordering));
+	}, [allThreads, searchQuery, inAgentWindow, agentWorkspaceState.activeWorkspaceId, filterMode, effectiveListPrefs.ordering]);
+
+	const unassignedCount = useMemo(() => {
+		if (!inAgentWindow || !allThreads) {
+			return 0;
+		}
+		return filterThreadsByWorkspaceId(
+			(Object.values(allThreads) as ThreadType[]).filter(t => t && t.messages.length > 0),
+			agentWorkspaceState.activeWorkspaceId,
+			'unassigned',
+		).length;
+	}, [allThreads, inAgentWindow, agentWorkspaceState.activeWorkspaceId]);
+
+	// Group sorted threads by the selected grouping mode
+	const { order: groupOrder, groups: groupedThreads } = useMemo(() => {
+		return groupThreads(sortedThreads, effectiveListPrefs.grouping, agentWorkspaceState.workspaces);
+	}, [sortedThreads, effectiveListPrefs.grouping, agentWorkspaceState.workspaces]);
+
+	// Flatten visible threads in group order, respecting visibleCount and collapsed sections
+	const visibleGrouped = useMemo<Record<string, ThreadType[]>>(() => {
+		const result: Record<string, ThreadType[]> = {};
+		let remaining = visibleCount;
+		for (const bucket of groupOrder) {
+			if (remaining <= 0) break;
+			const threads = groupedThreads[bucket];
+			if (!threads || threads.length === 0) continue;
+			if (effectiveListPrefs.grouping !== 'none' && collapsedGroups[bucket]) {
+				result[bucket] = [];
+				continue;
+			}
+			const visibleInBucket = threads.slice(0, remaining);
+			result[bucket] = visibleInBucket;
+			remaining -= visibleInBucket.length;
+		}
+		return result;
+	}, [groupedThreads, groupOrder, visibleCount, collapsedGroups, effectiveListPrefs.grouping]);
+	const firstVisibleBucket = groupOrder.find(bucket => {
+		const threads = groupedThreads[bucket];
+		return !!threads && threads.length > 0;
+	});
+
+	const canCollapseAll = effectiveListPrefs.grouping !== 'none'
+		&& groupOrder.some(key => (groupedThreads[key]?.length ?? 0) > 0 && !collapsedGroups[key]);
+
+	const handleCollapseAll = useCallback(() => {
+		const next: Record<string, true> = {};
+		for (const key of groupOrder) {
+			if ((groupedThreads[key]?.length ?? 0) > 0) {
+				next[key] = true;
+			}
+		}
+		setCollapsedGroups(next);
+	}, [groupOrder, groupedThreads]);
+
+	const toggleGroupCollapsed = useCallback((key: string) => {
+		if (effectiveListPrefs.grouping === 'none' || !key) {
+			return;
+		}
+		setCollapsedGroups(prev => {
+			if (prev[key]) {
+				const next = { ...prev };
+				delete next[key];
+				return next;
+			}
+			return { ...prev, [key]: true };
+		});
+	}, [effectiveListPrefs.grouping]);
+
+	// Drop collapsed keys that no longer exist when grouping/filter changes
+	useEffect(() => {
+		setCollapsedGroups(prev => {
+			const keys = new Set(groupOrder);
+			let changed = false;
+			const next: Record<string, true> = {};
+			for (const key of Object.keys(prev)) {
+				if (keys.has(key)) {
+					next[key] = true;
+				} else {
+					changed = true;
+				}
+			}
+			return changed ? next : prev;
+		});
+	}, [groupOrder]);
+
+	const historyActions = inAgentWindow ? (
+		<div className="agent-history-section-actions" role="toolbar" aria-label="Chat history actions">
+			<button
+				ref={filterBtnRef}
+				type="button"
+				className={`agent-history-icon-btn${filterMenuOpen ? ' active' : ''}`}
+				aria-label="Organize chat history"
+				aria-haspopup="menu"
+				aria-expanded={filterMenuOpen}
+				data-tooltip-id="void-tooltip"
+				data-tooltip-place="top"
+				data-tooltip-content="Organize"
+				onClick={() => {
+					setWorkspacePickerOpen(false);
+					setFilterMenuOpen(open => !open);
+				}}
+			>
+				<ListFilter size={14} strokeWidth={1.75} aria-hidden />
+			</button>
+			<button
+				ref={workspaceButtonRef}
+				type="button"
+				className={`agent-history-icon-btn agent-history-workspace-btn${workspacePickerOpen ? ' active' : ''}`}
+				aria-label="Open workspace"
+				aria-haspopup="dialog"
+				aria-expanded={workspacePickerOpen}
+				data-tooltip-id="void-tooltip"
+				data-tooltip-place="top"
+				data-tooltip-content="Open Workspace"
+				onClick={() => {
+					setFilterMenuOpen(false);
+					setWorkspacePickerOpen(open => !open);
+				}}
+			>
+				<FolderPlus size={15} strokeWidth={1.75} aria-hidden />
+			</button>
+		</div>
+	) : null;
+	const historyOverlays = inAgentWindow ? (
+		<>
+			<AgentChatHistoryFilterMenu
+				open={filterMenuOpen}
+				onClose={() => setFilterMenuOpen(false)}
+				prefs={listPrefs}
+				onChangePrefs={updateListPrefs}
+				onCollapseAll={handleCollapseAll}
+				canCollapseAll={canCollapseAll}
+				anchorRef={filterBtnRef}
+			/>
+			<AgentWorkspacePicker
+				open={workspacePickerOpen}
+				onClose={() => setWorkspacePickerOpen(false)}
+				anchorRef={workspaceButtonRef}
+			/>
+		</>
+	) : null;
+
+	const hasMoreThreads = useMemo(() => {
+		let available = 0;
+		let shown = 0;
+		for (const key of groupOrder) {
+			if (effectiveListPrefs.grouping !== 'none' && collapsedGroups[key]) {
+				continue;
+			}
+			available += groupedThreads[key]?.length ?? 0;
+			shown += visibleGrouped[key]?.length ?? 0;
+		}
+		return available > shown;
+	}, [groupOrder, groupedThreads, visibleGrouped, collapsedGroups, effectiveListPrefs.grouping]);
+
+	// Keep all hooks above this branch: thread state is populated asynchronously,
+	// so returning before the grouping hooks would change hook order on hydration.
 	if (!allThreads) {
 		return (
 			<div className="flex flex-col h-full">
@@ -122,50 +349,30 @@ const ChatHistoryContent = () => {
 					isSearchFocused={isSearchFocused}
 					setIsSearchFocused={setIsSearchFocused}
 					threadCount={0}
+					inAgentWindow={inAgentWindow}
 				/>
+				{inAgentWindow && (
+					<div className="agent-history-section-toolbar agent-history-section-toolbar--empty">
+						{historyActions}
+					</div>
+				)}
 				<div className="flex-1 overflow-auto px-2">
 					<div className="flex flex-col items-center justify-center h-full text-void-fg-0">
 						<MessageSquarePlus size={48} className="opacity-50 mb-4" />
 						<p className="text-sm">Error accessing chat history.</p>
 					</div>
 				</div>
+				{historyOverlays}
 				<OrbitUserProfileFooter />
 			</div>
 		);
 	}
 
-	// Group sorted threads by date bucket (Today / Yesterday / Last 7 Days / Older)
-	const groupedThreads = useMemo<Record<string, ThreadType[]>>(() => {
-		const groups: Record<string, ThreadType[]> = {};
-		for (const thread of sortedThreads) {
-			const ts = thread.lastModified ? new Date(thread.lastModified).getTime() : 0;
-			const bucket = getDateBucket(ts);
-			if (!groups[bucket]) groups[bucket] = [];
-			groups[bucket].push(thread);
-		}
-		return groups;
-	}, [sortedThreads]);
-
-	// Flatten visible threads in bucket order, respecting visibleCount
-	const visibleGrouped = useMemo<Record<string, ThreadType[]>>(() => {
-		const result: Record<string, ThreadType[]> = {};
-		let remaining = visibleCount;
-		for (const bucket of BUCKET_ORDER) {
-			if (remaining <= 0) break;
-			const threads = groupedThreads[bucket];
-			if (!threads || threads.length === 0) continue;
-			const visibleInBucket = threads.slice(0, remaining);
-			result[bucket] = visibleInBucket;
-			remaining -= visibleInBucket.length;
-		}
-		return result;
-	}, [groupedThreads, visibleCount]);
-
-	const hasMoreThreads = sortedThreads.length > visibleCount;
 	const isSearching = searchQuery.trim().length > 0;
+	const showWorkspaceBadge = inAgentWindow && filterMode === 'all';
 
 	return (
-		<div className="flex flex-col h-full">
+		<div className="flex flex-col h-full relative">
 			<ChatHistoryTopBar />
 			<ChatHistoryHeader
 				onNewThread={handleNewThread}
@@ -174,12 +381,38 @@ const ChatHistoryContent = () => {
 				isSearchFocused={isSearchFocused}
 				setIsSearchFocused={setIsSearchFocused}
 				threadCount={sortedThreads.length}
+				inAgentWindow={inAgentWindow}
 			/>
 
+			{inAgentWindow && unassignedCount > 0 && !dismissedUnassignedBanner && filterMode !== 'unassigned' && (
+				<div className="agent-history-unassigned-banner">
+					These agents were created before workspace support.{' '}
+					<button
+						type="button"
+						className="underline opacity-90"
+						onClick={() => updateListPrefs({ ...listPrefs, filterMode: 'unassigned' })}
+					>
+						View unassigned
+					</button>
+					{' · '}
+					<button
+						type="button"
+						className="underline opacity-70"
+						onClick={() => setDismissedUnassignedBanner(true)}
+					>
+						Dismiss
+					</button>
+				</div>
+			)}
+
 			<div className="flex-1 overflow-y-auto overflow-x-hidden">
+				{inAgentWindow && sortedThreads.length === 0 && (
+					<div className="agent-history-section-toolbar agent-history-section-toolbar--empty">
+						{historyActions}
+					</div>
+				)}
 				{sortedThreads.length === 0 ? (
 					isSearching ? (
-						// No search results
 						<div className="flex flex-col items-center justify-center h-full text-void-fg-0 px-4 text-center">
 							<p className="text-[13px]">No agents match "{searchQuery}"</p>
 							<button
@@ -190,7 +423,6 @@ const ChatHistoryContent = () => {
 							</button>
 						</div>
 					) : (
-						// Empty state - no threads at all
 						<div className="flex flex-col items-center justify-center h-full text-void-fg-0 px-4 text-center">
 							<p className="text-[13px] mb-1">No agents found</p>
 							<button
@@ -203,33 +435,67 @@ const ChatHistoryContent = () => {
 					)
 				) : (
 					<div className="flex flex-col w-full select-none pb-2">
-						{BUCKET_ORDER.map((bucket, groupIdx) => {
-							const threadsInBucket = visibleGrouped[bucket];
-							if (!threadsInBucket || threadsInBucket.length === 0) return null;
+						{groupOrder.map((bucket, groupIdx) => {
+							const allInBucket = groupedThreads[bucket] ?? [];
+							if (allInBucket.length === 0) return null;
+							const isCollapsed = effectiveListPrefs.grouping !== 'none' && !!collapsedGroups[bucket];
+							const threadsInBucket = isCollapsed ? [] : (visibleGrouped[bucket] ?? []);
+							// Skip groups that are past the "More" pagination window (unless collapsed,
+							// so Collapse All still reveals every section header).
+							if (!isCollapsed && threadsInBucket.length === 0) return null;
+							const showHeader = effectiveListPrefs.grouping !== 'none' && bucket !== '';
+							const isFirstActionsBucket = inAgentWindow && bucket === firstVisibleBucket;
 							return (
-								<div key={bucket} className="flex flex-col">
-									<div
-										className={`
-											text-[11px] font-medium text-void-fg-3 opacity-70
-											px-3 mx-1 pb-1 select-none
-											${groupIdx === 0 ? 'pt-2' : 'pt-4'}
-										`}
-									>
-										{bucket}
-									</div>
+								<div key={bucket || 'flat'} className="flex flex-col">
+									{(showHeader || isFirstActionsBucket) && (
+										<div className={`agent-history-bucket-header ${isFirstActionsBucket ? 'agent-history-bucket-header--with-actions' : ''}`}>
+											{showHeader ? (
+												<button
+													type="button"
+													className={`
+														agent-history-bucket-toggle
+														text-[11px] font-medium text-void-fg-3 opacity-70
+														px-3 mx-1 pb-1 select-none
+														${isFirstActionsBucket ? 'pt-1' : groupIdx === 0 ? 'pt-2' : 'pt-4'}
+													`}
+													aria-expanded={!isCollapsed}
+													onClick={() => toggleGroupCollapsed(bucket)}
+												>
+													<ChevronDown
+														size={12}
+														strokeWidth={2}
+														aria-hidden
+														className={`agent-history-bucket-chevron${isCollapsed ? ' collapsed' : ''}`}
+													/>
+													<span>{bucket}</span>
+													{isCollapsed && (
+														<span className="agent-history-bucket-count">{allInBucket.length}</span>
+													)}
+												</button>
+											) : (
+												<div className={`${isFirstActionsBucket ? 'pt-1' : 'pt-2'} px-3 mx-1 pb-1`} />
+											)}
+											{isFirstActionsBucket ? historyActions : null}
+										</div>
+									)}
 									{threadsInBucket.map((thread) => (
 										<PastThreadElement
 											key={thread.id}
 											pastThread={thread}
 											isRunning={runningThreadIds[thread.id]}
 											isActive={currentThreadId === thread.id}
+											inAgentWindow={inAgentWindow}
+											workspaceBadge={showWorkspaceBadge
+												? (thread.agentWorkspaceId
+													? (agentWorkspaceState.workspaces[thread.agentWorkspaceId]?.name ?? 'Workspace')
+													: (thread.agentWorkspaceId === null ? 'No Repo' : 'Unassigned'))
+												: undefined}
 										/>
 									))}
 								</div>
 							);
 						})}
 
-						{/* More button */}
 						{hasMoreThreads && (
 							<div
 								className="flex items-center gap-2 py-1.5 px-2 mx-1 rounded-md text-[13px] cursor-pointer text-void-fg-0 hover:bg-zinc-700/5 dark:hover:bg-zinc-300/5 transition-all opacity-80 hover:opacity-100"
@@ -242,6 +508,7 @@ const ChatHistoryContent = () => {
 					</div>
 				)}
 			</div>
+			{historyOverlays}
 			<OrbitUserProfileFooter />
 		</div>
 	);
@@ -279,6 +546,7 @@ const ChatHistoryHeader = ({
 	isSearchFocused,
 	setIsSearchFocused,
 	threadCount,
+	inAgentWindow,
 }: {
 	onNewThread: () => void;
 	searchQuery: string;
@@ -286,19 +554,11 @@ const ChatHistoryHeader = ({
 	isSearchFocused: boolean;
 	setIsSearchFocused: (focused: boolean) => void;
 	threadCount: number;
+	inAgentWindow: boolean;
 }) => {
 	const accessor = useAccessor();
 	const commandService = accessor.get('ICommandService');
-	const agentWindowService = accessor.get('IAgentWindowService');
 	const keybindingService = accessor.get('IKeybindingService');
-	const rootRef = useRef<HTMLDivElement>(null);
-	// Hide the Customize affordance in the pop-out Agent window (main IDE only),
-	// mirroring SidebarChat's browser-button detection.
-	const [inAgentWindow, setInAgentWindow] = useState(false);
-	useEffect(() => {
-		const node = rootRef.current;
-		setInAgentWindow(!!node && getConnectedWindow(node) !== window && agentWindowService.isOpen());
-	}, [agentWindowService]);
 
 	const newThreadKeybindLabel = keybindingService.lookupKeybinding('void.cmdShiftL')?.getLabel();
 
@@ -308,7 +568,7 @@ const ChatHistoryHeader = ({
 	};
 
 	return (
-		<div ref={rootRef} className="flex flex-col gap-0.5 mb-1 flex-shrink-0 p-3 pb-2">
+		<div className="flex flex-col gap-0.5 mb-1 flex-shrink-0 p-3 pb-2">
 			{/* Search Bar */}
 			<div
 				className={`
@@ -454,26 +714,57 @@ const PastThreadElement = memo(({
 	pastThread,
 	isRunning,
 	isActive,
+	inAgentWindow,
+	workspaceBadge,
 }: {
 	pastThread: ThreadType;
 	isRunning: IsRunningType | undefined;
 	isActive?: boolean;
+	inAgentWindow: boolean;
+	workspaceBadge?: string;
 }) => {
 	const accessor = useAccessor();
 	const chatThreadsService = accessor.get('IChatThreadService');
+	const agentWorkspaceService = accessor.get('IAgentProjectWorkspaceService');
+	const dialogService = accessor.get('IDialogService');
 
 	const firstUserMsgIdx = pastThread.messages.findIndex((msg) => msg.role === 'user');
 	const firstMsg = firstUserMsgIdx !== -1
 		? (pastThread.messages[firstUserMsgIdx].role === 'user' && pastThread.messages[firstUserMsgIdx].displayContent) || ''
 		: 'New Chat';
 
-	const handleClick = (e: React.MouseEvent) => {
+	const handleClick = async (e: React.MouseEvent) => {
 		// Prevent click if clicking on action buttons
 		if ((e.target as HTMLElement).closest('[data-action-button]')) {
 			return;
 		}
 		try {
-			chatThreadsService.switchToThread(pastThread.id);
+			// Only the Agents (auxiliary) window should mutate its own workspace
+			// selection from a thread click. The main IDE sidebar must NOT silently
+			// switch the agent workspace behind the user's back — an IDE click is a
+			// browse action, not a workspace-switch command. S1/#13.
+			if (inAgentWindow && pastThread.agentWorkspaceId !== undefined) {
+				const current = agentWorkspaceService.getState().activeWorkspaceId;
+				const next = pastThread.agentWorkspaceId;
+				if (current !== next) {
+					// Match AgentWorkspacePicker: confirm before leaving a workspace
+					// that still has a running (or background) agent.
+					if (chatThreadsService.hasRunningThreadInWorkspace(current)) {
+						const result = await dialogService.confirm({
+							type: 'warning',
+							message: 'An agent is still running in this workspace.',
+							detail: 'Switching will leave it running in the background and open a new agent in the selected workspace.',
+							primaryButton: 'Switch Anyway',
+							cancelButton: 'Stay',
+						});
+						if (!result.confirmed) {
+							return;
+						}
+					}
+					agentWorkspaceService.setActiveWorkspace(next);
+				}
+			}
+			chatThreadsService.switchToThread(pastThread.id, { inAgentWindow });
 		} catch (error) {
 			console.error('Error switching thread:', error);
 		}
@@ -510,6 +801,9 @@ const PastThreadElement = memo(({
 				>
 					{firstMsg}
 				</span>
+				{workspaceBadge && (
+					<span className="agent-history-workspace-badge" title={workspaceBadge}>{workspaceBadge}</span>
+				)}
 			</div>
 
 			{/* Action buttons on hover (duplicate + delete) */}

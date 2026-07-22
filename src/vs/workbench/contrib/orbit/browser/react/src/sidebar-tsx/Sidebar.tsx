@@ -13,7 +13,7 @@ import ErrorBoundary from './ErrorBoundary.js';
 import { SubAgentPopupProvider } from './contexts/SubAgentPopupContext.js';
 import { ConnectedWindowProvider } from './contexts/ConnectedWindowContext.js';
 
-export const Sidebar = ({ className }: { className: string }) => {
+export const Sidebar = ({ className, isAgentWindow = false }: { className: string; isAgentWindow?: boolean }) => {
 
 	const isDark = useIsDark()
 	const themeSettingsId = useThemeSettingsId()
@@ -37,7 +37,7 @@ export const Sidebar = ({ className }: { className: string }) => {
 					<div className="flex-1 min-h-0">
 						<ErrorBoundary>
 							<SubAgentPopupProvider>
-								<SidebarChat />
+								<SidebarChat isAgentWindow={isAgentWindow} />
 							</SubAgentPopupProvider>
 						</ErrorBoundary>
 					</div>

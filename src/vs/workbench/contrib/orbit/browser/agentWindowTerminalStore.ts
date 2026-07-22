@@ -12,7 +12,9 @@ import { IStorageService, StorageScope, StorageTarget } from '../../../../platfo
 import { IProcessDetails } from '../../../../platform/terminal/common/terminalProcess.js';
 import { ITerminalBackend, TerminalExitReason } from '../../../../platform/terminal/common/terminal.js';
 import { ITerminalInstance, ITerminalInstanceService } from '../../terminal/browser/terminal.js';
-import { AGENT_WINDOW_TERMINAL_STORAGE_KEY } from '../common/storageKeys.js';
+import { AGENT_WINDOW_TERMINAL_STORAGE_KEY, AGENT_WINDOW_STATE_BY_WORKSPACE_PREFIX } from '../common/storageKeys.js';
+import { IAgentProjectWorkspaceService } from './agentProjectWorkspaceService.js';
+import { canMigrateLegacyTerminalsToWorkspace } from '../common/agentWorkspaceHelpers.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -81,6 +83,17 @@ export interface IAgentWindowTerminalStore {
 	setWindowTeardown(active: boolean): void;
 
 	/**
+	 * True briefly after the active agent workspace changes, while React swaps
+	 * terminal tabs. TerminalPanel cleanups must detach (not kill) and must NOT
+	 * dispose store handles — `removeEntry` would mutate the *new* workspace's
+	 * persisted list (often colliding on `ws-terminal-N` ids).
+	 */
+	readonly workspaceTransitionActive: boolean;
+
+	/** Clear {@link workspaceTransitionActive} after tab sync + reattach settle. */
+	endWorkspaceTransition(): void;
+
+	/**
 	 * Called after the agents window has fully closed. Clears the once-per-open
 	 * reattach guard so the NEXT window open re-runs reattachOnStartup (the
 	 * cached promise would otherwise report the first open's results forever),
@@ -117,8 +130,14 @@ class AgentWindowTerminalStore extends Disposable implements IAgentWindowTermina
 	 * AgentWorkspace's effect re-running, or React invoking it twice) would
 	 * create a second `ITerminalInstance` attached to the same still-alive pty,
 	 * silently overwriting (and leaking — never disposed) the first one.
+	 *
+	 * Cleared by {@link resetReattachSession} (window close or workspace switch)
+	 * so the next open/switch can reattach again. {@link _reattachGeneration}
+	 * invalidates any in-flight `_doReattachOnStartup` so it cannot persist
+	 * into a newer workspace's storage key.
 	 */
 	private _reattachPromise: Promise<IAgentWindowTerminalEntry[]> | undefined;
+	private _reattachGeneration = 0;
 	/**
 	 * Instances created by {@link reattachOnStartup} that haven't been claimed by a
 	 * React panel yet. The panel pops its instance via {@link takeReattachedInstance}
@@ -127,6 +146,7 @@ class AgentWindowTerminalStore extends Disposable implements IAgentWindowTermina
 	 */
 	private readonly _reattachedInstances = new Map<string, ITerminalInstance>();
 	private _windowTeardownActive = false;
+	private _workspaceTransitionActive = false;
 
 	get windowTeardownActive(): boolean {
 		return this._windowTeardownActive;
@@ -136,7 +156,16 @@ class AgentWindowTerminalStore extends Disposable implements IAgentWindowTermina
 		this._windowTeardownActive = active;
 	}
 
+	get workspaceTransitionActive(): boolean {
+		return this._workspaceTransitionActive;
+	}
+
+	endWorkspaceTransition(): void {
+		this._workspaceTransitionActive = false;
+	}
+
 	resetReattachSession(): void {
+		this._reattachGeneration++;
 		this._reattachPromise = undefined;
 		for (const instance of this._reattachedInstances.values()) {
 			// Unclaimed reattached instance: detach so the pty survives for the
@@ -154,9 +183,36 @@ class AgentWindowTerminalStore extends Disposable implements IAgentWindowTermina
 		@IStorageService private readonly _storageService: IStorageService,
 		@ITerminalInstanceService private readonly _terminalInstanceService: ITerminalInstanceService,
 		@ILogService private readonly _logService: ILogService,
+		@IAgentProjectWorkspaceService private readonly _agentProjectWorkspaceService: IAgentProjectWorkspaceService,
 	) {
 		super();
 		this._load();
+		this._register(this._agentProjectWorkspaceService.onDidChangeActiveWorkspace(() => {
+			// Drop the previous workspace's once-per-session reattach cache and any
+			// unclaimed reattached instances so the newly loaded entries can reattach.
+			// Mark a short transition window so TerminalPanel unmounts detach instead
+			// of killing shells / calling removeEntry against the new workspace key.
+			this._workspaceTransitionActive = true;
+			this.resetReattachSession();
+			// Load the newly active workspace's terminal set. Do NOT persist here:
+			// `setActiveWorkspace` flips state BEFORE firing this event, so
+			// `_storageKey()` already resolves to the NEW workspace — persisting
+			// now would clobber the new workspace's saved entries with the old
+			// workspace's terminals. Entries are already persisted on every
+			// mutation while their owning workspace is active.
+			this._didLoad = false;
+			this._entries = [];
+			this._load();
+			this._onDidChangeEntries.fire();
+			// Kick reattach immediately so TerminalPanels awaiting the shared
+			// promise can adopt surviving ptys instead of spawning duplicates.
+			void this.reattachOnStartup();
+		}));
+	}
+
+	private _storageKey(): string {
+		const id = this._agentProjectWorkspaceService.getState().activeWorkspaceId ?? 'no-repo';
+		return `${AGENT_WINDOW_STATE_BY_WORKSPACE_PREFIX}${id}.terminals`;
 	}
 
 	private _load(): void {
@@ -165,11 +221,57 @@ class AgentWindowTerminalStore extends Disposable implements IAgentWindowTermina
 		}
 		this._didLoad = true;
 		try {
-			const raw = this._storageService.get(AGENT_WINDOW_TERMINAL_STORAGE_KEY, StorageScope.WORKSPACE);
+			if (this._agentProjectWorkspaceService.getState().activeWorkspaceId === null) {
+				// No Repo cannot own a terminal. Remove any key written by an older
+				// buggy build so a surviving IDE pty is never reattached here.
+				this._entries = [];
+				this._storageService.remove(this._storageKey(), StorageScope.APPLICATION);
+				return;
+			}
+			// Prefer per-workspace state. Legacy terminals may only be adopted after
+			// a real workspace is selected and their recorded folder proves they
+			// belong to it; No Repo must never inherit an IDE shell on upgrade.
+			let raw = this._storageService.get(this._storageKey(), StorageScope.APPLICATION);
+			let migratedFromLegacy = false;
+			const activeWorkspaceId = this._agentProjectWorkspaceService.getState().activeWorkspaceId;
+			if (!raw && activeWorkspaceId) {
+				const legacyRaw = this._storageService.get(AGENT_WINDOW_TERMINAL_STORAGE_KEY, StorageScope.WORKSPACE);
+				if (legacyRaw) {
+					const activeFolders = new Set(this._agentProjectWorkspaceService.getActiveFolders().map(uri => uri.toString()));
+					let belongsToActiveWorkspace = false;
+					try {
+						const legacyEntries = JSON.parse(legacyRaw) as IAgentWindowTerminalEntry[];
+						belongsToActiveWorkspace = Array.isArray(legacyEntries)
+							&& canMigrateLegacyTerminalsToWorkspace(legacyEntries, activeWorkspaceId, activeFolders);
+					} catch { /* discard malformed legacy state below */ }
+					// Consume once after a concrete workspace is available. If ownership
+					// cannot be proven, discard rather than leaking it into another repo.
+					this._storageService.remove(AGENT_WINDOW_TERMINAL_STORAGE_KEY, StorageScope.WORKSPACE);
+					if (belongsToActiveWorkspace) {
+						raw = legacyRaw;
+						migratedFromLegacy = true;
+					}
+				}
+			}
 			if (raw) {
 				const parsed = JSON.parse(raw) as IAgentWindowTerminalEntry[];
 				if (Array.isArray(parsed)) {
 					this._entries = parsed.filter(e => e && typeof e.id === 'string');
+				}
+			}
+			// Persist immediately after migration so restored entries survive even if
+			// the Agents window never mutates terminals this session (no reattach /
+			// register / title change that would otherwise call `_persist`).
+			if (migratedFromLegacy) {
+				try {
+					this._storageService.store(
+						this._storageKey(),
+						JSON.stringify(this._entries),
+						StorageScope.APPLICATION,
+						StorageTarget.MACHINE,
+					);
+				} catch (persistErr) {
+					this._logService.warn('[agentWindowTerminalStore] Failed to persist migrated entries:', persistErr);
 				}
 			}
 		} catch (e) {
@@ -181,9 +283,9 @@ class AgentWindowTerminalStore extends Disposable implements IAgentWindowTermina
 	private _persist(): void {
 		try {
 			this._storageService.store(
-				AGENT_WINDOW_TERMINAL_STORAGE_KEY,
+				this._storageKey(),
 				JSON.stringify(this._entries),
-				StorageScope.WORKSPACE,
+				StorageScope.APPLICATION,
 				StorageTarget.MACHINE,
 			);
 		} catch (e) {
@@ -252,6 +354,7 @@ class AgentWindowTerminalStore extends Disposable implements IAgentWindowTermina
 	}
 
 	private async _doReattachOnStartup(): Promise<IAgentWindowTerminalEntry[]> {
+		const generation = this._reattachGeneration;
 		if (this._entries.length === 0) {
 			return [];
 		}
@@ -263,6 +366,9 @@ class AgentWindowTerminalStore extends Disposable implements IAgentWindowTermina
 		const snapshot = this._entries.slice();
 		const snapshotIds = new Set(snapshot.map(e => e.id));
 		const backend = await this._resolveLocalBackend();
+		if (generation !== this._reattachGeneration) {
+			return [];
+		}
 		if (!backend) {
 			this._logService.warn('[agentWindowTerminalStore] No local terminal backend; cannot reattach.');
 			return this._entries.slice();
@@ -283,9 +389,31 @@ class AgentWindowTerminalStore extends Disposable implements IAgentWindowTermina
 			return this._entries.slice();
 		}
 
+		if (generation !== this._reattachGeneration) {
+			return [];
+		}
+
 		const surviving: IAgentWindowTerminalEntry[] = [];
+		const createdThisPass: ITerminalInstance[] = [];
+
+		const abortThisPass = (): IAgentWindowTerminalEntry[] => {
+			for (const inst of createdThisPass) {
+				for (const [id, mapped] of this._reattachedInstances) {
+					if (mapped === inst) {
+						this._reattachedInstances.delete(id);
+					}
+				}
+				try { inst.detachProcessAndDispose(TerminalExitReason.User); } catch {
+					try { inst.dispose(); } catch { /* ignore */ }
+				}
+			}
+			return [];
+		};
 
 		for (const entry of snapshot) {
+			if (generation !== this._reattachGeneration) {
+				return abortThisPass();
+			}
 			if (entry.ptyId === undefined || !alive.has(entry.ptyId)) {
 				// The pty died (or never spawned). The caller will create a fresh shell.
 				entry.ptyId = undefined;
@@ -303,6 +431,7 @@ class AgentWindowTerminalStore extends Disposable implements IAgentWindowTermina
 				const prior = this._reattachedInstances.get(entry.id);
 				if (prior) { try { prior.dispose(); } catch { /* ignore */ } }
 				this._reattachedInstances.set(entry.id, instance);
+				createdThisPass.push(instance);
 				surviving.push(entry);
 			} catch (e) {
 				this._logService.warn(`[agentWindowTerminalStore] Reattach failed for pty ${entry.ptyId}:`, e);
@@ -310,6 +439,10 @@ class AgentWindowTerminalStore extends Disposable implements IAgentWindowTermina
 				entry.ptyId = undefined;
 				surviving.push(entry);
 			}
+		}
+
+		if (generation !== this._reattachGeneration) {
+			return abortThisPass();
 		}
 
 		// Keep any entries registered while we were awaiting (fresh terminals

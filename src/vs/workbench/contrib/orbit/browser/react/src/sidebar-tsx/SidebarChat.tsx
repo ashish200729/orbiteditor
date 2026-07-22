@@ -16,7 +16,6 @@ import { isABuiltinToolName } from '../../../../common/prompt/prompts.js';
 
 import { TextAreaFns, VoidInputBox2 } from '../util/inputs.js';
 import { focusInConnectedWindow, downscaleImageDataUrl } from '../util/helpers.js';
-import { getConnectedWindow } from '../util/connectedWindow.js';
 
 // External components (not extracted)
 import ErrorBoundary from './ErrorBoundary.js';
@@ -43,6 +42,7 @@ import { CommandBarInChat } from './components/chatComponents/CommandBarInChat.j
 // Context providers
 import { TodoProvider } from './contexts/TodoContext.js';
 import { ChatMessagesScrollArea } from './components/chat/ChatMessagesScrollArea.js';
+import { AgentWorkspaceHeader } from '../agent-window-tsx/AgentWorkspaceHeader.js';
 import {
 	VOID_MESSAGE_QUEUE,
 	VOID_MESSAGE_QUEUE_ACTION,
@@ -114,7 +114,7 @@ const nextStagedImageId = (): string => {
 	return c?.randomUUID?.() ?? `img-${Date.now()}-${(_stagedImageSeq++).toString(36)}`
 }
 
-export const SidebarChat = () => {
+export const SidebarChat = ({ isAgentWindow = false }: { isAgentWindow?: boolean }) => {
 	const textAreaRef = useRef<HTMLTextAreaElement | null>(null)
 	const textAreaFnsRef = useRef<TextAreaFns | null>(null)
 
@@ -130,16 +130,24 @@ export const SidebarChat = () => {
 	// threads state
 	const chatThreadsState = useChatThreadsState()
 
-	const currentThread = chatThreadsService.getCurrentThread()
+	const selectedThreadId = chatThreadsService.getSelectedThreadId(isAgentWindow)
+	const currentThread = selectedThreadId ? chatThreadsService.getThread(selectedThreadId) : undefined
+	if (!currentThread) {
+		throw new Error('The selected chat thread is unavailable.')
+	}
 	const previousMessages = currentThread?.messages ?? []
 
 	const selections = currentThread.state.stagingSelections
-	const setSelections = (s: StagingSelectionItem[]) => { chatThreadsService.setCurrentThreadState({ stagingSelections: s }) }
+	const setSelections = (s: StagingSelectionItem[]) => { chatThreadsService.setThreadState(currentThread.id, { stagingSelections: s }) }
 
 	const threadId = currentThread.id
 	const isRunning = useThreadRunningState(threadId)
 	const queuedMessages = useQueuedUserMessages(threadId)
 	const isQueuePaused = useIsQueuePaused(threadId)
+
+	// The portal supplies this synchronously so the agent-only workspace header is
+	// present on first paint. Main-window mounts omit it and retain their old UI.
+	const inAgentWindow = isAgentWindow
 
 	const mcpToolNameSet = useMemo(() => {
 		const names = new Set<string>()
@@ -208,7 +216,7 @@ export const SidebarChat = () => {
 		// note: submitting while the agent is running is allowed — the service queues the
 		// message (Cursor-style) and drains it when the current run ends
 
-		const threadId = chatThreadsService.state.currentThreadId
+		const threadId = currentThread.id
 
 		// send message to LLM
 		const userMessage = _forceSubmit || textAreaRef.current?.value || ''
@@ -230,7 +238,7 @@ export const SidebarChat = () => {
 		textAreaFnsRef.current?.setValue('')
 		focusInConnectedWindow(textAreaRef.current) // focus input after submit (keeps Agents pop-out frontmost)
 
-	}, [chatThreadsService, isDisabled, textAreaRef, textAreaFnsRef, setSelections, settingsState, images])
+	}, [chatThreadsService, currentThread.id, isDisabled, textAreaRef, textAreaFnsRef, setSelections, settingsState, images])
 
 	const onAbort = useCallback(async () => {
 		const threadId = currentThread.id
@@ -277,7 +285,7 @@ export const SidebarChat = () => {
 	const shouldAddGapForStreaming = lastMessage?.role === 'user'
 
 	const messagesHTML = <ChatMessagesScrollArea
-		key={'messages' + chatThreadsState.currentThreadId}
+		key={'messages' + threadId}
 		threadId={threadId}
 		previousMessages={previousMessages}
 		currCheckpointIdx={currCheckpointIdx}
@@ -423,16 +431,14 @@ export const SidebarChat = () => {
 		const url = 'https://www.google.com'
 		// When this composer is rendered inside the agents pop-out window, open the
 		// browser in that window's own right-side workspace column instead of a
-		// Simple Browser editor in the main IDE. Detect the agents window by the
-		// composer's connected window differing from the main renderer window.
-		const node = chatAreaRef.current
-		const inAgentWindow = !!node && getConnectedWindow(node) !== window && agentWindowService.isOpen()
+		// Simple Browser editor in the main IDE. The portal supplies this context
+		// synchronously, so the first click cannot race delayed DOM detection.
 		if (inAgentWindow) {
 			agentWindowService.requestWorkspacePanel('browser', url)
 			return
 		}
 		commandService.executeCommand('simpleBrowser.show', url)
-	}, [commandService, agentWindowService])
+	}, [commandService, agentWindowService, inAgentWindow])
 
 	const inputChatArea = <VoidChatArea
 		featureName='Chat'
@@ -482,7 +488,7 @@ className={`min-h-[40px] px-0.5 py-0.5 resize-none placeholder:text-void-fg-4`}
 				placeholder='Plan, Build, / for skills, @ for context'
 				onChangeText={onChangeText}
 				onKeyDown={onKeyDown}
-				onFocus={() => { chatThreadsService.setCurrentlyFocusedMessageIdx(undefined) }}
+				onFocus={() => { chatThreadsService.setThreadFocusedMessageIdx(threadId, undefined) }}
 				onPaste={handlePaste}
 				onDragEnter={dragHandlers.handleDragEnter}
 				onDragOver={dragHandlers.handleDragOver}
@@ -593,9 +599,9 @@ className={`min-h-[40px] px-0.5 py-0.5 resize-none placeholder:text-void-fg-4`}
 		</div>
 	</section>
 
-	const threadPageInput = <div key={'input' + chatThreadsState.currentThreadId} className='shrink-0'>
+	const threadPageInput = <div key={'input' + threadId} className='shrink-0'>
 		<div className='px-4'>
-			<CommandBarInChat />
+			<CommandBarInChat threadId={threadId} />
 		</div>
 		{queuedMessagesHTML}
 		<div className='px-2 pb-2'>
@@ -604,7 +610,12 @@ className={`min-h-[40px] px-0.5 py-0.5 resize-none placeholder:text-void-fg-4`}
 	</div>
 
 	const landingPageInput = <div>
-		<div className='pt-8'>
+		<div className='pt-4 flex flex-col gap-2'>
+			{inAgentWindow && (
+				<ErrorBoundary>
+					<AgentWorkspaceHeader />
+				</ErrorBoundary>
+			)}
 			{inputChatArea}
 		</div>
 	</div>
@@ -651,17 +662,19 @@ className={`min-h-[40px] px-0.5 py-0.5 resize-none placeholder:text-void-fg-4`}
 
 
 	return (
-		<TodoProvider
-			threadId={threadId}
-			initialTodos={chatThreadsState.allThreads[threadId]?.todoList}
-			isAgentRunning={!!isRunning}
-		>
-			<Fragment key={threadId} // force rerender when change thread
+		<div className='w-full h-full flex flex-col overflow-hidden'>
+			<TodoProvider
+				threadId={threadId}
+				initialTodos={chatThreadsState.allThreads[threadId]?.todoList}
+				isAgentRunning={!!isRunning}
 			>
-				{isLandingPage ?
-					landingPageContent
-					: threadPageContent}
-			</Fragment>
-		</TodoProvider>
+				<Fragment key={threadId} // force rerender when change thread
+				>
+					{isLandingPage ?
+						landingPageContent
+						: threadPageContent}
+				</Fragment>
+			</TodoProvider>
+		</div>
 	)
 }

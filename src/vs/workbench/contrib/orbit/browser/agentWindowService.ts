@@ -3,7 +3,7 @@
  *  Licensed under the Apache License, Version 2.0. See LICENSE.txt for more information.
  *--------------------------------------------------------------------------------------*/
 
-import { $, addDisposableListener, EventHelper, EventType } from '../../../../base/browser/dom.js';
+import { $, addDisposableListener, EventHelper, EventType, sharedMutationObserver } from '../../../../base/browser/dom.js';
 import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
 import { mainWindow } from '../../../../base/browser/window.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
@@ -272,6 +272,8 @@ export class AgentWindowService extends Disposable implements IAgentWindowServic
 	 * request's still-pending slot too).
 	 */
 	private _openTabChain: Promise<void> = Promise.resolve();
+	/** True while a live vscode-tokens-styles observer is attached for the open Agents window. */
+	private _editorTokenStylesSynced = false;
 
 	// Local shell references (valid only while a window is open).
 	private shellEl: HTMLElement | undefined;
@@ -735,7 +737,7 @@ export class AgentWindowService extends Disposable implements IAgentWindowServic
 		// the column shells — the headers are shell-owned DOM the portals must not
 		// overwrite. Await mount so the first compositor repaint runs after content
 		// is in the tree — repainting before React resolves leaves a stale white frame.
-		await this.mountReact(aux, sidebarContent, mainContent, tooltipContainer, workspacePane);
+		await this.mountReact(aux, sidebarContent, mainContent, tooltipContainer, workspacePane, disposables);
 
 		this.scheduleContentReadyRepaint(aux, disposables);
 
@@ -889,7 +891,7 @@ export class AgentWindowService extends Disposable implements IAgentWindowServic
 		}, true));
 	}
 
-	private async mountReact(aux: IAuxiliaryWindow, sidebarPane: HTMLElement, mainPane: HTMLElement, tooltipContainer: HTMLElement, workspacePane: HTMLElement): Promise<void> {
+	private async mountReact(aux: IAuxiliaryWindow, sidebarPane: HTMLElement, mainPane: HTMLElement, tooltipContainer: HTMLElement, workspacePane: HTMLElement, disposables: DisposableStore): Promise<void> {
 		try {
 			const agentWindowMod = await import('./react/out/agent-window-tsx/index.js');
 
@@ -906,6 +908,7 @@ export class AgentWindowService extends Disposable implements IAgentWindowServic
 			// renders, we explicitly clone any new <style> elements that contain
 			// `.void-scope` rules from the main window into the aux window's <head>.
 			this.ensureVoidScopeStyles(aux);
+			this.ensureEditorTokenStyles(aux, disposables);
 
 		// _registerServices must be called with a ServicesAccessor so the
 		// agent-window-tsx bundle's module-level accessor/state get bound.
@@ -960,6 +963,7 @@ export class AgentWindowService extends Disposable implements IAgentWindowServic
 					return;
 				}
 				this.ensureVoidScopeStyles(aux);
+				this.ensureEditorTokenStyles(aux, disposables);
 				aux.layout();
 			}, 0);
 		} catch (err) {
@@ -1043,6 +1047,7 @@ export class AgentWindowService extends Disposable implements IAgentWindowServic
 		}
 
 		this.ensureVoidScopeStyles(aux);
+		this.ensureEditorTokenStyles(aux, disposables);
 		try { aux.layout(); } catch { /* best-effort */ }
 
 		try {
@@ -1073,6 +1078,7 @@ export class AgentWindowService extends Disposable implements IAgentWindowServic
 				return;
 			}
 			this.ensureVoidScopeStyles(aux);
+			this.ensureEditorTokenStyles(aux, disposables);
 			try { aux.layout(); } catch { /* best-effort */ }
 			this.forceShellRepaint(aux);
 			this.revealAuxiliaryWindow(aux);
@@ -1175,6 +1181,93 @@ export class AgentWindowService extends Disposable implements IAgentWindowServic
 			clone.textContent = text;
 			auxDoc.head.appendChild(clone);
 		}
+	}
+
+	/**
+	 * Ensure Monaco TextMate token color rules (`.mtkN { color: ... }`) are present
+	 * and kept in sync in the Agents auxiliary window.
+	 *
+	 * Why this is required: React/Monaco nodes are created via the main document
+	 * and then adopted into the aux render tree, so computed styles come from the
+	 * *aux* document. VS Code clones global stylesheets on aux open, but the
+	 * `vscode-tokens-styles` sheet (written via `textContent` by
+	 * TextMateTokenizationFeature) has historically been missing or stale in this
+	 * window — leaving the workspace file editor monochrome while the main IDE
+	 * editor highlights correctly. We forcibly mirror the sheet and observe it for
+	 * theme changes for the lifetime of the Agents window.
+	 */
+	private ensureEditorTokenStyles(aux: IAuxiliaryWindow, disposables: DisposableStore): void {
+		const TOKEN_STYLE_CLASS = 'vscode-tokens-styles';
+		const ORBIT_TOKEN_STYLE_CLASS = 'orbit-agent-tokens-styles';
+		const auxDoc = aux.window.document;
+		const mainDoc = mainWindow.document;
+
+		const readMainTokenCss = (): string => {
+			const mainStyle = mainDoc.head.querySelector(`style.${TOKEN_STYLE_CLASS}`) as HTMLStyleElement | null;
+			return mainStyle?.textContent ?? '';
+		};
+
+		const apply = (): void => {
+			const css = readMainTokenCss();
+			if (!css) {
+				return;
+			}
+
+			// Prefer updating VS Code's own cloned sheet when present.
+			let target = auxDoc.head.querySelector(`style.${TOKEN_STYLE_CLASS}`) as HTMLStyleElement | null;
+			if (!target) {
+				target = auxDoc.head.querySelector(`style.${ORBIT_TOKEN_STYLE_CLASS}`) as HTMLStyleElement | null;
+			}
+			if (!target) {
+				// After delegateNodeFactories, aux createElement is bound to the main
+				// document; appending into aux head adopts the node into the aux tree
+				// so the rules style Monaco content painted there.
+				target = auxDoc.createElement('style');
+				target.type = 'text/css';
+				target.className = `${TOKEN_STYLE_CLASS} ${ORBIT_TOKEN_STYLE_CLASS}`;
+				auxDoc.head.appendChild(target);
+			}
+			if (target.textContent !== css) {
+				target.textContent = css;
+			}
+		};
+
+		apply();
+
+		// Idempotent: only attach one live sync observer per Agents window lifetime.
+		if (this._editorTokenStylesSynced) {
+			return;
+		}
+		this._editorTokenStylesSynced = true;
+		disposables.add(toDisposable(() => { this._editorTokenStylesSynced = false; }));
+
+		const mainStyle = mainDoc.head.querySelector(`style.${TOKEN_STYLE_CLASS}`);
+		if (mainStyle) {
+			disposables.add(sharedMutationObserver.observe(mainStyle, disposables, { childList: true, characterData: true, subtree: true })(() => {
+				if (this.auxWindow === aux) {
+					apply();
+				}
+			}));
+		}
+
+		// Also catch the rare case where the token style node is replaced entirely.
+		disposables.add(sharedMutationObserver.observe(mainDoc.head, disposables, { childList: true })(mutations => {
+			if (this.auxWindow !== aux) {
+				return;
+			}
+			for (const mutation of mutations) {
+				for (const node of mutation.addedNodes) {
+					if (node instanceof HTMLStyleElement && node.classList.contains(TOKEN_STYLE_CLASS)) {
+						apply();
+						disposables.add(sharedMutationObserver.observe(node, disposables, { childList: true, characterData: true, subtree: true })(() => {
+							if (this.auxWindow === aux) {
+								apply();
+							}
+						}));
+					}
+				}
+			}
+		}));
 	}
 
 	toggleSidebar(): void {

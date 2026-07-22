@@ -5,17 +5,22 @@
 
 import { $, addDisposableListener } from '../../../../base/browser/dom.js';
 import { mainWindow } from '../../../../base/browser/window.js';
+import { KeyCode, KeyMod } from '../../../../base/common/keyCodes.js';
 import { Disposable, DisposableStore, toDisposable } from '../../../../base/common/lifecycle.js';
 import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
+import { KeybindingWeight } from '../../../../platform/keybinding/common/keybindingsRegistry.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../common/contributions.js';
+import { IsAuxiliaryWindowFocusedContext } from '../../../common/contextkeys.js';
 import { IAgentWindowService } from './agentWindowService.js';
+import { IAgentProjectWorkspaceService } from './agentProjectWorkspaceService.js';
 
 // ---------------------------------------------------------------------------
 // Command
 // ---------------------------------------------------------------------------
 
 export const OPEN_AGENTS_WINDOW_ACTION_ID = 'orbit.action.openAgentsWindow';
+export const SELECT_AGENT_WORKSPACE_ACTION_ID = 'orbit.action.selectAgentWorkspace';
 
 registerAction2(class extends Action2 {
 	constructor() {
@@ -28,6 +33,31 @@ registerAction2(class extends Action2 {
 	}
 	async run(accessor: ServicesAccessor): Promise<void> {
 		await accessor.get(IAgentWindowService).open();
+	}
+});
+
+registerAction2(class extends Action2 {
+	constructor() {
+		super({
+			id: SELECT_AGENT_WORKSPACE_ACTION_ID,
+			title: { value: 'Select Agent Workspace', original: 'Select Agent Workspace' },
+			f1: true,
+			category: { value: 'Orbit', original: 'Orbit' },
+			keybinding: {
+				primary: KeyMod.CtrlCmd | KeyCode.Period,
+				// Must be scoped to the Agents (auxiliary) window: unscoped, this
+				// chord shadows the editor's Quick Fix (CtrlCmd+.) everywhere.
+				when: IsAuxiliaryWindowFocusedContext,
+				weight: KeybindingWeight.WorkbenchContrib + 10,
+			},
+		});
+	}
+	async run(accessor: ServicesAccessor): Promise<void> {
+		const agentWindow = accessor.get(IAgentWindowService);
+		if (!agentWindow.isOpen()) {
+			await agentWindow.open();
+		}
+		accessor.get(IAgentProjectWorkspaceService).requestOpenPicker();
 	}
 });
 
