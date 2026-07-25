@@ -63,6 +63,10 @@ import './skillImportService.js'
 // register Thread History
 import './chatThreadService.js'
 
+// self-hosted runner (pairing + remote tasks)
+import './runnerService.js'
+import './remoteTaskService.js'
+
 // ping
 import './metricsPollService.js'
 

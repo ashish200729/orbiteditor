@@ -5,7 +5,7 @@
 
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { registerSingleton, InstantiationType } from '../../../../platform/instantiation/common/extensions.js';
-import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
+import { IInstantiationService, createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 
 import { URI } from '../../../../base/common/uri.js';
@@ -52,8 +52,10 @@ import { ISubAgentService } from './subAgentService.js';
 import { getSubAgent } from '../common/subAgentRegistry.js';
 import { ITerminalToolService } from './terminalToolService.js';
 import { IAgentProjectWorkspaceService } from './agentProjectWorkspaceService.js';
+import { IRemoteTaskService } from './remoteTaskService.interface.js';
 import { resolveFoldersForThread } from '../common/agentWorkspaceContext.js';
 import { findNewestThreadIdInExactScope, isUriInsideFolders } from '../common/agentWorkspaceHelpers.js';
+import { IAgentWindowService } from './agentWindowService.interface.js';
 import { applyTodoWrite, normalizeTodoList, todoListsEqual } from '../common/todoToolHelpers.js';
 import { getActiveWindow } from '../../../../base/browser/dom.js';
 import { findThreadComposerInWindow, focusInConnectedWindow } from './connectedWindowDom.js';
@@ -274,6 +276,16 @@ export type ThreadType = {
 	 */
 	agentWorkspaceId?: string | null;
 
+	/** Present when the thread has at least one Self-hosted Runner turn. */
+	runnerProfile?: {
+		hasRemoteTurns: true;
+		lastRunnerId?: string;
+		lastRunnerName?: string;
+	};
+
+	/** Remote task ids whose assistant/tool output was appended to messages. */
+	materializedRemoteTaskIds?: string[];
+
 	// this doesn't need to go in a state object, but feels right
 	state: {
 		currCheckpointIdx: number | null; // the latest checkpoint we're at (null if not at a particular checkpoint, like if the chat is streaming, or chat just finished and we haven't clicked on a checkpt)
@@ -416,8 +428,11 @@ export interface IChatThreadService {
 	/** Ensure the Agents window has a thread in exactly this workspace scope. */
 	ensureAgentWindowThread(agentWorkspaceId: string | null): string;
 	/** Create/switch to an empty thread. Pass agentWorkspaceId when opened from the Agents window. */
-	openNewThread(opts?: { agentWorkspaceId?: string | null }): void;
-	switchToThread(threadId: string, opts?: { inAgentWindow?: boolean }): void;
+	openNewThread(opts?: { agentWorkspaceId?: string | null; forceNew?: boolean }): void;
+	switchToThread(threadId: string, opts?: { inAgentWindow?: boolean; adoptWorkspaceId?: string | null }): void;
+
+	/** Assign an IDE-scoped thread to an agent workspace so it can render in the Agents window. */
+	adoptThreadToAgentWorkspace(threadId: string, agentWorkspaceId: string | null): void;
 	setThreadState(threadId: string, newState: Partial<ThreadType['state']>): void;
 	getThreadMessageState(threadId: string, messageIdx: number): UserMessageState;
 	setThreadMessageState(threadId: string, messageIdx: number, newState: Partial<UserMessageState>): void;
@@ -506,6 +521,8 @@ export interface IChatThreadService {
 	jumpToCheckpointBeforeMessageIdx(opts: { threadId: string, messageIdx: number, jumpToUserModified: boolean }): void;
 
 	focusCurrentChat: () => Promise<void>
+	/** Focus the composer for the IDE sidebar or Agents window selection. */
+	focusSelectedChat: (inAgentWindow: boolean) => Promise<void>
 	blurCurrentChat: () => Promise<void>
 
 	/** Re-run Grep with an increased offset to load the next page of results. */
@@ -558,6 +575,20 @@ export interface IChatThreadService {
 
 	/** Waits until the thread's current agent run finishes (used after plan Build). */
 	waitForThreadAgentRunEnd(threadId: string): Promise<void>;
+
+	/** Persist a user turn for Self-hosted Runner without starting the local agent loop. */
+	addRemoteUserTurn(opts: { threadId: string; userMessage: string; runnerId: string; runnerName?: string }): number | null;
+
+	/** Remove a failed remote submit turn (user message and trailing checkpoint). */
+	revertRemoteUserTurn(threadId: string, fromMessageIndex: number): void;
+
+	/** Append remote assistant/tool messages to the thread transcript (idempotent per taskId). */
+	materializeRemoteTurn(
+		threadId: string,
+		taskId: string,
+		messages: ChatMessage[],
+		opts?: { state?: string; lastError?: string },
+	): void;
 }
 
 export const IChatThreadService = createDecorator<IChatThreadService>('voidChatThreadService');
@@ -596,6 +627,15 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 	/** Threads already warned that compaction summarization failed (A4) — avoids repeating the notice
 	 *  every high-fill turn. Cleared when a summary later succeeds for that thread. */
 	private readonly _compactionFallbackNotified = new Set<string>();
+
+	// Lazily resolved to avoid circular DI: ChatThreadService ↔ RemoteTaskService
+	private _remoteTaskService: IRemoteTaskService | undefined;
+	private _getRemoteTaskService(): IRemoteTaskService {
+		if (!this._remoteTaskService) {
+			this._remoteTaskService = this._instantiationService.invokeFunction(accessor => accessor.get(IRemoteTaskService));
+		}
+		return this._remoteTaskService;
+	}
 
 	/** Per-thread UI build phase (Build button). Not persisted. */
 	private readonly _planBuildStateByThread: Map<string, PlanBuildState> = new Map();
@@ -651,6 +691,7 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 		@ISubAgentService private readonly _subAgentService: ISubAgentService,
 		@ITerminalToolService private readonly _terminalToolService: ITerminalToolService,
 		@IAgentProjectWorkspaceService private readonly _agentProjectWorkspaceService: IAgentProjectWorkspaceService,
+		@IInstantiationService private readonly _instantiationService: IInstantiationService,
 	) {
 		super()
 		this.state = { allThreads: {}, currentThreadId: null as unknown as string, agentWindowThreadId: null } // default state
@@ -803,9 +844,18 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 	}
 
 	async focusCurrentChat() {
-		const threadId = this.state.currentThreadId
+		await this.focusSelectedChat(false)
+	}
+
+	async focusSelectedChat(inAgentWindow: boolean) {
+		const threadId = this.getSelectedThreadId(inAgentWindow)
+		if (!threadId) {
+			return
+		}
 		const thread = this.state.allThreads[threadId]
-		if (!thread) return
+		if (!thread) {
+			return
+		}
 		// Wait for the composer to actually exist before querying for it — a
 		// caller that just called `openViewContainer` (e.g. the "open sidebar" /
 		// "new chat" actions) races the React composer's mount, and without this
@@ -813,13 +863,19 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 		if (thread.state.mountedInfo) {
 			await thread.state.mountedInfo.whenMounted
 		}
-		if (!this.isCurrentlyFocusingMessage()) {
-			const activeWindow = getActiveWindow()
-			const composerToFocus = findThreadComposerInWindow(activeWindow)
+		if (!this.isCurrentlyFocusingMessage(inAgentWindow)) {
+			const targetWindow = inAgentWindow
+				? this._getAgentWindowService().getAuxiliaryDomWindow() ?? getActiveWindow()
+				: getActiveWindow()
+			const composerToFocus = findThreadComposerInWindow(targetWindow)
 			if (composerToFocus) {
 				focusInConnectedWindow(composerToFocus)
 			}
 		}
+	}
+
+	private _getAgentWindowService(): IAgentWindowService {
+		return this._instantiationService.invokeFunction(accessor => accessor.get(IAgentWindowService))
 	}
 	async blurCurrentChat() {
 		const threadId = this.state.currentThreadId
@@ -1463,28 +1519,49 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 
 
 		// if we just switched to a thread, update its current stream state if it's not streaming to possibly streaming
-		const threadId = newState.currentThreadId
-		const streamState = this.streamState[threadId]
-		if (streamState?.isRunning === undefined && !streamState?.error) {
+		const threadIdsToRepair = new Set<string>()
+		if (newState.currentThreadId) {
+			threadIdsToRepair.add(newState.currentThreadId)
+		}
+		if (newState.agentWindowThreadId) {
+			threadIdsToRepair.add(newState.agentWindowThreadId)
+		}
+		for (const repairThreadId of threadIdsToRepair) {
+			const streamState = this.streamState[repairThreadId]
+			if (streamState?.isRunning !== undefined || streamState?.error) {
+				continue
+			}
 
 			// set streamState
-			const messages = newState.allThreads[threadId]?.messages
+			const messages = newState.allThreads[repairThreadId]?.messages
 			const lastMessage = messages && messages[messages.length - 1]
 			// if awaiting user but stream state doesn't indicate it (happens if restart Void)
-			if (lastMessage && lastMessage.role === 'tool' && lastMessage.type === 'tool_request')
-				this._setStreamState(threadId, { isRunning: 'awaiting_user', pendingToolRequestId: lastMessage.id })
+			if (lastMessage && lastMessage.role === 'tool' && lastMessage.type === 'tool_request') {
+				this._setStreamState(repairThreadId, { isRunning: 'awaiting_user', pendingToolRequestId: lastMessage.id })
+			}
 
 			// if running now but stream state doesn't indicate it (happens if restart Void), cancel that last tool
 			if (lastMessage && lastMessage.role === 'tool' && lastMessage.type === 'running_now') {
-
-				this._updateLatestTool(threadId, { role: 'tool', type: 'rejected', content: lastMessage.content, id: lastMessage.id, rawParams: lastMessage.rawParams, result: null, name: lastMessage.name, params: lastMessage.params, mcpServerName: lastMessage.mcpServerName })
+				this._updateLatestTool(repairThreadId, { role: 'tool', type: 'rejected', content: lastMessage.content, id: lastMessage.id, rawParams: lastMessage.rawParams, result: null, name: lastMessage.name, params: lastMessage.params, mcpServerName: lastMessage.mcpServerName })
 			}
-
 		}
 
 
-		// if we did not just set the state to true, set mount info
+		// Refresh mount handshake only when this update switches the selected thread.
+		// Falling back to newState.* would clear Agents-window (and sidebar) mount
+		// info on routine allThreads persists — remote user turns, materialization, etc.
 		if (doNotRefreshMountInfo) return
+
+		const switchedThreadId = state.agentWindowThreadId ?? state.currentThreadId
+		if (switchedThreadId) {
+			this._ensureMountInfoForThread(switchedThreadId)
+		}
+	}
+
+	private _ensureMountInfoForThread(threadId: string): void {
+		if (!this.state.allThreads[threadId]) {
+			return
+		}
 
 		let whenMountedResolver: (w: WhenMounted) => void
 		const whenMountedPromise = new Promise<WhenMounted>((res) => whenMountedResolver = res)
@@ -1500,9 +1577,6 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 				},
 			}
 		}, true) // do not trigger an update
-
-
-
 	}
 
 
@@ -3655,6 +3729,7 @@ We only need to do it for files that were edited since `from`, ie files between 
 		const next = nextId ? this.state.allThreads[nextId] : undefined
 		if (next) {
 			this._setState({ agentWindowThreadId: next.id }, true)
+			this._ensureMountInfoForThread(next.id)
 			return next.id
 		}
 
@@ -3663,11 +3738,24 @@ We only need to do it for files that were edited since `from`, ie files between 
 		this._turnSequenceOfThread[newThread.id] = 0
 		this._storeAllThreads(allThreads)
 		this._setState({ allThreads, agentWindowThreadId: newThread.id }, true)
+		this._ensureMountInfoForThread(newThread.id)
 		return newThread.id
 	}
 
 	getCurrentFocusedMessageIdx() {
-		const thread = this.getCurrentThread()
+		return this.getFocusedMessageIdx(false)
+	}
+
+	isCurrentlyFocusingMessage(inAgentWindow = false) {
+		return this.getFocusedMessageIdx(inAgentWindow) !== undefined
+	}
+
+	private getFocusedMessageIdx(inAgentWindow: boolean) {
+		const threadId = inAgentWindow ? this.state.agentWindowThreadId : this.state.currentThreadId
+		const thread = threadId ? this.state.allThreads[threadId] : undefined
+		if (!thread) {
+			return undefined
+		}
 
 		// get the focusedMessageIdx
 		const focusedMessageIdx = thread.state.focusedMessageIdx
@@ -3681,19 +3769,32 @@ We only need to do it for files that were edited since `from`, ie files between 
 		return focusedMessageIdx
 	}
 
-	isCurrentlyFocusingMessage() {
-		return this.getCurrentFocusedMessageIdx() !== undefined
-	}
-
-	switchToThread(threadId: string, opts?: { inAgentWindow?: boolean }) {
+	switchToThread(threadId: string, opts?: { inAgentWindow?: boolean; adoptWorkspaceId?: string | null }) {
 		if (!this.state.allThreads[threadId]) {
 			return
 		}
 		if (opts?.inAgentWindow) {
+			if (opts.adoptWorkspaceId !== undefined) {
+				this.adoptThreadToAgentWorkspace(threadId, opts.adoptWorkspaceId)
+			}
 			this._setState({ agentWindowThreadId: threadId }, true)
+			this._ensureMountInfoForThread(threadId)
 			return
 		}
 		this._setState({ currentThreadId: threadId })
+	}
+
+	adoptThreadToAgentWorkspace(threadId: string, agentWorkspaceId: string | null): void {
+		const thread = this.state.allThreads[threadId]
+		if (!thread || thread.agentWorkspaceId !== undefined) {
+			return
+		}
+		const allThreads = {
+			...this.state.allThreads,
+			[threadId]: { ...thread, agentWorkspaceId },
+		}
+		this._storeAllThreads(allThreads)
+		this._setState({ allThreads })
 	}
 
 	/**
@@ -3730,45 +3831,71 @@ We only need to do it for files that were edited since `from`, ie files between 
 	}
 
 
-	openNewThread(opts?: { agentWorkspaceId?: string | null }) {
+	openNewThread(opts?: { agentWorkspaceId?: string | null; forceNew?: boolean }) {
 		// if a thread with 0 messages already exists in the same workspace scope, switch to it
 		const { allThreads: currentThreads } = this.state
 		const wantsWorkspaceField = opts && 'agentWorkspaceId' in opts
 		const targetWorkspaceId = wantsWorkspaceField ? (opts!.agentWorkspaceId ?? null) : undefined
-		for (const threadId in currentThreads) {
-			const existing = currentThreads[threadId]
-			if (!existing || existing.messages.length !== 0) {
-				continue
-			}
-			// Match workspace scope: agent-window callers only reuse empty threads
-			// in the same agent workspace; IDE callers only reuse unscoped threads.
-			if (wantsWorkspaceField) {
-				// Strict: undefined (IDE) ≠ null (No Repo).
-				if (existing.agentWorkspaceId !== targetWorkspaceId) {
+		if (!opts?.forceNew) {
+			for (const threadId in currentThreads) {
+				const existing = currentThreads[threadId]
+				if (!existing || existing.messages.length !== 0) {
 					continue
 				}
-			} else if (existing.agentWorkspaceId !== undefined) {
-				continue
+				// Match workspace scope: agent-window callers only reuse empty threads
+				// in the same agent workspace; IDE callers only reuse unscoped threads.
+				if (wantsWorkspaceField) {
+					// Strict: undefined (IDE) ≠ null (No Repo).
+					if (existing.agentWorkspaceId !== targetWorkspaceId) {
+						continue
+					}
+				} else if (existing.agentWorkspaceId !== undefined) {
+					continue
+				}
+				if (!(threadId in this._turnSequenceOfThread)) {
+					this._turnSequenceOfThread[threadId] = 0
+				}
+				this.switchToThread(threadId, { inAgentWindow: wantsWorkspaceField })
+				return
 			}
-			if (!(threadId in this._turnSequenceOfThread)) {
-				this._turnSequenceOfThread[threadId] = 0
-			}
-			this.switchToThread(threadId, { inAgentWindow: wantsWorkspaceField })
-			return
 		}
+
+		let threadsForCreate = currentThreads
+		if (opts?.forceNew) {
+			threadsForCreate = { ...currentThreads }
+			for (const threadId in currentThreads) {
+				const existing = currentThreads[threadId]
+				if (!existing || existing.messages.length !== 0) {
+					continue
+				}
+				if (wantsWorkspaceField) {
+					if (existing.agentWorkspaceId !== targetWorkspaceId) {
+						continue
+					}
+				} else if (existing.agentWorkspaceId !== undefined) {
+					continue
+				}
+				delete threadsForCreate[threadId]
+				delete this._turnSequenceOfThread[threadId]
+			}
+		}
+
 		// otherwise, start a new thread
 		const newThread = newThreadObject(opts)
 
 		// update state
 		const newThreads: ChatThreads = {
-			...currentThreads,
+			...threadsForCreate,
 			[newThread.id]: newThread
 		}
 		this._turnSequenceOfThread[newThread.id] = 0
 		this._storeAllThreads(newThreads)
-		this._setState(wantsWorkspaceField
-			? { allThreads: newThreads, agentWindowThreadId: newThread.id }
-			: { allThreads: newThreads, currentThreadId: newThread.id }, wantsWorkspaceField)
+		if (wantsWorkspaceField) {
+			this._setState({ allThreads: newThreads, agentWindowThreadId: newThread.id }, true)
+			this._ensureMountInfoForThread(newThread.id)
+		} else {
+			this._setState({ allThreads: newThreads, currentThreadId: newThread.id })
+		}
 	}
 
 	hasRunningThreadInWorkspace(agentWorkspaceId: string | null): boolean {
@@ -3797,6 +3924,11 @@ We only need to do it for files that were edited since `from`, ie files between 
 			if ((this._pendingBackgroundTasks.get(threadId)?.size ?? 0) > 0) {
 				return true
 			}
+			for (const task of this._getRemoteTaskService().listTasks()) {
+				if (task.editorThreadId !== threadId) { continue }
+				if (['COMPLETED', 'FAILED', 'CANCELLED', 'TIMED_OUT', 'LOST'].includes(task.state)) { continue }
+				return true
+			}
 		}
 		return false
 	}
@@ -3804,6 +3936,7 @@ We only need to do it for files that were edited since `from`, ie files between 
 
 	deleteThread(threadId: string): void {
 		const { allThreads: currentThreads, currentThreadId } = this.state
+		void this._getRemoteTaskService().removeTasksForThread(threadId)
 		void this._terminalToolService.killShellsForThread(threadId);
 		if (this._turnSequenceOfThread[threadId] !== undefined) {
 			// nothing to cancel
@@ -3919,6 +4052,120 @@ We only need to do it for files that were edited since `from`, ie files between 
 		}
 		this._storeAllThreads(newThreads)
 		this._setState({ allThreads: newThreads }) // the current thread just changed (it had a message added to it)
+	}
+
+	addRemoteUserTurn({ threadId, userMessage, runnerId, runnerName }: { threadId: string; userMessage: string; runnerId: string; runnerName?: string }): number | null {
+		const thread = this.state.allThreads[threadId]
+		if (!thread) { return null }
+		const trimmed = userMessage.trim()
+		if (!trimmed) { return null }
+
+		const lastMsg = thread.messages[thread.messages.length - 1]
+		if (lastMsg?.role !== 'checkpoint') {
+			this._addUserCheckpoint({ threadId })
+		}
+
+		const userHistoryElt: ChatMessage = {
+			role: 'user',
+			content: trimmed,
+			displayContent: trimmed,
+			selections: [],
+			state: defaultMessageState,
+		}
+		this._addMessageToThread(threadId, userHistoryElt)
+		const messageIndex = (this.state.allThreads[threadId]?.messages.length ?? 1) - 1
+
+		const updated = this.state.allThreads[threadId]
+		if (!updated) { return messageIndex }
+		const newThreads = {
+			...this.state.allThreads,
+			[threadId]: {
+				...updated,
+				runnerProfile: {
+					hasRemoteTurns: true as const,
+					lastRunnerId: runnerId,
+					lastRunnerName: runnerName,
+				},
+				state: {
+					...updated.state,
+					currCheckpointIdx: null,
+					stagedSlashTokens: [],
+				},
+			},
+		}
+		this._storeAllThreads(newThreads)
+		this._setState({ allThreads: newThreads })
+		return messageIndex
+	}
+
+	revertRemoteUserTurn(threadId: string, fromMessageIndex: number): void {
+		const thread = this.state.allThreads[threadId]
+		if (!thread || fromMessageIndex < 0 || fromMessageIndex > thread.messages.length) {
+			return
+		}
+		// addRemoteUserTurn inserts a user_edit checkpoint immediately before the
+		// user message when one was not already present. Drop that checkpoint too
+		// so a failed remote submit does not leave an orphan checkpoint.
+		let cut = fromMessageIndex
+		if (cut > 0) {
+			const prev = thread.messages[cut - 1]
+			if (prev?.role === 'checkpoint' && prev.type === 'user_edit') {
+				cut -= 1
+			}
+		}
+		const messages = thread.messages.slice(0, cut)
+		const newThreads = {
+			...this.state.allThreads,
+			[threadId]: { ...thread, messages },
+		}
+		this._storeAllThreads(newThreads)
+		this._setState({ allThreads: newThreads })
+	}
+
+	materializeRemoteTurn(
+		threadId: string,
+		taskId: string,
+		messages: ChatMessage[],
+		opts?: { state?: string; lastError?: string },
+	): void {
+		const thread = this.state.allThreads[threadId]
+		if (!thread) { return }
+		if (thread.materializedRemoteTaskIds?.includes(taskId)) { return }
+		const toAppend = messages.filter(message => message.role !== 'user')
+		// Always mark the task materialized — even when the transcript is empty
+		// (cancelled/failed before any agent output). Otherwise the live overlay
+		// path retries forever and the command bar stays in draft mode.
+		let appendix = toAppend
+		if (appendix.length === 0) {
+			const err = (opts?.lastError ?? '').trim()
+			const state = opts?.state
+			const prefix = state === 'CANCELLED'
+				? 'Remote task cancelled'
+				: state === 'TIMED_OUT'
+					? 'Remote task timed out'
+					: state === 'LOST'
+						? 'Lost connection to the Self-hosted Runner'
+						: state === 'FAILED'
+							? 'Remote task failed'
+							: 'Remote task finished'
+			appendix = [{
+				role: 'assistant' as const,
+				displayContent: err ? `${prefix}: ${err}` : `${prefix}.`,
+				reasoning: '',
+				anthropicReasoning: null,
+			} satisfies ChatMessage]
+		}
+		const newThreads = {
+			...this.state.allThreads,
+			[threadId]: {
+				...thread,
+				lastModified: new Date().toISOString(),
+				messages: [...thread.messages, ...appendix],
+				materializedRemoteTaskIds: [...(thread.materializedRemoteTaskIds ?? []), taskId],
+			},
+		}
+		this._storeAllThreads(newThreads)
+		this._setState({ allThreads: newThreads })
 	}
 
 	// sets the currently selected message (must be undefined if no message is selected)

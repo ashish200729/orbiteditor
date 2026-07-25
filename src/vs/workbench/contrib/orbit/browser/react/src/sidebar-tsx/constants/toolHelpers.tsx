@@ -348,9 +348,19 @@ export const toolNameToDesc = (toolName: string, _toolParams: BuiltinToolCallPar
 	const x = {
 		'Read': () => {
 			const toolParams = _toolParams as BuiltinToolCallParams['Read']
+			const pathFromRaw = typeof rawParams?.path === 'string' ? rawParams.path
+				: typeof rawParams?.uri === 'string' ? rawParams.uri
+					: undefined
+			const uri = toolParams?.uri
+			if (!uri && pathFromRaw) {
+				return { desc1: getBasename(pathFromRaw) }
+			}
+			if (!uri) {
+				return { desc1: '' }
+			}
 			return {
-				desc1: getBasename(toolParams.uri.fsPath),
-				desc1Info: getRelative(toolParams.uri, accessor),
+				desc1: getBasename(uri.fsPath),
+				desc1Info: getRelative(uri, accessor),
 			};
 		},
 		'Glob': () => {

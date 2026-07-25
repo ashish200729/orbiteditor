@@ -12,7 +12,7 @@ import { Codicon } from '../../../../base/common/codicons.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { IRectangle, hasNativeTitlebar, getTitleBarStyle } from '../../../../platform/window/common/window.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
-import { createDecorator, IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
+import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { INativeHostService } from '../../../../platform/native/common/native.js';
@@ -29,76 +29,9 @@ import { ipcRenderer } from '../../../../base/parts/sandbox/electron-sandbox/glo
 import { BROWSER_AUTOMATION_IPC_CHANNELS, IBrowserViewService } from '../../../../platform/browserView/common/browserView.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
 import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
+import { IAgentWindowService, type WorkspacePanelKind } from './agentWindowService.interface.js';
 
-// ---------------------------------------------------------------------------
-// Service decorator + interface
-// ---------------------------------------------------------------------------
-
-export const IAgentWindowService = createDecorator<IAgentWindowService>('agentWindowService');
-
-/** Kinds of panel the agents-window workspace column can host (mirrors PanelKind
- *  in the React workspaceTypes; kept as a string union so this platform-side file
- *  does not depend on the React bundle). */
-export type WorkspacePanelKind = 'changes' | 'terminal' | 'files' | 'browser';
-
-export interface IAgentWindowService {
-	readonly _serviceBrand: undefined;
-
-	/** Fires whenever the window opens or closes (used to sync the main-window pill active state). */
-	readonly onDidChangeState: Event<void>;
-
-	/**
-	 * Fires when something (e.g. the chat composer's browser button) asks the
-	 * agents window to open a panel in its right-side workspace column. The
-	 * React `AgentWorkspace` listens and opens/focuses the tab.
-	 */
-	readonly onDidRequestWorkspacePanel: Event<{ kind: WorkspacePanelKind; resource?: string }>;
-
-	/** True while the standalone agents window is open. */
-	isOpen(): boolean;
-
-	/** Open the agents window, or focus it if already open. */
-	open(): Promise<void>;
-
-	/** Bring focus back to the main IDE window (the "IDE" button). */
-	focusMainWindow(): Promise<void>;
-
-	/** Toggle the local (agent-window-only) chat-history sidebar. */
-	toggleSidebar(): void;
-
-	/** Toggle the right-side workspace pane (Changes / Terminal / File / Browser). */
-	toggleWorkspace(): void;
-
-	/**
-	 * Open (or focus) a panel in the agents window's right-side workspace column.
-	 * Ensures the workspace is visible first. No-op when the window is closed.
-	 * For `browser`, `resource` is the initial URL.
-	 */
-	requestWorkspacePanel(kind: WorkspacePanelKind, resource?: string): void;
-
-	/**
-	 * Drain panel requests that were fired while nothing was subscribed yet
-	 * (the React workspace mounts asynchronously after the window opens; an
-	 * early MCP `agentOpenTab` would otherwise be silently lost and time out).
-	 * Called once by `AgentWorkspace` right after it subscribes.
-	 */
-	consumePendingWorkspacePanelRequests(): { kind: WorkspacePanelKind; resource?: string }[];
-
-	/**
-	 * Fires when the built-in browser MCP asks to focus an agents-window browser
-	 * view (by native view id). React activates the hosting workspace tab.
-	 */
-	readonly onDidRequestSelectBrowserView: Event<{ browserViewId: string; workspaceTabId: string }>;
-
-	/** Register a native browser view owned by a workspace browser tab. */
-	registerBrowserView(browserViewId: string, workspaceTabId: string): IDisposable;
-
-	/** Resolve the workspace tab that hosts a native browser view id. */
-	findWorkspaceTabForBrowserView(browserViewId: string): string | undefined;
-
-	/** Returns the agents pop-out window id while open, else undefined. */
-	getAuxiliaryWindowId(): number | undefined;
-}
+export { IAgentWindowService, type WorkspacePanelKind } from './agentWindowService.interface.js';
 
 // ---------------------------------------------------------------------------
 // Storage keys
@@ -306,6 +239,10 @@ export class AgentWindowService extends Disposable implements IAgentWindowServic
 
 	getAuxiliaryWindowId(): number | undefined {
 		return this.auxWindow?.window.vscodeWindowId;
+	}
+
+	getAuxiliaryDomWindow(): Window | undefined {
+		return this.auxWindow?.window;
 	}
 
 	registerBrowserView(browserViewId: string, workspaceTabId: string): IDisposable {
@@ -1535,7 +1472,8 @@ export class AgentWindowService extends Disposable implements IAgentWindowServic
 		}
 		let title = 'New Chat';
 		try {
-			const thread = this.chatThreadService.getCurrentThread();
+			const threadId = this.chatThreadService.getSelectedThreadId(true);
+			const thread = threadId ? this.chatThreadService.getThread(threadId) : undefined;
 			const firstUser = thread?.messages?.find(m => m.role === 'user');
 			const content = firstUser && firstUser.role === 'user' ? firstUser.displayContent : undefined;
 			if (content && content.trim()) {

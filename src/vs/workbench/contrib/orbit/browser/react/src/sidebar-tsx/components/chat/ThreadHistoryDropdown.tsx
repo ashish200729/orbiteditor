@@ -4,11 +4,13 @@
  *--------------------------------------------------------------------------------------*/
 
 import React, { useMemo, useState, useEffect, useRef, useCallback } from 'react';
-import { Check, Copy, LoaderCircle, MessageCircleQuestion, Plus, Search, Trash2, X } from 'lucide-react';
+import { Copy, Plus, Search, Trash2, X } from 'lucide-react';
 import { useAccessor, useChatThreadsState, useRunningThreadIds, useIsDark } from '../../../util/services.js';
 import { IsRunningType, ThreadType } from '../../../../../chatThreadService.js';
 import { getConnectedDocument } from '../../contexts/ConnectedWindowContext.js';
 import { focusInConnectedWindow } from '../../../util/helpers.js';
+import { RunnerThreadCloudIcon } from '../runner/RunnerThreadCloudIcon.js';
+import { ThreadStatusIcon } from '../../../util/ThreadStatusIcon.js';
 
 type ThreadHistoryDropdownProps = {
 	onClose: () => void;
@@ -95,7 +97,8 @@ export const ThreadHistoryDropdown = ({ onClose }: ThreadHistoryDropdownProps) =
 	}, [filtered]);
 
 	const handleNewAgent = useCallback(() => {
-		chatThreadsService.openNewThread();
+		chatThreadsService.openNewThread({ forceNew: true });
+		void chatThreadsService.focusSelectedChat(false);
 		onClose();
 	}, [chatThreadsService, onClose]);
 
@@ -221,16 +224,23 @@ const ThreadItem = ({ thread, isActive, isRunning, onSelect }: {
 		>
 			{/* Status icon */}
 			<div style={{ flexShrink: 0, width: 12, height: 12, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-				{isRunning === 'LLM' || isRunning === 'tool' || isRunning === 'idle' ? (
-					<LoaderCircle size={12} style={{ animation: 'spin 1s linear infinite' }} />
-				) : isRunning === 'awaiting_user' ? (
-					<MessageCircleQuestion size={12} />
-				) : (
-					<Check size={12} style={{ opacity: 0.6 }} />
-				)}
+				<ThreadStatusIcon
+					isRunning={isRunning}
+					isDraft={false}
+					idleDisplay="completed"
+					size="xs"
+				/>
 			</div>
 
-			{/* Title */}
+		{/* Title */}
+		{thread.runnerProfile?.hasRemoteTurns && (
+			<RunnerThreadCloudIcon
+				size={11}
+				title={thread.runnerProfile.lastRunnerName
+					? `Self-hosted Runner · ${thread.runnerProfile.lastRunnerName}`
+					: 'Self-hosted Runner'}
+			/>
+		)}
 			<span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{title.slice(0, 35)}{title.length > 35 ? '…' : ''}</span>
 
 			{/* Hover actions */}

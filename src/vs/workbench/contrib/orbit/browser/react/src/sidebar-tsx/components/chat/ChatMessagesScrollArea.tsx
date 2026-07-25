@@ -12,6 +12,7 @@ import { ChatScrollContainer } from './ChatScrollContainer.js';
 import { SidebarChatMessages } from './SidebarChatMessages.js';
 import { StreamingMessagePane } from './StreamingMessagePane.js';
 import { TurnAnchorSpacer } from './TurnAnchorSpacer.js';
+import { AgentStatusLine } from '../wrappers/AgentStatusLine.js';
 
 export type ChatScrollAreaConfig = {
 	containerRef: React.RefObject<HTMLDivElement | null>;
@@ -32,6 +33,13 @@ type ChatMessagesScrollAreaProps = {
 	shouldAddGapForStreaming: boolean;
 	mcpToolNameSet: Set<string>;
 	className: string;
+	readOnlyMessageIndices?: ReadonlySet<number>;
+	threadMessageIndices?: ReadonlyMap<number, number>;
+	remoteTaskFooters?: ReadonlyMap<number, string>;
+	workspaceRoot?: string | null;
+	/** When set, an AgentStatusLine is rendered for a running remote task that
+	 * has no local stream pane (remote tasks don't populate stream state). */
+	remoteStatusLineLabel?: string | null;
 };
 
 export const ChatMessagesScrollArea = React.memo(({
@@ -47,6 +55,11 @@ export const ChatMessagesScrollArea = React.memo(({
 	shouldAddGapForStreaming,
 	mcpToolNameSet,
 	className,
+	readOnlyMessageIndices,
+	threadMessageIndices,
+	remoteTaskFooters,
+	workspaceRoot,
+	remoteStatusLineLabel,
 }: ChatMessagesScrollAreaProps) => {
 	const streamState = useChatThreadsStreamState(threadId);
 	// This length only drives scroll generation (auto-follow while streaming), so it just
@@ -69,10 +82,17 @@ export const ChatMessagesScrollArea = React.memo(({
 			}
 			return sum + toolLen
 		}, 0) ?? 0), [streamState]);
+	const committedContentLength = useMemo(() => previousMessages.reduce((sum, message) => {
+		if (message.role === 'user' || message.role === 'assistant') {
+			return sum + message.displayContent.length + (message.role === 'assistant' ? message.reasoning.length : 0);
+		}
+		if (message.role === 'tool') return sum + (message.content?.length ?? 0);
+		return sum;
+	}, 0), [previousMessages]);
 
 	const scrollGeneration = useMemo(
-		() => previousMessages.length + streamContentLength + (streamState?.isRunning ? 1 : 0),
-		[previousMessages.length, streamContentLength, streamState?.isRunning],
+		() => previousMessages.length + committedContentLength + streamContentLength + (streamState?.isRunning ? 1 : 0),
+		[previousMessages.length, committedContentLength, streamContentLength, streamState?.isRunning],
 	);
 
 	const hasStreamPane = !!streamState?.isRunning
@@ -98,16 +118,28 @@ export const ChatMessagesScrollArea = React.memo(({
 				stickyOffset={stickyOffset}
 				stickyMessageIndex={stickyMessageIndex}
 				userMessageIndices={userMessageIndices}
+				readOnlyMessageIndices={readOnlyMessageIndices}
+				threadMessageIndices={threadMessageIndices}
+				remoteTaskFooters={remoteTaskFooters}
+				workspaceRoot={workspaceRoot}
 			/>
-			{hasStreamPane ? (
-				<StreamingMessagePane
-					threadId={threadId}
-					streamingChatIdx={streamingChatIdx}
-					currCheckpointIdx={currCheckpointIdx}
-					shouldAddGapForStreaming={shouldAddGapForStreaming}
-					mcpToolNameSet={mcpToolNameSet}
-				/>
-			) : null}
+		{hasStreamPane ? (
+			<StreamingMessagePane
+				threadId={threadId}
+				streamingChatIdx={streamingChatIdx}
+				currCheckpointIdx={currCheckpointIdx}
+				shouldAddGapForStreaming={shouldAddGapForStreaming}
+				mcpToolNameSet={mcpToolNameSet}
+			/>
+		) : null}
+		{/* Remote task activity indicator — remote runs don't populate local
+		 * stream state, so the StreamingMessagePane status line never lights up.
+		 * Render a parallel AgentStatusLine so the in-stream "Planning next moves"
+		 * shimmer parity holds for Self-hosted Runner runs. */}
+		{/* Parent scroll area already applies px-4 — only add vertical rhythm here. */}
+		{!hasStreamPane && remoteStatusLineLabel ? (
+			<AgentStatusLine label={remoteStatusLineLabel} className='pt-1' />
+		) : null}
 			{scroll.policy.mode === 'turn-anchor'
 				|| (scroll.policy.mode === 'preserve' && scroll.policy.anchorIndex !== null) ? (
 				<TurnAnchorSpacer />

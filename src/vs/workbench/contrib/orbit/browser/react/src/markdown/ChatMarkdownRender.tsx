@@ -292,9 +292,23 @@ const paragraphToLatexSegments = (paragraphText: string) => {
 
 	const segments: React.ReactNode[] = [];
 
+	// Only treat `$...$` as LaTeX when the delimited span actually looks like math.
+	// Prevents mangling ordinary currency in chat (e.g. "it costs $5 and $10 total"),
+	// which previously got captured as an inline-math run and rendered as monospace.
+	const looksLikeLatexMath = (input: string): boolean => {
+		const candidate = /\$\$[\s\S]+?\$\$/.test(input)
+			? input.match(/\$\$([\s\S]+?)\$\$/)?.[1]
+			: input.match(/\$((?!\$).*?)\$/)?.[1];
+		if (!candidate) { return false; }
+		// LaTeX signals: backslash command, ^/_ scripts, braces, or common math operators.
+		// A bare "$5 and $10" has none of these, so it stays plain text.
+		return /[\\^_{}]|\\(frac|sqrt|sum|int|alpha|beta|pi|theta|cdot|times)/.test(candidate);
+	};
+
 	if (paragraphText
 		&& !(paragraphText.includes('#') || paragraphText.includes('`')) // don't process latex if a codespan or header tag
 		&& !/^[\w\s.()[\]{}]+$/.test(paragraphText) // don't process latex if string only contains alphanumeric chars, whitespace, periods, and brackets
+		&& looksLikeLatexMath(paragraphText) // don't process latex unless the $...$ span actually looks like math (avoids currency false positives)
 	) {
 		const rawText = paragraphText;
 		// Regular expressions to match LaTeX delimiters

@@ -23,7 +23,7 @@ export const AgentStatusLine = ({ label, className = '' }: AgentStatusLineProps)
 	}, []);
 
 	return (
-		<div className={`py-0.5 ${className}`}>
+		<div className={`py-0.5 ${className}`} role="status" aria-live="polite">
 			<span
 				className="inline-flex items-center font-medium tracking-wide text-void-fg-3"
 				style={{ fontSize: '0.8rem' }}

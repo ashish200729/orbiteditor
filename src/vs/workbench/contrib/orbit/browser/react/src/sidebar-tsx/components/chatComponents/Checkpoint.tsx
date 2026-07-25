@@ -5,7 +5,7 @@
 
 import React, { useMemo } from 'react';
 import { RotateCcw } from 'lucide-react';
-import { useAccessor, useRunningThreadIds, useThreadRunningState } from '../../../util/services.js';
+import { useAccessor, useRemoteTasks, useThreadRunningState } from '../../../util/services.js';
 
 type CheckpointProps = {
 	threadId: string;
@@ -24,13 +24,18 @@ export const Checkpoint = ({
 }: CheckpointProps) => {
 	const accessor = useAccessor();
 	const chatThreadService = accessor.get('IChatThreadService');
-	const runningThreadIds = useRunningThreadIds();
 	const isRunning = useThreadRunningState(threadId);
+	const remoteTasks = useRemoteTasks();
+	const remoteIsRunning = remoteTasks.some(task => task.editorThreadId === threadId
+		&& !['COMPLETED', 'FAILED', 'CANCELLED', 'TIMED_OUT', 'LOST'].includes(task.state));
 
 	const isDisabled = useMemo(() => {
-		if (isRunning) return true;
-		return Object.keys(runningThreadIds).length > 0;
-	}, [isRunning, runningThreadIds]);
+		// U4: disable restore only when THIS thread is running (local or remote),
+		// not when any other thread is running. Restoring an idle thread while
+		// another runs in the background is safe and expected.
+		if (isRunning || remoteIsRunning) return true;
+		return false;
+	}, [isRunning, remoteIsRunning]);
 
 	const isActive = currCheckpointIdx !== undefined && currCheckpointIdx === checkpointIdx;
 
@@ -61,11 +66,11 @@ export const Checkpoint = ({
 					}
 					${isDisabled ? 'cursor-default opacity-50' : 'cursor-pointer'}
 				`}
-				{...(isDisabled ? {
-					'data-tooltip-id': 'void-tooltip',
-					'data-tooltip-content': `Disabled ${isRunning ? 'while agent is running' : 'because another thread is running'}`,
-					'data-tooltip-place': 'top',
-				} : {
+			{...(isDisabled ? {
+				'data-tooltip-id': 'void-tooltip',
+				'data-tooltip-content': `Disabled while agent is running`,
+				'data-tooltip-place': 'top',
+			} : {
 					'data-tooltip-id': 'void-tooltip',
 					'data-tooltip-content': 'Restore code to before this message',
 					'data-tooltip-place': 'top',

@@ -33,6 +33,7 @@ export function TextShimmer({
 	// all on-screen during an agent run (tool headers, streaming tools, status line, reasoning, todo &
 	// sub-agent cards), so dozens animated at once. We now use a pure CSS animation (keyframes
 	// `orbit-text-shimmer` in styles.css) with identical visuals, but the browser drives it natively.
+	// The `orbit-shimmer` class is gated under prefers-reduced-motion in styles.css.
 	const style: React.CSSProperties = {
 		display: 'inline-block',
 		color: 'inherit',
@@ -75,5 +76,5 @@ export function TextShimmer({
 		animationIterationCount: 'infinite',
 	};
 
-	return React.createElement(Component, { className, style }, children);
+	return React.createElement(Component, { className: `orbit-shimmer ${className}`, style }, children);
 }

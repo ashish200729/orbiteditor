@@ -76,19 +76,48 @@ export const getShellCardCommandLine = (
 	return `# await ${awaitParams.blockUntilMs}ms`;
 };
 
+export const formatShellToolErrorResult = (result: unknown): string => {
+	if (typeof result === 'string') {
+		return result || 'Command failed';
+	}
+	if (result && typeof result === 'object' && 'kind' in result) {
+		const structured = result as BuiltinToolResultType['Shell'] | BuiltinToolResultType['AwaitShell'];
+		if (structured.kind === 'done') {
+			const output = structured.result?.trim();
+			const exitCode = 'exitCode' in structured ? structured.exitCode : undefined;
+			if (output) {
+				return exitCode !== undefined ? `${output}\n(exit code ${exitCode})` : output;
+			}
+			return exitCode !== undefined ? `Command failed (exit code ${exitCode})` : 'Command failed';
+		}
+		if (structured.kind === 'timeout') {
+			const elapsed = 'elapsedMs' in structured ? structured.elapsedMs : structured.runningForMs;
+			return structured.result?.trim()
+				|| `Command timed out after ${elapsed ?? 0}ms`;
+		}
+		if (structured.kind === 'notfound') {
+			return structured.error ?? 'Shell not found';
+		}
+	}
+	return 'Command failed';
+};
+
 export const getShellCardOutput = (
 	toolMessage: Exclude<ToolMessage<'Shell' | 'AwaitShell'>, { type: 'invalid_params' | 'tool_request' }>,
 	liveOutput: string | null,
 	resultString: string,
 ): string => {
 	if (toolMessage.type === 'tool_error') {
-		return typeof toolMessage.result === 'string' ? toolMessage.result : String(toolMessage.result ?? 'Command failed');
+		return formatShellToolErrorResult(toolMessage.result);
 	}
 	if (toolMessage.type === 'rejected') {
 		return 'Command canceled.';
 	}
 	if (toolMessage.type === 'running_now') {
-		return liveOutput ?? '';
+		// Prefer live terminal poll; fall back to message content (remote turns
+		// never set streamState isRunning === 'tool', so poll stays empty).
+		const fromContent = typeof toolMessage.content === 'string' ? toolMessage.content : '';
+		return liveOutput || fromContent;
 	}
 	if (toolMessage.type === 'success') {
 		return resultString;

@@ -4,14 +4,15 @@
  *--------------------------------------------------------------------------------------*/
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ChevronDown, Laptop } from 'lucide-react';
-import { isMacintosh, isWindows } from '../../../../../../../base/common/platform.js';
+import { ChevronDown } from 'lucide-react';
 import { useAccessor, useAgentWorkspaceState } from '../util/services.js';
 import { AgentWorkspacePicker } from './AgentWorkspacePicker.js';
+import { RunnerExecutionChrome } from './RunnerExecutionChrome.js';
 
 /**
- * Cursor-style workspace chrome for the Agents landing page: two compact
- * text controls sitting directly above the composer (not a full-width bar).
+ * Cursor-style workspace chrome for the Agents empty-thread landing page:
+ * workspace picker + compact Run on control (Local | Self-hosted Runner).
+ * Thread pages use {@link AgentChatRunHeader} / {@link RunnerExecutionChrome} only.
  *
  * Class names are plain in source (scope-tailwind → `void-*`); styles live in
  * `browser/media/agentWindow.css`.
@@ -28,7 +29,6 @@ export const AgentWorkspaceHeader = () => {
 	const active = state.activeWorkspaceId ? state.workspaces[state.activeWorkspaceId] : null;
 	const label = active?.name ?? 'Select Workspace';
 	const hasWorkspace = !!active;
-	const localEnvironmentLabel = isWindows ? 'This PC' : isMacintosh ? 'This Mac' : 'This Machine';
 
 	useEffect(() => {
 		let cancelled = false;
@@ -82,17 +82,7 @@ export const AgentWorkspaceHeader = () => {
 				<span className="agent-workspace-header-btn-label">{label}</span>
 				<ChevronDown size={12} strokeWidth={2} className="agent-workspace-header-btn-chevron" aria-hidden />
 			</button>
-			<button
-				type="button"
-				className="agent-workspace-header-btn agent-workspace-header-btn--env"
-				disabled
-				title="Local machine"
-				aria-label={`Environment: ${localEnvironmentLabel}`}
-			>
-				<Laptop size={12} strokeWidth={1.75} className="agent-workspace-header-btn-icon" aria-hidden />
-				<span className="agent-workspace-header-btn-label">{localEnvironmentLabel}</span>
-				<ChevronDown size={12} strokeWidth={2} className="agent-workspace-header-btn-chevron" aria-hidden />
-			</button>
+			<RunnerExecutionChrome isAgentWindow />
 			<AgentWorkspacePicker
 				open={pickerOpen}
 				onClose={close}

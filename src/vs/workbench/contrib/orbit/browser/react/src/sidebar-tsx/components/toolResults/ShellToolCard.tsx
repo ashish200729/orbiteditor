@@ -18,6 +18,7 @@ import {
 	getShellCardTitle,
 	ShellCommandHighlight,
 	ShellOutputLine,
+	formatShellToolErrorResult,
 } from './shellToolCardHelpers.js';
 import { useIsReadOnlyChat } from '../../contexts/ReadOnlyChatContext.js';
 import { CollapsibleSection } from '../wrappers/CollapsibleSection.js';
@@ -199,8 +200,10 @@ export const ShellToolCard = ({ toolMessage, threadId }: ShellToolCardProps) => 
 		if (isRunning) setIsExpanded(true);
 	}, [isRunning]);
 
-	// Live output polling only while expanded and running
+	// Live output polling only while expanded and running (local terminal path).
+	// Remote/read-only turns never set streamState isRunning === 'tool' — skip poll.
 	useEffect(() => {
+		if (isReadOnlyChat) return;
 		if (!isRunning || !isExpanded || !shellId) return;
 		if (streamState?.isRunning !== 'tool') return;
 
@@ -220,7 +223,7 @@ export const ShellToolCard = ({ toolMessage, threadId }: ShellToolCardProps) => 
 			cancelled = true;
 			clearInterval(interval);
 		};
-	}, [isRunning, isExpanded, shellId, streamState?.isRunning, terminalToolsService]);
+	}, [isRunning, isExpanded, shellId, streamState?.isRunning, terminalToolsService, isReadOnlyChat]);
 
 	useEffect(() => {
 		if (!isRunning || !isExpanded || !outputRef.current) return;
@@ -241,7 +244,7 @@ export const ShellToolCard = ({ toolMessage, threadId }: ShellToolCardProps) => 
 
 	if (toolMessage.type === 'tool_request') return null;
 
-	const errorText = isError && typeof toolMessage.result === 'string' ? toolMessage.result : '';
+	const errorText = isError ? formatShellToolErrorResult(toolMessage.result) : '';
 	// For tool_error, getShellCardOutput already returns the error string as
 	// outputText, so prefer errorText (and avoid duplicating it) when present.
 	const copyText = [commandLine ? `$ ${commandLine}` : '', errorText || outputText].filter(Boolean).join('\n\n');

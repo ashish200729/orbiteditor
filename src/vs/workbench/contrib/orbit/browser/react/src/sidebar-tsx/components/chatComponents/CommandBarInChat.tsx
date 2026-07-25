@@ -8,8 +8,27 @@ import { X, Check } from 'lucide-react';
 import { useAccessor, useChatThreadsState, useChatThreadsStreamState, useCommandBarState } from '../../../util/services.js';
 import { IconShell1, StatusIndicator } from '../../../markdown/ApplyBlockHoverButtons.js';
 import { getBasename, voidOpenFileFn } from '../../utils/fileUtils.js';
+import { commandBarThreadStatus } from '../../../../../../common/runner/remoteTaskUiStatus.js';
 
-export const CommandBarInChat = ({ threadId }: { threadId: string }) => {
+export const CommandBarInChat = ({
+	threadId,
+	agentRunningState,
+	remotePhaseLabel,
+	remoteFailed,
+	remotePatchPending,
+}: {
+	threadId: string
+	/** When set (e.g. self-hosted runner), overrides local stream `isRunning` for the status pill. */
+	agentRunningState?: string | undefined
+	/** Distinct label for remote phases (Connecting/Provisioning/Running). Overrides the generic "Running" title. */
+	remotePhaseLabel?: string | undefined
+	/** When true, the remote task failed closed — show "Failed" instead of "Done". */
+	remoteFailed?: boolean | undefined
+	/** When true, a remote task is running and changes will only arrive as a
+	 * final patch — show "Changes available when complete" instead of the
+	 * misleading "No files with changes" during the run. */
+	remotePatchPending?: boolean | undefined
+}) => {
 	const { stateOfURI: commandBarStateOfURI, sortedURIs: sortedCommandBarURIs } = useCommandBarState()
 	const numFilesChanged = sortedCommandBarURIs.length
 
@@ -54,16 +73,16 @@ export const CommandBarInChat = ({ threadId }: { threadId: string }) => {
 
 	// ======== status of agent ========
 	// This icon answers the question "is the LLM doing work on this thread?"
-	// assume it is single threaded for now
-	// green = Running
-	// orange = Requires action
-	// dark = Done
+	// orange = Running
+	// yellow = Awaiting approval / waiting for answers
+	// dark   = Done / Draft
+	const effectiveIsRunning = agentRunningState ?? chatThreadsStreamState?.isRunning
 
 	const pendingAskQuestion = (() => {
-		if (chatThreadsStreamState?.isRunning !== 'awaiting_user') {
+		if (effectiveIsRunning !== 'awaiting_user') {
 			return false;
 		}
-		const pendingId = chatThreadsStreamState.pendingToolRequestId;
+		const pendingId = chatThreadsStreamState?.pendingToolRequestId;
 		if (!pendingId) {
 			return false;
 		}
@@ -74,14 +93,28 @@ export const CommandBarInChat = ({ threadId }: { threadId: string }) => {
 		return pending?.name === 'AskQuestion';
 	})();
 
-	const threadStatus = (
-		chatThreadsStreamState?.isRunning === 'awaiting_user'
-			? pendingAskQuestion
-				? { title: 'Waiting for answers', color: 'yellow' } as const
-				: { title: 'Awaiting approval', color: 'yellow' } as const
-			: chatThreadsStreamState?.isRunning ? { title: 'Running', color: 'orange', } as const
-				: { title: 'Done', color: 'dark', } as const
-	)
+	// U2: a thread with a user message but no assistant reply (and not running)
+	// is a Draft, not Done. The "Done" pill is misleading on a half-sent turn.
+	const statusThread = chatThreadsState.allThreads[threadId];
+	const isDraftThread = (() => {
+		if (effectiveIsRunning) {
+			return false;
+		}
+		if (!statusThread) {
+			return false;
+		}
+		const hasUser = statusThread.messages.some(m => m.role === 'user');
+		const hasAssistant = statusThread.messages.some(m => m.role === 'assistant');
+		return hasUser && !hasAssistant;
+	})();
+
+const threadStatus = commandBarThreadStatus({
+	effectiveIsRunning,
+	pendingAskQuestion,
+	remotePhaseLabel,
+	remoteFailed,
+	isDraftThread,
+});
 
 
 	const threadStatusHTML = <StatusIndicator className='mx-1' indicatorColor={threadStatus.color} title={threadStatus.title} />
@@ -92,7 +125,8 @@ export const CommandBarInChat = ({ threadId }: { threadId: string }) => {
 	// acceptall + rejectall
 	// popup info about each change (each with num changes + acceptall + rejectall of their own)
 
-	const numFilesChangedStr = numFilesChanged === 0 ? 'No files with changes'
+	const numFilesChangedStr = numFilesChanged === 0
+		? (remotePatchPending ? 'Changes available when complete' : 'No files with changes')
 		: `${sortedCommandBarURIs.length} file${numFilesChanged === 1 ? '' : 's'} with changes`
 
 

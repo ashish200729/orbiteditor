@@ -9,6 +9,8 @@ import {
 	parseOptionalIntInRange,
 	stringOfAwaitShellResult,
 	stringOfShellResult,
+	remoteShellResultFromOutput,
+	remoteAwaitShellResultFromOutput,
 	validateAwaitShellParams,
 	validateShellParams,
 	buildShellCommandWithCwd,
@@ -108,6 +110,41 @@ suite('ShellTool', () => {
 		});
 	});
 
+	suite('remoteShellResultFromOutput', () => {
+		test('maps runner stdout to done result', () => {
+			const result = remoteShellResultFromOutput(
+				'hello\n',
+				true,
+				{ command: 'echo hello', workingDirectory: null, blockUntilMs: 30000, description: null, notifyOnOutput: null, requestSmartModeApproval: false, shellId: 'shell-1' },
+			);
+			assert.strictEqual(result.kind, 'done');
+			assert.strictEqual(result.result, 'hello\n');
+			assert.strictEqual(result.exitCode, 0);
+			assert.strictEqual(result.shellId, 'shell-1');
+		});
+
+		test('parses exit code from runner error field', () => {
+			const result = remoteShellResultFromOutput(
+				'',
+				false,
+				{ command: 'false', workingDirectory: null, blockUntilMs: 30000, description: null, notifyOnOutput: null, requestSmartModeApproval: false, shellId: '' },
+				'exit 2',
+			);
+			assert.strictEqual(result.exitCode, 2);
+		});
+	});
+
+	suite('remoteAwaitShellResultFromOutput', () => {
+		test('maps runner sleep completion to done', () => {
+			const result = remoteAwaitShellResultFromOutput(
+				'waited 1500ms',
+				{ shellId: null, blockUntilMs: 1500, pattern: null },
+			);
+			assert.strictEqual(result.kind, 'done');
+			assert.strictEqual(result.runningForMs, 1500);
+		});
+	});
+
 	suite('stringOfShellResult', () => {
 		test('done', () => {
 			const msg = stringOfShellResult(
@@ -123,6 +160,14 @@ suite('ShellTool', () => {
 				{ kind: 'timeout', result: 'partial', shellId: 'id', elapsedMs: 1000 },
 			);
 			assert.ok(msg.includes('still alive'));
+		});
+
+		test('handles legacy string results without throwing', () => {
+			const msg = stringOfShellResult(
+				{ command: 'ls', workingDirectory: null, blockUntilMs: 1000, description: null, notifyOnOutput: null, requestSmartModeApproval: false, shellId: 'id' },
+				'plain output' as never,
+			);
+			assert.strictEqual(msg, 'plain output');
 		});
 
 		test('backgrounded', () => {

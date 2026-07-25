@@ -24,7 +24,10 @@ function resolveInsideRoot(root: string, file: string): string {
 import {
 	GitCommandResult,
 	GitCommitOptions,
+	GitCompareUrlOptions,
+	GitCheckoutRemoteOptions,
 	GitDiffOptions,
+	GitFetchOptions,
 	GitFileChange,
 	GitPushOptions,
 	GitRepoStatus,
@@ -125,6 +128,9 @@ const getSampledDiff = async (file: string, root: string, useStagedChanges: bool
 
 /** Reject branch names git would otherwise parse as an option (e.g. `-D`, `--orphan`). */
 const isSafeRefName = (name: string): boolean => /^[^\s\-~^:?*\\[\]][^\s~^:?*\\[\]]*$/.test(name)
+
+/** Reject remote names that git would parse as options (e.g. `--upload-pack=…`). */
+const isSafeRemoteName = (name: string): boolean => /^[^\s\-~^:?*\\[\]][^\s~^:?*\\[\]]*$/.test(name)
 
 /** Parse `git status --porcelain=v2 --branch`. */
 const parseStatus = (root: string, out: string): GitRepoStatus => {
@@ -318,14 +324,49 @@ export class VoidSCMService implements IVoidSCMService {
 	}
 
 	async getBranches(root: string): Promise<string[]> {
-		const r = await runGit(root, ['branch', '--format=%(refname:short)', '--sort=-committerdate'])
+		const r = await runGit(root, [
+			'for-each-ref',
+			'--format=%(refname:short)',
+			'--sort=-committerdate',
+			'refs/heads',
+			'refs/remotes/origin',
+		])
 		if (r.code !== 0) { return [] }
 		const current = (await runGit(root, ['branch', '--show-current'])).stdout.trim()
-		const names = r.stdout.split('\n').map(s => s.trim()).filter(Boolean)
+		const names = [...new Set(r.stdout.split('\n')
+			.map(s => s.trim())
+			.filter(name => !!name && name !== 'origin/HEAD')
+			.map(name => name.replace(/^origin\//, '')))]
 		if (current && names.includes(current)) {
 			return [current, ...names.filter(n => n !== current)]
 		}
 		return names
+	}
+
+	async getRemoteBranches(root: string): Promise<string[]> {
+		const remote = await this.resolveConfiguredRemote(root)
+		if (!remote) { return [] }
+		const r = await runGit(root, ['ls-remote', '--heads', '--', remote])
+		if (r.code !== 0) { return [] }
+		return [...new Set(r.stdout.split('\n')
+			.map(line => line.trim().split(/\s+/)[1] ?? '')
+			.filter(ref => ref.startsWith('refs/heads/'))
+			.map(ref => ref.slice('refs/heads/'.length)))]
+	}
+
+	async getRemoteBranchCommit(root: string, branch: string): Promise<string | null> {
+		if (!isSafeRefName(branch)) { return null }
+		const remote = await this.resolveConfiguredRemote(root)
+		if (!remote) { return null }
+		const r = await runGit(root, ['ls-remote', '--heads', '--', remote, `refs/heads/${branch}`])
+		const commit = r.stdout.trim().split(/\s+/)[0] ?? ''
+		return r.code === 0 && /^[0-9a-f]{40}$/i.test(commit) ? commit : null
+	}
+
+	async getHeadCommit(root: string): Promise<string | null> {
+		const r = await runGit(root, ['rev-parse', '--verify', 'HEAD^{commit}'])
+		const commit = r.stdout.trim()
+		return r.code === 0 && /^[0-9a-f]{40}$/i.test(commit) ? commit : null
 	}
 
 	/* ---------------- Changes panel: mutations ---------------- */
@@ -432,6 +473,47 @@ export class VoidSCMService implements IVoidSCMService {
 		return toResult(await runGit(root, args))
 	}
 
+	async fetch(root: string, options?: GitFetchOptions): Promise<GitCommandResult> {
+		const remote = options?.remote || 'origin'
+		if (!isSafeRemoteName(remote)) {
+			return { ok: false, stdout: '', error: `Invalid remote name: "${remote}"` }
+		}
+		const args = ['fetch', remote]
+		if (options?.ref) {
+			if (!isSafeRefName(options.ref)) {
+				return { ok: false, stdout: '', error: `Invalid ref: "${options.ref}"` }
+			}
+			args.push(options.ref)
+		}
+		return toResult(await runGit(root, args))
+	}
+
+	async checkoutRemoteBranch(root: string, options: GitCheckoutRemoteOptions): Promise<GitCommandResult> {
+		const remoteBranch = options.remoteBranch
+		const localBranch = options.localBranch || remoteBranch
+		if (!isSafeRefName(remoteBranch) || !isSafeRefName(localBranch)) {
+			return { ok: false, stdout: '', error: `Invalid branch name: "${remoteBranch}" / "${localBranch}"` }
+		}
+		const remoteRef = `refs/remotes/origin/${remoteBranch}`
+		const fetchSpec = `+refs/heads/${remoteBranch}:${remoteRef}`
+		const fetchResult = toResult(await runGit(root, ['fetch', 'origin', fetchSpec]))
+		if (!fetchResult.ok) {
+			return fetchResult
+		}
+		const tracking = `origin/${remoteBranch}`
+		if (options.createWorktreePath) {
+			const path = options.createWorktreePath
+			// Reject NUL bytes and paths git would parse as an option (leading dash),
+			// or a leading space. A hyphen anywhere else is fine — worktree paths
+			// like ".../orbit-editor-orbit-branch" legitimately contain hyphens.
+			if (!path || path.includes('\0') || /^[\s-]/.test(path)) {
+				return { ok: false, stdout: '', error: 'Invalid worktree path.' }
+			}
+			return toResult(await runGit(root, ['worktree', 'add', '-B', localBranch, path, tracking]))
+		}
+		return toResult(await runGit(root, ['checkout', '-B', localBranch, tracking]))
+	}
+
 	async getPullRequestUrl(root: string): Promise<string | null> {
 		// Prefer the GitHub CLI when available (creates the PR); otherwise build a
 		// compare URL the panel can open in the browser.
@@ -441,6 +523,55 @@ export class VoidSCMService implements IVoidSCMService {
 		const httpUrl = normalizeRemoteToHttps(remoteUrl)
 		if (!httpUrl) { return null }
 		return `${httpUrl}/compare/${encodeURIComponent(branch)}?expand=1`
+	}
+
+	async getCompareUrl(root: string, options: GitCompareUrlOptions): Promise<string | null> {
+		if (!isSafeRefName(options.base) || !isSafeRefName(options.head)) {
+			return null
+		}
+		const remoteUrl = (await runGit(root, ['remote', 'get-url', 'origin'])).stdout.trim()
+		const httpUrl = normalizeRemoteToHttps(remoteUrl)
+		if (!httpUrl) { return null }
+		const base = encodeURIComponent(options.base)
+		const head = encodeURIComponent(options.head)
+		// Never strip namespace prefixes (orbit/, cursor/) — required for correct PR head.
+		if (/gitlab\.com/i.test(httpUrl)) {
+			return `${httpUrl}/-/compare/${base}...${head}`
+		}
+		return `${httpUrl}/compare/${base}...${head}?expand=1`
+	}
+
+	async getRemoteHttpsUrl(root: string, remote = 'origin'): Promise<string | null> {
+		const raw = await this.getRemoteUrl(root, remote)
+		if (!raw) { return null }
+		// Never silently convert SSH → HTTPS for runner clone paths (E3).
+		if (/^git@/i.test(raw) || /^ssh:\/\//i.test(raw)) {
+			return null
+		}
+		return normalizeRemoteToHttps(raw)
+	}
+
+	async getRemoteUrl(root: string, remote = 'origin'): Promise<string | null> {
+		const remoteName = await this.resolveConfiguredRemote(root, remote)
+		if (!remoteName) { return null }
+		const r = await runGit(root, ['remote', 'get-url', '--', remoteName])
+		if (r.code !== 0) { return null }
+		const url = r.stdout.trim()
+		return url || null
+	}
+
+	/**
+	 * Prefer `origin` (or an explicit preferred name), else the first configured remote.
+	 * Rejects names that git would treat as options.
+	 */
+	private async resolveConfiguredRemote(root: string, preferred = 'origin'): Promise<string | null> {
+		if (!isSafeRemoteName(preferred)) { return null }
+		const list = await runGit(root, ['remote'])
+		if (list.code !== 0) { return null }
+		const remotes = list.stdout.trim().split('\n').map(s => s.trim()).filter(Boolean)
+		if (remotes.includes(preferred)) { return preferred }
+		const first = remotes.find(name => isSafeRemoteName(name))
+		return first ?? null
 	}
 }
 
@@ -455,6 +586,17 @@ const normalizeRemoteToHttps = (remote: string): string | null => {
 	} else if (url.startsWith('ssh://')) {
 		url = url.replace(/^ssh:\/\/git@/, 'https://').replace(/^ssh:\/\//, 'https://')
 	}
-	url = url.replace(/\.git$/, '')
-	return url.startsWith('http') ? url : null
+	try {
+		const parsed = new URL(url)
+		if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') { return null }
+		parsed.protocol = 'https:'
+		parsed.username = ''
+		parsed.password = ''
+		parsed.search = ''
+		parsed.hash = ''
+		parsed.pathname = parsed.pathname.replace(/\.git$/, '')
+		return parsed.toString().replace(/\/$/, '')
+	} catch {
+		return null
+	}
 }

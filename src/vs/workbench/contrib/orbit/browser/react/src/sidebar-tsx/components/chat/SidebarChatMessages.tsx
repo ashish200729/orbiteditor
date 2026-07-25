@@ -11,6 +11,8 @@ import { ChatBubble } from '../chatComponents/ChatBubble.js';
 import { ParallelToolGroup } from '../chatComponents/ParallelToolGroup.js';
 import { IsRunningType } from '../../../../chatThreadService.js';
 import { ChatScrollActions } from '../../utils/scrollUtils.js';
+import { ReadOnlyChatProvider } from '../../contexts/ReadOnlyChatContext.js';
+import { RemoteTaskInlineCard } from '../runner/RemoteTaskInlineCard.js';
 
 type SidebarChatMessagesProps = {
 	previousMessages: ChatMessage[];
@@ -22,6 +24,10 @@ type SidebarChatMessagesProps = {
 	stickyOffset: number;
 	stickyMessageIndex: number | null;
 	userMessageIndices: number[];
+	readOnlyMessageIndices?: ReadonlySet<number>;
+	threadMessageIndices?: ReadonlyMap<number, number>;
+	remoteTaskFooters?: ReadonlyMap<number, string>;
+	workspaceRoot?: string | null;
 };
 
 export const SidebarChatMessages = ({
@@ -34,11 +40,14 @@ export const SidebarChatMessages = ({
 	stickyOffset,
 	stickyMessageIndex,
 	userMessageIndices,
+	readOnlyMessageIndices,
+	threadMessageIndices,
+	remoteTaskFooters,
+	workspaceRoot,
 }: SidebarChatMessagesProps) => {
 	const { liveTodos } = useTodoContext();
-	const lastUserMessageIndex = userMessageIndices.length > 0
-		? userMessageIndices[userMessageIndices.length - 1]
-		: null;
+	const lastUserMessageIndex = [...userMessageIndices].reverse()
+		.find(index => !readOnlyMessageIndices?.has(index)) ?? null;
 
 	// Only entrance-animate messages appended after a thread is first opened — reopening/switching
 	// to a thread with existing history should render it instantly, not replay every past message.
@@ -56,8 +65,9 @@ export const SidebarChatMessages = ({
 	const messageItems = useMemo(() => {
 		const PARALLEL_TOOLS = ['Read', 'Glob', 'Grep', 'read_lint_errors'] as const;
 
-		const isParallelTool = (msg: ChatMessage): boolean => {
+		const isParallelTool = (msg: ChatMessage, _index: number): boolean => {
 			return msg.role === 'tool'
+				&& msg.name !== 'RemoteSetup'
 				&& msg.type !== 'invalid_params'
 				&& msg.type !== 'tool_request'
 				&& isABuiltinToolName(msg.name)
@@ -87,12 +97,12 @@ export const SidebarChatMessages = ({
 				continue;
 			}
 
-			if (isParallelTool(message)) {
+			if (isParallelTool(message, i)) {
 				currentParallelGroup.push({ message, index: i });
 				const nextIndex = i + 1;
 				if (nextIndex < previousMessages.length) {
 					const nextMsg = previousMessages[nextIndex];
-					const shouldCloseGroup = !isParallelTool(nextMsg)
+					const shouldCloseGroup = !isParallelTool(nextMsg, nextIndex)
 						|| nextMsg.role === 'user'
 						|| nextMsg.role === 'assistant'
 						|| nextMsg.role === 'checkpoint';
@@ -112,6 +122,7 @@ export const SidebarChatMessages = ({
 		return groupedMessages.map((group) => {
 			if (group.type === 'single') {
 				const i = group.index;
+				const threadMessageIdx = threadMessageIndices?.get(i) ?? i;
 				const previousMessage = i > 0 ? previousMessages[i - 1] : null;
 				const previousRole = previousMessage?.role;
 				const currentRole = group.message.role;
@@ -121,40 +132,59 @@ export const SidebarChatMessages = ({
 				const showTodoOnMessage = isUserMessage
 					&& i === lastUserMessageIndex
 					&& liveTodos.length > 0;
-				const checkpointBeforeIdx = isUserMessage && i > 0 && previousMessages[i - 1]?.role === 'checkpoint'
-					? i - 1
+				const previousThreadIdx = i > 0 ? threadMessageIndices?.get(i - 1) : undefined;
+				const checkpointBeforeIdx = isUserMessage && i > 0 && previousMessages[i - 1]?.role === 'checkpoint' && previousThreadIdx === threadMessageIdx - 1
+					? threadMessageIdx - 1
 					: undefined;
-				const isFirstUserMessage = isUserMessage && userMessageCount === 0;
-				if (isUserMessage) {
+				const isLocalUserMessage = isUserMessage && !readOnlyMessageIndices?.has(i);
+				const isFirstUserMessage = isLocalUserMessage && userMessageCount === 0;
+				if (isLocalUserMessage) {
 					userMessageCount += 1;
 				}
 
+				const bubble = <ChatBubble
+					currCheckpointIdx={readOnlyMessageIndices?.has(i) ? undefined : currCheckpointIdx}
+					checkpointBeforeIdx={readOnlyMessageIndices?.has(i) ? undefined : checkpointBeforeIdx}
+					isFirstUserMessage={readOnlyMessageIndices?.has(i) ? false : isFirstUserMessage}
+					chatMessage={group.message}
+					messageIdx={threadMessageIdx}
+					isCommitted={true}
+					chatIsRunning={readOnlyMessageIndices?.has(i) ? undefined : isRunning}
+					threadId={threadId}
+					scrollActions={readOnlyMessageIndices?.has(i) ? null : scrollActions}
+					threadTodos={readOnlyMessageIndices?.has(i) ? undefined : (showTodoOnMessage ? liveTodos : undefined)}
+					isAgentRunning={readOnlyMessageIndices?.has(i) ? undefined : (showTodoOnMessage ? !!isRunning : undefined)}
+				/>;
+
 				return {
-					key: `msg-${i}-${group.message.role}`,
+					key: `msg-${i}-${group.message.role}-${group.message.role === 'tool' ? group.message.id : ''}`,
 					index: i as number | undefined,
 					firstIndex: i,
 					role: group.message.role as string | undefined,
 					shouldAddGap,
 					isUserMessage,
-					bubble: (
-						<ChatBubble
-							currCheckpointIdx={currCheckpointIdx}
-							checkpointBeforeIdx={checkpointBeforeIdx}
-							isFirstUserMessage={isFirstUserMessage}
-							chatMessage={group.message}
-							messageIdx={i}
-							isCommitted={true}
-							chatIsRunning={isRunning}
-							threadId={threadId}
-							scrollActions={scrollActions}
-							threadTodos={showTodoOnMessage ? liveTodos : undefined}
-							isAgentRunning={showTodoOnMessage ? !!isRunning : undefined}
-						/>
-					),
+					bubble: readOnlyMessageIndices?.has(i)
+						? <ReadOnlyChatProvider>{bubble}</ReadOnlyChatProvider>
+						: bubble,
 				};
 			}
 
-			const groupKey = `parallel-${group.messages.map(m => m.index).join('-')}`;
+			const groupKey = `parallel-${group.messages.map(m => m.message.role === 'tool' ? m.message.id : m.index).join('-')}`;
+			const groupIsReadOnly = group.messages.some(item => readOnlyMessageIndices?.has(item.index));
+			const parallelBubble = (
+				<ParallelToolGroup
+					messages={group.messages.map(item => ({
+						...item,
+						threadIndex: threadMessageIndices?.get(item.index) ?? item.index,
+					}))}
+					threadId={threadId}
+					currCheckpointIdx={groupIsReadOnly ? undefined : currCheckpointIdx}
+					isRunning={groupIsReadOnly ? undefined : isRunning}
+					scrollContainerRef={scrollContainerRef}
+					scrollActions={scrollActions}
+					animateEntrance={group.messages[0].index >= newMessageBaselineRef.current}
+				/>
+			);
 			return {
 				key: groupKey,
 				index: undefined as number | undefined,
@@ -162,18 +192,9 @@ export const SidebarChatMessages = ({
 				role: undefined as string | undefined,
 				shouldAddGap: false,
 				isUserMessage: false,
-				bubble: (
-					<ParallelToolGroup
-						messages={group.messages}
-						previousMessages={previousMessages}
-						threadId={threadId}
-						currCheckpointIdx={currCheckpointIdx}
-						isRunning={isRunning}
-						scrollContainerRef={scrollContainerRef}
-						scrollActions={scrollActions}
-						animateEntrance={group.messages[0].index >= newMessageBaselineRef.current}
-					/>
-				),
+				bubble: groupIsReadOnly
+					? <ReadOnlyChatProvider>{parallelBubble}</ReadOnlyChatProvider>
+					: parallelBubble,
 			};
 		});
 	}, [
@@ -185,12 +206,15 @@ export const SidebarChatMessages = ({
 		liveTodos,
 		lastUserMessageIndex,
 		scrollContainerRef,
+		readOnlyMessageIndices,
+		threadMessageIndices,
 	]);
 
 	// Cheap pass: only the wrapper divs are recreated when sticky state changes on scroll.
 	return <>{messageItems.map(item => {
 		const isThisStickyMessage = item.isUserMessage && item.index !== undefined && stickyMessageIndex === item.index;
 		const isNewSinceOpen = item.firstIndex >= newMessageBaselineRef.current;
+		const footerTaskId = item.index !== undefined ? remoteTaskFooters?.get(item.index) : undefined;
 		return (
 			<div
 				key={item.key}
@@ -205,6 +229,9 @@ export const SidebarChatMessages = ({
 				} : undefined}
 			>
 				{item.bubble}
+				{footerTaskId && (
+					<RemoteTaskInlineCard taskId={footerTaskId} workspaceRoot={workspaceRoot ?? null} />
+				)}
 			</div>
 		);
 	})}</>;

@@ -146,7 +146,74 @@ export const buildShellCommandWithCwd = (command: string, workingDirectory: stri
 	return { command: `cd ${cdTarget} && ${command}`, workingDirectory };
 };
 
+const isShellStructuredResult = (value: unknown): value is BuiltinToolResultType['Shell'] =>
+	typeof value === 'object' && value !== null && 'kind' in value
+	&& (value as { kind: unknown }).kind !== undefined;
+
+const isAwaitShellStructuredResult = (value: unknown): value is BuiltinToolResultType['AwaitShell'] =>
+	typeof value === 'object' && value !== null && 'kind' in value
+	&& (value as { kind: unknown }).kind !== undefined;
+
+/**
+ * Runner `tool.result` events carry plain stdout/stderr text. Local Shell cards expect the
+ * structured result object produced by terminalToolService — map remote output here.
+ */
+export const remoteShellResultFromOutput = (
+	output: string,
+	ok: boolean,
+	params: BuiltinToolCallParams['Shell'],
+	errorText?: string,
+	structured?: unknown,
+): BuiltinToolResultType['Shell'] => {
+	if (isShellStructuredResult(structured)) {
+		return structured;
+	}
+	let exitCode = ok ? 0 : 1;
+	if (errorText) {
+		const match = errorText.match(/^exit (\d+)$/);
+		if (match) {
+			exitCode = Number(match[1]);
+		}
+	}
+	return {
+		kind: 'done',
+		result: output,
+		exitCode,
+		shellId: params.shellId ?? '',
+	};
+};
+
+/** See {@link remoteShellResultFromOutput}. */
+export const remoteAwaitShellResultFromOutput = (
+	output: string,
+	params: BuiltinToolCallParams['AwaitShell'],
+	structured?: unknown,
+): BuiltinToolResultType['AwaitShell'] => {
+	if (isAwaitShellStructuredResult(structured)) {
+		return structured;
+	}
+	const msMatch = output.match(/^waited (\d+)ms$/);
+	if (msMatch) {
+		return {
+			kind: 'done',
+			result: output,
+			exitCode: 0,
+			runningForMs: Number(msMatch[1]),
+			matchedPattern: false,
+		};
+	}
+	return {
+		kind: 'timeout',
+		result: output,
+		runningForMs: params.blockUntilMs,
+		matchedPattern: false,
+	};
+};
+
 export const stringOfShellResult = (_params: BuiltinToolCallParams['Shell'], result: Awaited<BuiltinToolResultType['Shell']>): string => {
+	if (!result || typeof result !== 'object' || !('kind' in result)) {
+		return typeof result === 'string' ? result : String(result ?? '(no output)');
+	}
 	if (result.kind === 'backgrounded') {
 		return `Command sent in background. shell_id="${result.shellId}"${result.pid ? `, pid=${result.pid}` : ''}. Use AwaitShell with this shell_id to check status, or let notify_on_output wake you.`;
 	}
@@ -154,7 +221,9 @@ export const stringOfShellResult = (_params: BuiltinToolCallParams['Shell'], res
 	if (result.kind === 'done') {
 		return `${output}\n(exit code ${result.exitCode})`;
 	}
-	return `${output}\nCommand did not finish within ${result.elapsedMs}ms. shell_id="${result.shellId}" is still alive. Use AwaitShell to keep waiting.`;
+	const elapsedMs = result.elapsedMs ?? _params.blockUntilMs ?? 0;
+	const shellId = result.shellId || _params.shellId || 'unknown';
+	return `${output}\nCommand did not finish within ${elapsedMs}ms. shell_id="${shellId}" is still alive. Use AwaitShell to keep waiting.`;
 };
 
 export const stringOfAwaitShellResult = (_params: BuiltinToolCallParams['AwaitShell'], result: Awaited<BuiltinToolResultType['AwaitShell']>): string => {

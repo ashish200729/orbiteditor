@@ -70,6 +70,29 @@ export interface GitPushOptions {
 	force?: boolean;
 }
 
+export interface GitFetchOptions {
+	remote?: string;
+	/** Optional ref to fetch (branch name). When omitted, fetches the default remote heads. */
+	ref?: string;
+}
+
+export interface GitCheckoutRemoteOptions {
+	/** Remote branch name, e.g. orbit/aaaaaaaa (without origin/). */
+	remoteBranch: string;
+	/** Local branch name to create/update. Defaults to remoteBranch. */
+	localBranch?: string;
+	/**
+	 * When set, create an isolated worktree at this path instead of switching
+	 * the current working tree (Cursor-like isolation when local is dirty).
+	 */
+	createWorktreePath?: string;
+}
+
+export interface GitCompareUrlOptions {
+	base: string;
+	head: string;
+}
+
 export interface GitCommandResult {
 	ok: boolean;
 	/** Combined stdout; present on success and failure. */
@@ -108,6 +131,11 @@ export interface IVoidSCMService {
 	getTotals(root: string): Promise<{ added: number; removed: number }>
 	/** Local branch names (current first). */
 	getBranches(root: string): Promise<string[]>
+	/** Branches known to exist on origin, suitable for a self-hosted runner clone. */
+	getRemoteBranches(root: string): Promise<string[]>
+	/** Immutable commit currently recorded for origin/<branch>. */
+	getRemoteBranchCommit(root: string, branch: string): Promise<string | null>
+	getHeadCommit(root: string): Promise<string | null>
 
 	/* ---- Changes panel: mutations ---- */
 	stage(root: string, files: string[]): Promise<GitCommandResult>
@@ -122,8 +150,32 @@ export interface IVoidSCMService {
 	createBranch(root: string, name: string, checkout?: boolean): Promise<GitCommandResult>
 	checkoutBranch(root: string, name: string): Promise<GitCommandResult>
 	push(root: string, options?: GitPushOptions): Promise<GitCommandResult>
+	/** Fetch from a remote (optionally a single ref). */
+	fetch(root: string, options?: GitFetchOptions): Promise<GitCommandResult>
+	/**
+	 * Fetch a remote branch and check it out locally, or create a worktree.
+	 * Does not force-overwrite a dirty working tree when createWorktreePath is unset —
+	 * callers should check status first.
+	 */
+	checkoutRemoteBranch(root: string, options: GitCheckoutRemoteOptions): Promise<GitCommandResult>
 	/** Open a GitHub compare/PR URL for the pushed branch, or run `gh pr create`. */
 	getPullRequestUrl(root: string): Promise<string | null>
+	/**
+	 * Build a compare URL for base...head without checking out locally.
+	 * GitHub: /compare/base...head?expand=1 ; GitLab: /-/compare/base...head
+	 */
+	getCompareUrl(root: string, options: GitCompareUrlOptions): Promise<string | null>
+	/**
+	 * HTTPS URL for a named remote (default `origin`), suitable for Orbit Runner clone.
+	 * Returns null when missing or not GitHub/GitLab-compatible.
+	 * Does **not** convert SSH remotes — use {@link getRemoteUrl} + runner helpers for that check.
+	 */
+	getRemoteHttpsUrl(root: string, remote?: string): Promise<string | null>
+	/**
+	 * Raw `git remote get-url` for a named remote (default `origin`).
+	 * SSH remotes are returned as-is so callers can reject them for runner v1.
+	 */
+	getRemoteUrl(root: string, remote?: string): Promise<string | null>
 }
 
 export const IVoidSCMService = createDecorator<IVoidSCMService>('voidSCMService')

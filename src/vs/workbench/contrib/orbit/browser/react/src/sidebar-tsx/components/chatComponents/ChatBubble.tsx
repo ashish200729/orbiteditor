@@ -17,11 +17,13 @@ import { PendingToolRequest } from './PendingToolRequest.js';
 
 import { GenericToolWrapper } from '../toolResults/GenericToolWrapper.js';
 import { BrowserMcpToolWrapper, isOrbitIdeBrowserTool } from '../toolResults/BrowserMcpToolWrapper.js';
+import { RemoteSetupCard, isRemoteSetupTool } from '../runner/RemoteSetupCard.js';
 import { builtinToolNameToComponent, LEGACY_TOOL_NAME_MAP } from '../../constants/builtinToolNameToComponent.js';
 import { getRemovedDirectoryListingToolRenderer } from '../../constants/legacyRemovedDirectoryToolRenderers.js';
 import { getRemovedBrowserToolRenderer } from '../../constants/legacyRemovedBrowserToolRenderers.js';
 import { ResultWrapper } from '../../types/toolWrapperTypes.js';
 import { ChatScrollActions } from '../../utils/scrollUtils.js';
+import { useIsReadOnlyChat } from '../../contexts/ReadOnlyChatContext.js';
 
 export type ChatBubbleProps = {
 	chatMessage: ChatMessage,
@@ -47,10 +49,21 @@ export const ChatBubble = (props: ChatBubbleProps) => {
 
 const _ChatBubble = React.memo(({ threadId, chatMessage, currCheckpointIdx, checkpointBeforeIdx, isFirstUserMessage, isCommitted, messageIdx, chatIsRunning, scrollActions, threadTodos, isAgentRunning, toolRenderCompact }: ChatBubbleProps) => {
 	const role = chatMessage.role
+	const isReadOnlyChat = useIsReadOnlyChat()
 
 	const isCheckpointGhost = messageIdx > (currCheckpointIdx ?? Infinity) && !chatIsRunning
 
 	if (role === 'user') {
+		if (isReadOnlyChat) {
+			// Match local UserMessageComponent display chrome (radius/border/padding).
+			return <div data-role='user' data-message-source='self-hosted-runner' className='relative break-words w-full'>
+				<div className='text-left rounded-xl max-w-full relative p-2 flex flex-col bg-vscode-input-bg text-void-fg-1 overflow-x-auto border border-void-border-2 shadow-sm'>
+					<div className='px-0.5 whitespace-pre-wrap leading-relaxed' style={{ overflowWrap: 'anywhere', wordBreak: 'break-word' }}>
+						{chatMessage.displayContent || chatMessage.content || ''}
+					</div>
+				</div>
+			</div>
+		}
 		return <UserMessageComponent
 			chatMessage={chatMessage}
 			isCheckpointGhost={isCheckpointGhost}
@@ -81,6 +94,17 @@ const _ChatBubble = React.memo(({ threadId, chatMessage, currCheckpointIdx, chec
 			</div>
 		}
 
+		// Self-hosted runner approvals are owned by RemoteTaskInlineCard — hide local
+		// PendingToolRequest / EditTool approve chrome so tools don't flash a second UI.
+		if (isReadOnlyChat && chatMessage.type === 'tool_request' && !isRemoteSetupTool(chatMessage)) {
+			return null
+		}
+
+		// Apply-patch UX lives on RemoteTaskInlineCard — suppress the raw GenericTool dump.
+		if (isReadOnlyChat && !chatMessage.mcpServerName && chatMessage.name === 'RemotePatch') {
+			return null
+		}
+
 		// Determine tool type and get appropriate wrapper
 		const toolName = chatMessage.name
 		
@@ -107,16 +131,21 @@ const _ChatBubble = React.memo(({ threadId, chatMessage, currCheckpointIdx, chec
 
 		if (removedDirectoryRenderer) {
 			ToolResultWrapper = removedDirectoryRenderer
-	} else if (removedBrowserRenderer) {
-		ToolResultWrapper = removedBrowserRenderer
-	} else if (isBuiltInTool) {
-		const toolComponent = builtinToolNameToComponent[componentToolName as BuiltinToolName]
-		ToolResultWrapper = toolComponent?.resultWrapper as ResultWrapper<string> | undefined
-	} else if (isOrbitIdeBrowserTool(chatMessage)) {
-		ToolResultWrapper = BrowserMcpToolWrapper as ResultWrapper<string>
-	} else {
-		ToolResultWrapper = GenericToolWrapper as ResultWrapper<string>
-	}
+		} else if (removedBrowserRenderer) {
+			ToolResultWrapper = removedBrowserRenderer
+		} else if (isRemoteSetupTool(chatMessage)) {
+			// Self-hosted provisioning / clone status — same card while live and after materialize.
+			ToolResultWrapper = RemoteSetupCard as ResultWrapper<string>
+		} else if (isBuiltInTool) {
+			// Use the same specialized cards/headers as local agents during live remote turns.
+			// ReadOnlyChatProvider still disables apply/approve/abort actions.
+			const toolComponent = builtinToolNameToComponent[componentToolName as BuiltinToolName]
+			ToolResultWrapper = toolComponent?.resultWrapper as ResultWrapper<string> | undefined
+		} else if (isOrbitIdeBrowserTool(chatMessage)) {
+			ToolResultWrapper = BrowserMcpToolWrapper as ResultWrapper<string>
+		} else {
+			ToolResultWrapper = GenericToolWrapper as ResultWrapper<string>
+		}
 
 		// Render tool with error boundary
 		if (!ToolResultWrapper) {

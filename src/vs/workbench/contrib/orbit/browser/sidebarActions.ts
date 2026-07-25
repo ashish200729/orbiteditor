@@ -241,19 +241,29 @@ registerAction2(class extends Action2 {
 		if (invokedFromAgentWindow) {
 			chatThreadsService.openNewThread({
 				agentWorkspaceId: agentProjectWorkspaceService.getState().activeWorkspaceId,
+				forceNew: true,
 			})
 		} else {
-			chatThreadsService.openNewThread()
+			chatThreadsService.openNewThread({ forceNew: true })
 		}
-		await chatThreadsService.focusCurrentChat()
+		await chatThreadsService.focusSelectedChat(invokedFromAgentWindow)
 
 
 		// set new thread values
-		const newThreadId = chatThreadsService.state.currentThreadId
+		const newThreadId = invokedFromAgentWindow
+			? chatThreadsService.state.agentWindowThreadId
+			: chatThreadsService.state.currentThreadId
+		if (!newThreadId) {
+			return
+		}
 		const newThread = chatThreadsService.state.allThreads[newThreadId]
 
 		const newUI = await newThread?.state.mountedInfo?.whenMounted
-		chatThreadsService.setCurrentThreadState({ stagingSelections: oldSelns, })
+		if (invokedFromAgentWindow) {
+			chatThreadsService.setThreadState(newThreadId, { stagingSelections: oldSelns })
+		} else {
+			chatThreadsService.setCurrentThreadState({ stagingSelections: oldSelns })
+		}
 		if (newUI?.textAreaRef?.current && oldVal) newUI.textAreaRef.current.value = oldVal
 
 

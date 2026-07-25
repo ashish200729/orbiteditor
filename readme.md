@@ -1,20 +1,35 @@
 
 
-# Welcome to Orbit Editor
-
 <div align="center">
-	
+
+# Orbit Editor
+
+**An open-source AI-powered code editor. Like Cursor. Any provider you want.**
+
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg?style=flat-square)](./LICENSE.txt)
+[![Latest release](https://img.shields.io/github/v/release/ashish200729/orbiteditor?include_prereleases&style=flat-square)](https://github.com/ashish200729/orbiteditor/releases)
+[![GitHub stars](https://img.shields.io/github/stars/ashish200729/orbiteditor?style=flat-square)](https://github.com/ashish200729/orbiteditor)
+[![Discord](https://img.shields.io/discord/1352543919468953720?label=Discord&logo=discord&style=flat-square)](https://discord.gg/ZPYkjPCDj8)
+[![Platform: macOS](https://img.shields.io/badge/platform-macOS-lightgrey.svg?style=flat-square)](https://github.com/ashish200729/orbiteditor/releases)
+
 https://github.com/user-attachments/assets/01c51dec-f037-43d9-b68b-2e3bdc582270
+
+[Website](https://orbiteditorai.com) · [Download](#download) · [Features](#features) · [Docs](#reference) · [Discord](https://discord.gg/ZPYkjPCDj8)
 
 </div>
 
-Use AI agents on your codebase, checkpoint and visualize changes, and bring any model or host locally. Orbit sends messages directly to providers without retaining your data.
+Orbit Editor is an open-source AI code editor forked from [Void Editor](https://github.com/voideditor/void) and [VS Code](https://github.com/microsoft/vscode). Run AI agents on your codebase, checkpoint and visualize changes, and bring any model or host locally — messages go directly to providers without retaining your data.
 
 This repo contains the full source code for Orbit Editor's desktop app. If you're new, welcome!
 
-- 🌐 [Website](https://orbiteditorai.com)
-- 🚙 [Project Board](https://github.com/ashish200729/orbiteditor/projects)
-- 🔨 [Contribute](./HOW_TO_CONTRIBUTE.md)
+## Features
+
+- **AI agents** — Run agents that understand your codebase, with support for subagents and configurable tool policies.
+- **Bring your own model** — Connect any provider (OpenAI, Anthropic, Google, local) or run models locally. Messages go directly to the provider without retaining your data.
+- **Checkpoints & change visualization** — Inspect, revert, and replay edits as you work, with a clear view of what changed and why.
+- **Plan mode** — Collaboratively design an implementation approach before any code is written.
+- **MCP integration** — Extend agent capabilities with Model Context Protocol servers.
+- **Skills** — Reusable, scoped workflows that encode project-specific knowledge and best practices.
 
 ## Download
 
@@ -51,15 +66,6 @@ malware."* Bypass it once, any of:
 
 Orbit Editor is a fork of [Void Editor](https://github.com/voideditor/void), which itself is a fork of [VS Code](https://github.com/microsoft/vscode). We are grateful to both projects for their excellent foundation.
 
-## Features
-
-- **AI agents** — Run agents that understand your codebase, with support for subagents and configurable tool policies.
-- **Bring your own model** — Connect any provider or run models locally. Messages go directly to the provider without retaining your data.
-- **Checkpoints & change visualization** — Inspect, revert, and replay edits as you work, with a clear view of what changed and why.
-- **Plan mode** — Collaboratively design an implementation approach before any code is written.
-- **MCP integration** — Extend agent capabilities with Model Context Protocol servers.
-- **Skills** — Reusable, scoped workflows that encode project-specific knowledge and best practices.
-
 ## Reference
 
 Orbit Editor is a fork of the [vscode](https://github.com/microsoft/vscode) repository. For a guide to our codebase, see [ORBIT_CODEBASE_GUIDE](./ORBIT_CODEBASE_GUIDE.md).
@@ -70,7 +76,6 @@ Additional feature docs:
 
 - [Plan mode](./docs/plan-mode.md)
 - [Subagents](./docs/orbit-subagents.md)
-- [macOS release builds](./docs/BUILD_MACOS.md)
 
 ## Contributing
 

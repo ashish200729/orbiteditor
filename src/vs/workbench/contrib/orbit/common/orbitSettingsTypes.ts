@@ -8,6 +8,13 @@ import { defaultModelsOfProvider, defaultProviderSettings, ModelOverrides } from
 import { ToolApprovalType } from './toolsServiceTypes.js';
 import { VoidSettingsState } from './orbitSettingsService.js'
 import { SemanticEmbeddingProvider } from './semanticRetrievalTypes.js';
+import type { ExecutionTargetId } from './runner/runnerTypes.js';
+import { parseExecutionTargetId } from './runner/runnerTypes.js';
+
+/** Validate / coerce a stored executionTarget value. */
+export function normalizeExecutionTargetSetting(value: unknown): ExecutionTargetId {
+	return parseExecutionTargetId(typeof value === 'string' ? value : undefined);
+}
 
 
 type UnionOfKeys<T> = T extends T ? keyof T : never;
@@ -511,6 +518,15 @@ export type GlobalSettings = {
 	semanticEmbeddingEndpoint: string;
 	semanticEmbeddingModel: string;
 	semanticEmbeddingApiKey: string;
+	/**
+	 * Where agent tasks execute.
+	 * - `local` (default) — in-process ChatThreadService (unchanged)
+	 * - `runner:<id>` — paired self-hosted runner (remote agent loop)
+	 * Never labeled "Cloud" in the UI.
+	 */
+	executionTarget: ExecutionTargetId;
+	/** Preferred remote base branch per sanitized repository URL. Does not switch the local worktree. */
+	runnerBranchByRepository: Record<string, string>;
 }
 
 export const defaultGlobalSettings: GlobalSettings = {
@@ -538,6 +554,8 @@ export const defaultGlobalSettings: GlobalSettings = {
 	semanticEmbeddingEndpoint: 'http://localhost:11434',
 	semanticEmbeddingModel: 'nomic-embed-text',
 	semanticEmbeddingApiKey: '',
+	executionTarget: 'local',
+	runnerBranchByRepository: {},
 }
 
 export type GlobalSettingName = keyof GlobalSettings

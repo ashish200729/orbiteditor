@@ -12,8 +12,7 @@ import { ChatBubble } from './ChatBubble.js';
 import { CollapsibleSection } from '../wrappers/CollapsibleSection.js';
 
 type ParallelToolGroupProps = {
-	messages: Array<{ message: ChatMessage, index: number }>,
-	previousMessages: ChatMessage[],
+	messages: Array<{ message: ChatMessage, index: number, threadIndex: number }>,
 	threadId: string,
 	currCheckpointIdx: number | undefined,
 	isRunning: IsRunningType,
@@ -27,7 +26,6 @@ type ParallelToolGroupProps = {
 
 export const ParallelToolGroup = React.memo(({
 	messages,
-	previousMessages,
 	threadId,
 	currCheckpointIdx,
 	isRunning,
@@ -36,21 +34,18 @@ export const ParallelToolGroup = React.memo(({
 }: ParallelToolGroupProps) => {
 	const [isExpanded, setIsExpanded] = useState(true);
 
-	const allToolsCompleted = messages.every(({ index }) => {
-		const msg = previousMessages[index];
+	const allToolsCompleted = messages.every(({ message: msg }) => {
 		// Guard: `index` can go stale after the message list mutates (streaming/branching), leaving
 		// `previousMessages[index]` undefined — accessing `.role` unguarded would crash the render.
 		if (msg?.role !== 'tool') return false;
 		return msg.type === 'success' || msg.type === 'tool_error' || msg.type === 'rejected' || msg.type === 'invalid_params';
 	});
 
-	const hasErrors = messages.some(({ index }) => {
-		const msg = previousMessages[index];
+	const hasErrors = messages.some(({ message: msg }) => {
 		return msg?.role === 'tool' && (msg.type === 'tool_error' || msg.type === 'invalid_params');
 	});
 
-	const toolStats = messages.reduce((acc, { index }) => {
-		const msg = previousMessages[index];
+	const toolStats = messages.reduce((acc, { message: msg }) => {
 		if (msg?.role === 'tool') {
 			if (msg.type === 'success') acc.success++;
 			else if (msg.type === 'tool_error') acc.error++;
@@ -71,8 +66,7 @@ export const ParallelToolGroup = React.memo(({
 	const generateSummary = (): string => {
 		const toolCounts: Record<string, number> = {};
 
-		messages.forEach(({ index }) => {
-			const msg = previousMessages[index];
+		messages.forEach(({ message: msg }) => {
 			if (msg?.role === 'tool' && msg.type === 'success') {
 				const toolName = (msg as any).name;
 				toolCounts[toolName] = (toolCounts[toolName] || 0) + 1;
@@ -116,7 +110,7 @@ export const ParallelToolGroup = React.memo(({
 
 	const toolList = useMemo(() => (
 		<div className="flex flex-col gap-0 min-w-0 w-full">
-			{messages.map(({ index, message }, i) => {
+			{messages.map(({ index, threadIndex, message }, i) => {
 				const messageKey = `tool-${index}-${message.role}-${(message as any).name || 'unknown'}`;
 
 				return (
@@ -127,8 +121,8 @@ export const ParallelToolGroup = React.memo(({
 					>
 						<ChatBubble
 							currCheckpointIdx={currCheckpointIdx}
-							chatMessage={previousMessages[index]}
-							messageIdx={index}
+							chatMessage={message}
+							messageIdx={threadIndex}
 							isCommitted={true}
 							chatIsRunning={isRunning}
 							threadId={threadId}
@@ -139,7 +133,7 @@ export const ParallelToolGroup = React.memo(({
 				);
 			})}
 		</div>
-	), [messages, previousMessages, currCheckpointIdx, isRunning, threadId, scrollActions, animateEntrance]);
+	), [messages, currCheckpointIdx, isRunning, threadId, scrollActions, animateEntrance]);
 
 	return (
 		<div className="flex flex-col my-0.5 min-w-0 w-full">

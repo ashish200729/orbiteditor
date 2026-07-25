@@ -5,7 +5,7 @@
 
 import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Check, ChevronRight, Cloud, Folder, FolderPlus, Home, Laptop, Loader2, Search, X } from 'lucide-react';
+import { Check, ChevronRight, Folder, FolderPlus, Home, Laptop, Loader2, Search, X } from 'lucide-react';
 import { URI } from '../../../../../../../base/common/uri.js';
 import { isMacintosh, isWindows } from '../../../../../../../base/common/platform.js';
 import { isValidWorkspaceFolderName, normalizeFolderUriKey } from '../../../../common/agentWorkspaceHelpers.js';
@@ -334,16 +334,10 @@ export const AgentWorkspacePicker = ({ open, onClose, anchorRef }: AgentWorkspac
 					hasChevron: true,
 					onSelect: () => openFolderPicker(),
 				},
-				{
-					kind: 'source' as const,
-					id: 'cloud' as const,
-					label: 'Cloud',
-					icon: <Cloud size={14} strokeWidth={1.75} />,
-					active: false,
-					disabled: true,
-					hasChevron: true,
-					onSelect: async () => { /* coming soon */ },
-				},
+				// U6: the disabled "Cloud" workspace source was a stub that read
+				// as a broken feature. Remote work in Orbit is Self-hosted Runner
+				// (selected via the execution target picker), not a hosted cloud
+				// workspace. Removed to avoid confusing users.
 			],
 		});
 		// Single create action — the local-machine source already covers opening folders.

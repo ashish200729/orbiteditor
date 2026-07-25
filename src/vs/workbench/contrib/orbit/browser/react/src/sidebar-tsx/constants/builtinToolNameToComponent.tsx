@@ -71,41 +71,45 @@ export const builtinToolNameToComponent: { [T in BuiltinToolName]: { resultWrapp
 
 			if (toolMessage.type === 'success') {
 				const { result } = toolMessage
-				if (!compact && result.kind === 'image') {
-					componentParams.desc2 = `${(result.sizeBytes / 1024).toFixed(1)} KB`
-					componentParams.children = <ToolChildrenWrapper>
-						<img
-							src={`data:${result.mime};base64,${result.base64}`}
-							alt={getBasename(params.uri.fsPath)}
-							className='max-h-48 max-w-full rounded object-contain bg-void-bg-3'
-						/>
-					</ToolChildrenWrapper>
-				} else if (!compact && result.kind === 'pdf') {
-					componentParams.desc2 = result.totalPages > 0 ? `${result.totalPages} page${result.totalPages !== 1 ? 's' : ''}` : 'PDF'
-					const preview = result.textContent.slice(0, 2000)
-					componentParams.children = <ToolChildrenWrapper allowTextSelection>
-						<SmallProseWrapper>
-							<ChatMarkdownRender
-								string={`\`\`\`\n${preview}${result.textContent.length > preview.length ? '\n…' : ''}\n\`\`\``}
-								chatMessageLocation={undefined}
-								isApplyEnabled={false}
-								isLinkDetectionEnabled={true}
+				if (result && typeof result === 'object' && 'kind' in result) {
+					if (!compact && result.kind === 'image') {
+						componentParams.desc2 = `${(result.sizeBytes / 1024).toFixed(1)} KB`
+						componentParams.children = <ToolChildrenWrapper>
+							<img
+								src={`data:${result.mime};base64,${result.base64}`}
+								alt={getBasename(params.uri?.fsPath ?? '')}
+								className='max-h-48 max-w-full rounded object-contain bg-void-bg-3'
 							/>
-						</SmallProseWrapper>
-					</ToolChildrenWrapper>
-				} else {
-					const returnedLines = result.fileContents ? result.fileContents.split('\n').length : 0
-					if (returnedLines > 0) {
-						const endLine = result.firstLineNumber + returnedLines - 1
-						range = [result.firstLineNumber, endLine]
-						if (endLine < result.totalNumLines) {
-							componentParams.desc2 = `lines ${result.firstLineNumber}-${endLine} of ${result.totalNumLines}`
-						} else if (result.firstLineNumber > 1) {
-							componentParams.desc1 += ` (${result.firstLineNumber}-${endLine})`
+						</ToolChildrenWrapper>
+					} else if (!compact && result.kind === 'pdf') {
+						componentParams.desc2 = result.totalPages > 0 ? `${result.totalPages} page${result.totalPages !== 1 ? 's' : ''}` : 'PDF'
+						const preview = result.textContent.slice(0, 2000)
+						componentParams.children = <ToolChildrenWrapper allowTextSelection>
+							<SmallProseWrapper>
+								<ChatMarkdownRender
+									string={`\`\`\`\n${preview}${result.textContent.length > preview.length ? '\n…' : ''}\n\`\`\``}
+									chatMessageLocation={undefined}
+									isApplyEnabled={false}
+									isLinkDetectionEnabled={true}
+								/>
+							</SmallProseWrapper>
+						</ToolChildrenWrapper>
+					} else if (result.kind === 'text') {
+						const returnedLines = result.fileContents ? result.fileContents.split('\n').length : 0
+						if (returnedLines > 0) {
+							const endLine = result.firstLineNumber + returnedLines - 1
+							range = [result.firstLineNumber, endLine]
+							if (endLine < result.totalNumLines) {
+								componentParams.desc2 = `lines ${result.firstLineNumber}-${endLine} of ${result.totalNumLines}`
+							} else if (result.firstLineNumber > 1) {
+								componentParams.desc1 += ` (${result.firstLineNumber}-${endLine})`
+							}
 						}
 					}
 				}
-				componentParams.onClick = () => { voidOpenFileFn(params.uri, accessor, range) }
+				if (params.uri) {
+					componentParams.onClick = () => { voidOpenFileFn(params.uri, accessor, range) }
+				}
 			}
 			else if (toolMessage.type === 'tool_error') {
 				const { result } = toolMessage
@@ -142,23 +146,26 @@ export const builtinToolNameToComponent: { [T in BuiltinToolName]: { resultWrapp
 				iconTooltip: statusIconMeta?.tooltip,
 			}
 
-			if (params.includePattern) {
-				componentParams.info = `Only search in ${params.includePattern}`
+			if (params.targetDirectory) {
+				componentParams.info = `In ${getBasename(params.targetDirectory.fsPath) || 'workspace'}`
 			}
 
 			if (toolMessage.type === 'success') {
 				const { result } = toolMessage
-				componentParams.numResults = result.uris.length
-				componentParams.hasNextPage = result.hasNextPage
-				if (result.uris.length > 0) {
+				const uris = result && typeof result === 'object' && 'uris' in result && Array.isArray(result.uris)
+					? result.uris
+					: [];
+				componentParams.numResults = uris.length
+				componentParams.hasNextPage = result && typeof result === 'object' && 'hasNextPage' in result ? !!result.hasNextPage : false
+				if (uris.length > 0) {
 					componentParams.desc1 = <ToolHoverPreview
 						label={desc1}
-						items={result.uris.map(uri => ({
+						items={uris.map(uri => ({
 							name: getBasename(uri.fsPath),
 							onClick: () => { voidOpenFileFn(uri, accessor) },
 						}))}
-						totalCount={result.uris.length}
-						hasMore={result.hasNextPage}
+						totalCount={uris.length}
+						hasMore={componentParams.hasNextPage}
 					/>
 				}
 			}
@@ -198,27 +205,33 @@ export const builtinToolNameToComponent: { [T in BuiltinToolName]: { resultWrapp
 
 			if (toolMessage.type === 'success') {
 				const { result } = toolMessage
-				const fileResults = result.results
-				const numResults = result.outputMode === 'content'
-					? result.shownMatchCount
-					: result.outputMode === 'count'
+				const structured = result && typeof result === 'object' ? result : undefined
+				const fileResults = structured && 'results' in structured && Array.isArray(structured.results)
+					? structured.results
+					: [];
+				const outputMode = structured && 'outputMode' in structured ? structured.outputMode : 'content'
+				const numResults = outputMode === 'content'
+					? (structured && 'shownMatchCount' in structured ? structured.shownMatchCount : fileResults.length)
+					: outputMode === 'count'
 						? fileResults.reduce((sum, fileResult) => sum + fileResult.matchCount, 0)
 						: fileResults.length
 				componentParams.numResults = numResults
-				componentParams.hasNextPage = result.truncated
-				if (result.outputMode === 'files_with_matches') {
-					componentParams.info = `${result.totalFileCount}${result.truncated ? '+' : ''} file${result.totalFileCount !== 1 ? 's' : ''}`
+				componentParams.hasNextPage = !!(structured && 'truncated' in structured && structured.truncated)
+				if (outputMode === 'files_with_matches') {
+					const totalFileCount = structured && 'totalFileCount' in structured ? structured.totalFileCount : fileResults.length
+					componentParams.info = `${totalFileCount}${componentParams.hasNextPage ? '+' : ''} file${totalFileCount !== 1 ? 's' : ''}`
 				} else {
-					componentParams.info = `${result.totalMatchCount}${result.truncated ? '+' : ''} match${result.totalMatchCount !== 1 ? 'es' : ''}`
+					const totalMatchCount = structured && 'totalMatchCount' in structured ? structured.totalMatchCount : numResults
+					componentParams.info = `${totalMatchCount}${componentParams.hasNextPage ? '+' : ''} match${totalMatchCount !== 1 ? 'es' : ''}`
 				}
 
 				if (fileResults.length > 0) {
-					const previewItems = result.outputMode === 'content'
+					const previewItems = outputMode === 'content'
 						? fileResults.map(fileResult => ({
 							name: `${getBasename(fileResult.uri.fsPath)} · ${fileResult.matchCount} match${fileResult.matchCount !== 1 ? 'es' : ''}`,
 							onClick: () => { voidOpenFileFn(fileResult.uri, accessor) },
 						}))
-						: result.outputMode === 'count'
+						: outputMode === 'count'
 							? fileResults.map(fileResult => ({
 								name: <>{getBasename(fileResult.uri.fsPath)} <span className='opacity-60'>{fileResult.matchCount}</span></>,
 								onClick: () => { voidOpenFileFn(fileResult.uri, accessor) },
@@ -232,7 +245,7 @@ export const builtinToolNameToComponent: { [T in BuiltinToolName]: { resultWrapp
 						label={desc1}
 						items={previewItems}
 						totalCount={numResults}
-						hasMore={result.truncated}
+						hasMore={componentParams.hasNextPage}
 					/>
 				}
 			}

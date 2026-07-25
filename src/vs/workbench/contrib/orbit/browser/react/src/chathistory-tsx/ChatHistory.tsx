@@ -8,9 +8,8 @@ import { useIsDark, useAccessor, useChatThreadsState, useRunningThreadIds, useIs
 import '../styles.css';
 import ErrorBoundary from '../sidebar-tsx/ErrorBoundary.js';
 import { IconShell1 } from '../markdown/ApplyBlockHoverButtons.js';
-import { IconLoadingSpinner } from '../sidebar-tsx/components/icons/IconLoadingSpinner.js';
 import { OrbitUserProfileFooter } from '../shared/OrbitUserProfileFooter.js';
-import { Check, CheckCircle2, CircleDashed, Copy, FolderPlus, MessageCircleQuestion, MessageSquarePlus, Trash2, X, MoreHorizontal, LayoutGrid, Search, ListFilter, ChevronDown } from 'lucide-react';
+import { Check, Copy, FolderPlus, MessageSquarePlus, Trash2, X, MoreHorizontal, LayoutGrid, Search, ListFilter, ChevronDown } from 'lucide-react';
 import { IsRunningType, ThreadType } from '../../../chatThreadService.js';
 import { filterThreadsByWorkspaceId } from '../../../../common/agentWorkspaceHelpers.js';
 import {
@@ -23,6 +22,8 @@ import {
 import { AGENT_HISTORY_LIST_PREFS_STORAGE_KEY } from '../../../../common/storageKeys.js';
 import { AgentChatHistoryFilterMenu } from '../agent-window-tsx/AgentChatHistoryFilterMenu.js';
 import { AgentWorkspacePicker } from '../agent-window-tsx/AgentWorkspacePicker.js';
+import { RunnerThreadCloudIcon } from '../sidebar-tsx/components/runner/RunnerThreadCloudIcon.js';
+import { ThreadStatusIcon } from '../util/ThreadStatusIcon.js';
 import { StorageScope, StorageTarget } from '../../../../../../../platform/storage/common/storage.js';
 
 export const ChatHistory = ({ className, isAgentWindow = false }: { className?: string; isAgentWindow?: boolean }) => {
@@ -108,6 +109,7 @@ const ChatHistoryContent = ({ inAgentWindow }: { inAgentWindow: boolean }) => {
 
 	const runningThreadIds = useRunningThreadIds();
 	const composerWorkspacePickerAvailable = inAgentWindow
+		&& currentThreadId != null
 		&& !!allThreads?.[currentThreadId]
 		&& allThreads[currentThreadId].messages.length === 0;
 
@@ -142,10 +144,13 @@ const ChatHistoryContent = ({ inAgentWindow }: { inAgentWindow: boolean }) => {
 		try {
 			if (inAgentWindow) {
 				chatThreadsService.openNewThread({
-					agentWorkspaceId: agentWorkspaceState.activeWorkspaceId,
+					agentWorkspaceId: workspaceService.getState().activeWorkspaceId,
+					forceNew: true,
 				});
+				void chatThreadsService.focusSelectedChat(true);
 			} else {
-				chatThreadsService.openNewThread();
+				chatThreadsService.openNewThread({ forceNew: true });
+				void chatThreadsService.focusSelectedChat(false);
 			}
 		} catch (error) {
 			console.error('Error creating new thread:', error);
@@ -341,7 +346,7 @@ const ChatHistoryContent = ({ inAgentWindow }: { inAgentWindow: boolean }) => {
 	if (!allThreads) {
 		return (
 			<div className="flex flex-col h-full">
-				<ChatHistoryTopBar />
+				<ChatHistoryTopBar inAgentWindow={inAgentWindow} />
 				<ChatHistoryHeader
 					onNewThread={handleNewThread}
 					searchQuery={searchQuery}
@@ -373,7 +378,7 @@ const ChatHistoryContent = ({ inAgentWindow }: { inAgentWindow: boolean }) => {
 
 	return (
 		<div className="flex flex-col h-full relative">
-			<ChatHistoryTopBar />
+			<ChatHistoryTopBar inAgentWindow={inAgentWindow} />
 			<ChatHistoryHeader
 				onNewThread={handleNewThread}
 				searchQuery={searchQuery}
@@ -496,15 +501,17 @@ const ChatHistoryContent = ({ inAgentWindow }: { inAgentWindow: boolean }) => {
 							);
 						})}
 
-						{hasMoreThreads && (
-							<div
-								className="flex items-center gap-2 py-1.5 px-2 mx-1 rounded-md text-[13px] cursor-pointer text-void-fg-0 hover:bg-zinc-700/5 dark:hover:bg-zinc-300/5 transition-all opacity-80 hover:opacity-100"
-								onClick={() => setVisibleCount((prev) => prev + 5)}
-							>
-								<MoreHorizontal size={14} className="flex-shrink-0 opacity-60" />
-								<span className="truncate">More</span>
-							</div>
-						)}
+				{hasMoreThreads && (
+					<button
+						type="button"
+						className="agent-history-more-row flex items-center gap-2 py-1.5 px-2 mx-1 rounded-md text-[13px] cursor-pointer text-void-fg-0 hover:bg-zinc-700/5 dark:hover:bg-zinc-300/5 transition-all opacity-80 hover:opacity-100"
+						onClick={() => setVisibleCount((prev) => prev + 5)}
+						aria-label="Show more agents"
+					>
+						<MoreHorizontal size={14} className="flex-shrink-0 opacity-60" aria-hidden />
+						<span className="truncate">More</span>
+					</button>
+				)}
 					</div>
 				)}
 			</div>
@@ -514,14 +521,23 @@ const ChatHistoryContent = ({ inAgentWindow }: { inAgentWindow: boolean }) => {
 	);
 };
 
-const ChatHistoryTopBar = () => {
+const ChatHistoryTopBar = ({ inAgentWindow }: { inAgentWindow: boolean }) => {
 	const accessor = useAccessor();
 	const commandService = accessor.get('ICommandService');
+	const agentWindowService = accessor.get('IAgentWindowService');
 	const isChatHistoryVisible = useIsChatHistoryVisible();
 
 	const handleToggle = () => {
+		if (inAgentWindow) {
+			agentWindowService.toggleSidebar();
+			return;
+		}
 		commandService.executeCommand('workbench.action.toggleChatHistory');
 	};
+
+	if (inAgentWindow) {
+		return null;
+	}
 
 	return (
 		<div className="@@chat-history-topbar">
@@ -577,19 +593,21 @@ const ChatHistoryHeader = ({
 				`}
 			>
 				<Search size={13} className="flex-shrink-0 text-void-fg-3 opacity-60" />
-				<input
-					type="text"
-					placeholder="Search Agents..."
-					value={searchQuery}
-					onChange={(e) => setSearchQuery(e.target.value)}
-					onFocus={() => setIsSearchFocused(true)}
-					onBlur={() => setIsSearchFocused(false)}
-					className="@@chat-history-search-input flex-1 bg-transparent outline-none text-[13px] text-void-fg-0 placeholder:text-void-fg-3 placeholder:opacity-50"
-				/>
+			<input
+				type="text"
+				placeholder="Search Agents..."
+				value={searchQuery}
+				onChange={(e) => setSearchQuery(e.target.value)}
+				onFocus={() => setIsSearchFocused(true)}
+				onBlur={() => setIsSearchFocused(false)}
+				aria-label="Search agents"
+				className="@@chat-history-search-input flex-1 bg-transparent outline-none focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--vscode-focusBorder,#0078d4)] rounded text-[13px] text-void-fg-0 placeholder:text-void-fg-3 placeholder:opacity-50"
+			/>
 			</div>
 
 			{/* New Agent Row */}
 			<button
+				type="button"
 				onClick={onNewThread}
 				className={`
 					w-full py-1.5 px-2 rounded-md
@@ -645,6 +663,7 @@ const DuplicateButton = ({ threadId }: { threadId: string }) => {
 			Icon={Copy}
 			className="size-[11px]"
 			onClick={handleDuplicate}
+			aria-label="Duplicate thread"
 			data-tooltip-id="void-tooltip"
 			data-tooltip-place="top"
 			data-tooltip-content="Duplicate thread"
@@ -685,6 +704,7 @@ const TrashButton = ({ threadId }: { threadId: string }) => {
 				Icon={X}
 				className="size-[11px]"
 				onClick={handleCancel}
+				aria-label="Cancel delete"
 				data-tooltip-id="void-tooltip"
 				data-tooltip-place="top"
 				data-tooltip-content="Cancel"
@@ -693,6 +713,7 @@ const TrashButton = ({ threadId }: { threadId: string }) => {
 				Icon={Check}
 				className="size-[11px]"
 				onClick={handleConfirm}
+				aria-label="Confirm delete"
 				data-tooltip-id="void-tooltip"
 				data-tooltip-place="top"
 				data-tooltip-content="Confirm delete"
@@ -703,6 +724,7 @@ const TrashButton = ({ threadId }: { threadId: string }) => {
 			Icon={Trash2}
 			className="size-[11px]"
 			onClick={handleTrashClick}
+			aria-label="Delete thread"
 			data-tooltip-id="void-tooltip"
 			data-tooltip-place="top"
 			data-tooltip-content="Delete thread"
@@ -726,6 +748,7 @@ const PastThreadElement = memo(({
 	const accessor = useAccessor();
 	const chatThreadsService = accessor.get('IChatThreadService');
 	const agentWorkspaceService = accessor.get('IAgentProjectWorkspaceService');
+	const agentWorkspaceState = useAgentWorkspaceState();
 	const dialogService = accessor.get('IDialogService');
 
 	const firstUserMsgIdx = pastThread.messages.findIndex((msg) => msg.role === 'user');
@@ -764,43 +787,76 @@ const PastThreadElement = memo(({
 					agentWorkspaceService.setActiveWorkspace(next);
 				}
 			}
-			chatThreadsService.switchToThread(pastThread.id, { inAgentWindow });
+			chatThreadsService.switchToThread(pastThread.id, {
+				inAgentWindow,
+				adoptWorkspaceId: inAgentWindow ? agentWorkspaceService.getState().activeWorkspaceId : undefined,
+			});
 		} catch (error) {
 			console.error('Error switching thread:', error);
 		}
 	};
 
+	// Keyboard activation (a11y): the row is a div with onClick, so expose it
+	// as a button to AT and handle Enter/Space. Focus ring via :focus-visible
+	// in styles.css (.agent-history-thread-row).
+	const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+		if ((e.target as HTMLElement).closest('[data-action-button]')) {
+			return;
+		}
+		if (e.key === 'Enter' || e.key === ' ') {
+			e.preventDefault();
+			void handleClick(e as unknown as React.MouseEvent);
+		}
+	};
+
+	const threadAriaLabel = isRunning === 'awaiting_user'
+		? `${firstMsg}, awaiting approval`
+		: isRunning === 'LLM' || isRunning === 'tool' || isRunning === 'idle'
+			? `${firstMsg}, running`
+			: isDraftThread(pastThread)
+				? `${firstMsg}, draft`
+				: firstMsg;
+
 	return (
 		<div
-			className={`
-				group relative flex items-center justify-between
-				py-1.5 px-2 mx-1 rounded-md text-[13px] cursor-pointer transition-all
+			className={`agent-history-thread-row group relative flex items-center justify-between py-1.5 px-2 mx-1 rounded-md text-[13px] cursor-pointer transition-all
 				${isActive
 					? 'bg-void-bg-3 text-void-fg-0'
 					: 'text-void-fg-0 hover:bg-zinc-700/5 dark:hover:bg-zinc-300/5'
 				}
 			`}
 			onClick={handleClick}
+			onKeyDown={handleKeyDown}
+			role="button"
+			tabIndex={0}
+			aria-current={isActive ? 'true' : undefined}
+			aria-label={threadAriaLabel}
 		>
-			<div className="flex items-center gap-2 min-w-0 overflow-hidden flex-1">
-				{/* Status indicator: running spinner, awaiting user, draft, or completed check */}
-				{isRunning === 'LLM' || isRunning === 'tool' || isRunning === 'idle' ? (
-					<IconLoadingSpinner className="text-void-fg-0 opacity-70 flex-shrink-0" size={14} />
-				) : isRunning === 'awaiting_user' ? (
-					<MessageCircleQuestion className="text-void-fg-0 opacity-70 flex-shrink-0" size={14} />
-				) : isDraftThread(pastThread) ? (
-					<CircleDashed className="text-void-fg-0 opacity-70 flex-shrink-0" size={14} />
-				) : (
-					<CheckCircle2 className="text-void-fg-0 opacity-80 flex-shrink-0" size={14} />
-				)}
+		<div className="flex items-center gap-2 min-w-0 overflow-hidden flex-1">
+			{/* Status indicator: same glyph as local (OrbitProgressIndicator when running) */}
+			<ThreadStatusIcon
+				isRunning={isRunning}
+				isDraft={isDraftThread(pastThread)}
+				idleDisplay="completed"
+				size="xs"
+			/>
 
-				{/* Thread title */}
-				<span
-					className="truncate opacity-90"
-					title={firstMsg}
-				>
-					{firstMsg}
-				</span>
+			{/* Self-hosted Runner badge — unified via RunnerThreadCloudIcon (U5) */}
+			{pastThread.runnerProfile?.hasRemoteTurns && (
+				<RunnerThreadCloudIcon
+					size={12}
+					title={pastThread.runnerProfile.lastRunnerName
+						? `Self-hosted Runner · ${pastThread.runnerProfile.lastRunnerName}`
+						: 'Self-hosted Runner'}
+				/>
+			)}
+			{/* Thread title */}
+			<span
+				className="truncate opacity-90"
+				title={firstMsg}
+			>
+				{firstMsg}
+			</span>
 				{workspaceBadge && (
 					<span className="agent-history-workspace-badge" title={workspaceBadge}>{workspaceBadge}</span>
 				)}

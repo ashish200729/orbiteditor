@@ -20,7 +20,10 @@ import { CancellationError } from '../../../../base/common/errors.js';
 import {
 	GitCommandResult,
 	GitCommitOptions,
+	GitCompareUrlOptions,
+	GitCheckoutRemoteOptions,
 	GitDiffOptions,
+	GitFetchOptions,
 	GitPushOptions,
 	GitRepoStatus,
 	IVoidSCMService,
@@ -46,6 +49,9 @@ export interface IAgentGitService {
 	/** Resolve the git root for the current agent workspace, or null when not a repo. */
 	resolveRepoRoot(): Promise<string | null>;
 
+	/** Resolve git root that contains an arbitrary filesystem path (IDE sidebar / open folder). */
+	resolveRepoRootFromPath(path: string): Promise<string | null>;
+
 	/** Resolve all git roots under active agent folders (multi-root workspaces). */
 	resolveRepoRoots(): Promise<string[]>;
 
@@ -54,6 +60,9 @@ export interface IAgentGitService {
 	getFileContent(root: string, file: string, staged?: boolean): Promise<string>;
 	getTotals(root: string): Promise<{ added: number; removed: number }>;
 	getBranches(root: string): Promise<string[]>;
+	getRemoteBranches(root: string): Promise<string[]>;
+	getRemoteBranchCommit(root: string, branch: string): Promise<string | null>;
+	getHeadCommit(root: string): Promise<string | null>;
 
 	stage(root: string, files: string[]): Promise<GitCommandResult>;
 	unstage(root: string, files: string[]): Promise<GitCommandResult>;
@@ -65,7 +74,12 @@ export interface IAgentGitService {
 	createBranch(root: string, name: string, checkout?: boolean): Promise<GitCommandResult>;
 	checkoutBranch(root: string, name: string): Promise<GitCommandResult>;
 	push(root: string, options?: GitPushOptions): Promise<GitCommandResult>;
+	fetch(root: string, options?: GitFetchOptions): Promise<GitCommandResult>;
+	checkoutRemoteBranch(root: string, options: GitCheckoutRemoteOptions): Promise<GitCommandResult>;
 	getPullRequestUrl(root: string): Promise<string | null>;
+	getCompareUrl(root: string, options: GitCompareUrlOptions): Promise<string | null>;
+	getRemoteHttpsUrl(root: string, remote?: string): Promise<string | null>;
+	getRemoteUrl(root: string, remote?: string): Promise<string | null>;
 
 	/** Generate a commit message from the current diff using the SCM model. */
 	generateCommitMessage(root: string): Promise<string>;
@@ -176,6 +190,10 @@ class AgentGitService extends Disposable implements IAgentGitService {
 		return null;
 	}
 
+	async resolveRepoRootFromPath(path: string): Promise<string | null> {
+		return this.channel.getRepoRoot(path);
+	}
+
 	/** All git roots under the active agent folders (multi-root). */
 	async resolveRepoRoots(): Promise<string[]> {
 		const folders = this.agentProjectWorkspaceService.getActiveFolders().filter(u => u.scheme === 'file');
@@ -202,6 +220,9 @@ class AgentGitService extends Disposable implements IAgentGitService {
 	getFileContent(root: string, file: string, staged?: boolean): Promise<string> { return this.channel.getFileContent(root, file, staged); }
 	getTotals(root: string): Promise<{ added: number; removed: number }> { return this.channel.getTotals(root); }
 	getBranches(root: string): Promise<string[]> { return this.channel.getBranches(root); }
+	getRemoteBranches(root: string): Promise<string[]> { return this.channel.getRemoteBranches(root); }
+	getRemoteBranchCommit(root: string, branch: string): Promise<string | null> { return this.channel.getRemoteBranchCommit(root, branch); }
+	getHeadCommit(root: string): Promise<string | null> { return this.channel.getHeadCommit(root); }
 
 	async stage(root: string, files: string[]): Promise<GitCommandResult> { return this.mutate(this.channel.stage(root, files)); }
 	async unstage(root: string, files: string[]): Promise<GitCommandResult> { return this.mutate(this.channel.unstage(root, files)); }
@@ -213,7 +234,12 @@ class AgentGitService extends Disposable implements IAgentGitService {
 	async createBranch(root: string, name: string, checkout?: boolean): Promise<GitCommandResult> { return this.mutate(this.channel.createBranch(root, name, checkout)); }
 	async checkoutBranch(root: string, name: string): Promise<GitCommandResult> { return this.mutate(this.channel.checkoutBranch(root, name)); }
 	async push(root: string, options?: GitPushOptions): Promise<GitCommandResult> { return this.mutate(this.channel.push(root, options)); }
+	async fetch(root: string, options?: GitFetchOptions): Promise<GitCommandResult> { return this.mutate(this.channel.fetch(root, options)); }
+	async checkoutRemoteBranch(root: string, options: GitCheckoutRemoteOptions): Promise<GitCommandResult> { return this.mutate(this.channel.checkoutRemoteBranch(root, options)); }
 	getPullRequestUrl(root: string): Promise<string | null> { return this.channel.getPullRequestUrl(root); }
+	getCompareUrl(root: string, options: GitCompareUrlOptions): Promise<string | null> { return this.channel.getCompareUrl(root, options); }
+	getRemoteHttpsUrl(root: string, remote?: string): Promise<string | null> { return this.channel.getRemoteHttpsUrl(root, remote); }
+	getRemoteUrl(root: string, remote?: string): Promise<string | null> { return this.channel.getRemoteUrl(root, remote); }
 
 	async generateCommitMessage(root: string): Promise<string> {
 		const [stat, sampledDiffs, branch, log] = await Promise.all([

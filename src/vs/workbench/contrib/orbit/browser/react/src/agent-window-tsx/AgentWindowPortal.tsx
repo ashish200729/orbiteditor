@@ -24,18 +24,35 @@ const AgentWindowChat = () => {
 	const workspaceState = useAgentWorkspaceState();
 	const threadsState = useChatThreadsState();
 	const chatThreadService = accessor.get('IChatThreadService');
-	const selected = threadsState.agentWindowThreadId
-		? threadsState.allThreads[threadsState.agentWindowThreadId]
-		: undefined;
-	const isReady = selected?.agentWorkspaceId === workspaceState.activeWorkspaceId;
+	const threadId = threadsState.agentWindowThreadId;
+	const selected = threadId ? threadsState.allThreads[threadId] : undefined;
+	const selectedAgentWorkspaceId = selected?.agentWorkspaceId;
 
 	React.useEffect(() => {
-		chatThreadService.ensureAgentWindowThread(workspaceState.activeWorkspaceId);
-	}, [chatThreadService, workspaceState.activeWorkspaceId]);
+		// Always ensure scope on mount and whenever the active workspace or
+		// selected thread changes. A persisted agentWindowThreadId from another
+		// workspace (or an IDE-scoped thread with agentWorkspaceId undefined)
+		// must not drive Self-hosted Runner submits with the wrong git context.
+		if (!threadId || !selected || selectedAgentWorkspaceId !== workspaceState.activeWorkspaceId) {
+			chatThreadService.ensureAgentWindowThread(workspaceState.activeWorkspaceId);
+		}
+	}, [chatThreadService, workspaceState.activeWorkspaceId, threadId, selected, selectedAgentWorkspaceId]);
 
-	// Never mount an enabled composer against the IDE selection while the scoped
-	// Agents selection is being established or changed.
-	return isReady ? <Sidebar className="" isAgentWindow /> : null;
+	const ready = !!threadId
+		&& !!selected
+		&& selectedAgentWorkspaceId === workspaceState.activeWorkspaceId;
+
+	if (!ready) {
+		// Lightweight placeholder (R4): avoids a blank flash while
+		// ensureAgentWindowThread syncs the thread into the active workspace.
+		// Keeps height/scroll so the surrounding portal layout doesn't jump.
+		return (
+			<div className="w-full h-full flex items-center justify-center text-void-fg-3 text-sm select-none">
+				Preparing agent…
+			</div>
+		);
+	}
+	return <Sidebar key={threadId} className="" isAgentWindow />;
 };
 
 /**

@@ -78,6 +78,11 @@ import { IStorageService, StorageScope } from '../../../../../../../platform/sto
 import { ITextFileService } from '../../../../../../services/textfile/common/textfiles.js'
 import { ITextModelService } from '../../../../../../../editor/common/services/resolverService.js'
 import { OPT_OUT_KEY } from '../../../../common/storageKeys.js'
+import { IRunnerService } from '../../../runnerService.js'
+import { IRemoteTaskService } from '../../../remoteTaskService.js'
+import type { RunnerInfo } from '../../../../common/runner/runnerTypes.js'
+import type { RemoteTaskSummary } from '../../../../common/runner/runnerTypes.js'
+import { remoteTaskUiRunningValue } from '../../../../common/runner/remoteTaskUiStatus.js'
 
 
 // normally to do this you'd use a useEffect that calls .onDidChangeState(), but useEffect mounts too late and misses initial state changes
@@ -96,6 +101,8 @@ let chatThreadsStateServiceRef: IChatThreadService | undefined
 let runningThreadIds: { [threadId: string]: IsRunningType | undefined } = {}
 const runningThreadIdsListeners: Set<() => void> = new Set()
 
+let remoteTaskServiceRef: IRemoteTaskService | undefined
+
 let agentWorkspaceState: AgentWorkspaceState | undefined
 const agentWorkspaceStateListeners: Set<(s: AgentWorkspaceState) => void> = new Set()
 let agentWorkspaceServiceRef: IAgentProjectWorkspaceService | undefined
@@ -106,6 +113,26 @@ const _recomputeRunningThreadIds = () => {
 		const isRunning = chatThreadsStreamState[threadId]?.isRunning
 		if (isRunning) {
 			next[threadId] = isRunning
+		}
+	}
+	if (remoteTaskServiceRef) {
+		for (const task of remoteTaskServiceRef.listTasks()) {
+			const threadId = task.editorThreadId
+			if (!threadId) { continue }
+			// Terminal tasks (COMPLETED/FAILED/CANCELLED/TIMED_OUT/LOST) never
+			// count as running — handled by remoteTaskUiRunningValue returning
+			// undefined. CREATED+!connected maps to 'idle' so the list still
+			// shows a spinner during the connect attempt; once the service
+			// fails closed (R2/R3) the summary flips to FAILED and this drops
+			// the thread from the running map entirely.
+			const live = remoteTaskServiceRef.getLiveState(task.taskId)
+			const remoteRunning = remoteTaskUiRunningValue(task, live)
+			if (remoteRunning) {
+				// Awaiting user wins over generic 'idle' from another task.
+				next[threadId] = remoteRunning === 'awaiting_user'
+					? 'awaiting_user'
+					: (next[threadId] ?? remoteRunning)
+			}
 		}
 	}
 	const prevKeys = Object.keys(runningThreadIds)
@@ -226,6 +253,17 @@ export const _registerServices = (accessor: ServicesAccessor) => {
 			_recomputeRunningThreadIds()
 			chatThreadsStreamStateListeners.forEach(l => l(threadId))
 		})
+	)
+
+	const remoteTaskService = accessor.get(IRemoteTaskService)
+	remoteTaskServiceRef = remoteTaskService
+	disposables.push(
+		remoteTaskService.onDidChangeTasks(() => {
+			_recomputeRunningThreadIds()
+		}),
+		remoteTaskService.onDidReceiveEvent(() => {
+			_recomputeRunningThreadIds()
+		}),
 	)
 
 	settingsState = settingsStateService.state
@@ -453,6 +491,8 @@ const getReactAccessor = (accessor: ServicesAccessor) => {
 		IMarketplaceCatalogService: accessor.get(IMarketplaceCatalogService),
 
 		IStorageService: accessor.get(IStorageService),
+		IRunnerService: accessor.get(IRunnerService),
+		IRemoteTaskService: accessor.get(IRemoteTaskService),
 
 	} as const
 	return reactAccessor
@@ -840,6 +880,30 @@ export const useClinePassAuthState = () => {
 		return () => { clinePassAuthStateListeners.delete(ss) }
 	}, [ss])
 	return s
+}
+
+export const useRunnerList = (): RunnerInfo[] => {
+	const accessor = useAccessor()
+	const runnerService = accessor.get('IRunnerService')
+	const [runners, setRunners] = useState<RunnerInfo[]>(() => runnerService.listRunners())
+	useEffect(() => {
+		setRunners(runnerService.listRunners())
+		const d = runnerService.onDidChangeRunners(() => setRunners(runnerService.listRunners()))
+		return () => d.dispose()
+	}, [runnerService])
+	return runners
+}
+
+export const useRemoteTasks = (): RemoteTaskSummary[] => {
+	const accessor = useAccessor()
+	const remoteTaskService = accessor.get('IRemoteTaskService')
+	const [tasks, setTasks] = useState<RemoteTaskSummary[]>(() => remoteTaskService.listTasks())
+	useEffect(() => {
+		setTasks(remoteTaskService.listTasks())
+		const d = remoteTaskService.onDidChangeTasks(() => setTasks(remoteTaskService.listTasks()))
+		return () => d.dispose()
+	}, [remoteTaskService])
+	return tasks
 }
 
 

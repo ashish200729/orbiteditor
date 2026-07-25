@@ -9,7 +9,7 @@ import { ProviderName, providerNames, VoidStatefulModelInfo, RefreshableProvider
 import ErrorBoundary from '../sidebar-tsx/ErrorBoundary.js'
 import { VoidButtonBgDarken, VoidCustomDropdownBox, VoidInputBox2, VoidSimpleInputBox, VoidSwitch } from '../util/inputs.js'
 import { useAccessor, useIsDark, useIsOptedOut, useOrbitProviderAuthState, useRefreshModelListener, useRefreshModelState, useSettingsState, useOpenAiCodexAuthState, useXAiGrokAuthState } from '../util/services.js'
-import { X, RefreshCw, Loader2, Check, Asterisk, Plus, Boxes, Cloud, Sparkles, Settings2, Puzzle, LayoutList, BookOpen, Bot, Trash2, Download, Search, Pause, Play, AlertTriangle, Database, User, type LucideIcon } from 'lucide-react'
+import { X, RefreshCw, Loader2, Check, Asterisk, Plus, Boxes, Cloud, Sparkles, Settings2, Puzzle, LayoutList, BookOpen, Bot, Trash2, Download, Search, Pause, Play, AlertTriangle, Database, User, Server, type LucideIcon } from 'lucide-react'
 import { listSkills, onSkillsChanged, type SkillDefinition } from '../../../../common/skillRegistry.js'
 import { listSubAgents, type ResolvedSubAgentDefinition } from '../../../../common/subAgentRegistry.js'
 import { URI } from '../../../../../../../base/common/uri.js'
@@ -30,6 +30,7 @@ import { consumePendingOrbitSettingsTab } from '../../../orbitSettingsNavigation
 import { VOID_REFRESH_ORBIT_PROVIDER_ACTION_ID } from '../../../actionIDs.js';
 import { ProvidersSection } from './ProvidersSection.js';
 import { AccountSection } from './AccountSection.js';
+import { RunnersSection } from './RunnersSection.js';
 
 type Tab =
 	| 'account'
@@ -40,6 +41,7 @@ type Tab =
 	| 'general'
 	| 'skills'
 	| 'agents'
+	| 'runners'
 	| 'all';
 
 const SETTINGS_NAV_ICON = { size: 15, strokeWidth: 1.75 } as const
@@ -1306,6 +1308,7 @@ export const Settings = () => {
 		{ tab: 'providers', label: 'Providers', icon: <SettingsNavIcon icon={Cloud} /> },
 		{ tab: 'featureOptions', label: 'Feature Options', icon: <SettingsNavIcon icon={Sparkles} /> },
 		{ tab: 'general', label: 'General', icon: <SettingsNavIcon icon={Settings2} /> },
+		{ tab: 'runners', label: 'Self-hosted Runners', icon: <SettingsNavIcon icon={Server} /> },
 		{ tab: 'mcp', label: 'MCP', icon: <SettingsNavIcon icon={Puzzle} /> },
 		{ tab: 'skills', label: 'Skills', icon: <SettingsNavIcon icon={BookOpen} /> },
 		{ tab: 'agents', label: 'Agents', icon: <SettingsNavIcon icon={Bot} /> },
@@ -1502,6 +1505,14 @@ export const Settings = () => {
 					<div className={shouldShowTab('providers') ? `` : 'hidden'}>
 						<ErrorBoundary>
 							<ProvidersSection />
+						</ErrorBoundary>
+					</div>
+
+					{/* Self-hosted Runners */}
+					<div className={shouldShowTab('runners') ? `` : 'hidden'}>
+						<ErrorBoundary>
+							<SettingsPageHeader title='Self-hosted Runners' />
+							<RunnersSection />
 						</ErrorBoundary>
 					</div>
 

@@ -8,7 +8,7 @@ import { Pencil, X, ChevronUp, ChevronDown } from 'lucide-react';
 import { ChatMessage, StagingSelectionItem, TodoItem } from '../../../../../../common/chatThreadServiceTypes.js';
 import { parseSlashTokenNames } from '../../../../../../common/slashCommands/slashTokens.js';
 import { TodoMessageAttachment } from '../toolResults/todo/TodoMessageAttachment.js';
-import { useAccessor } from '../../../util/services.js';
+import { useAccessor, useRemoteTasks } from '../../../util/services.js';
 import { focusInConnectedWindow, downscaleImageDataUrl } from '../../../util/helpers.js';
 import { VoidInputBox2, TextAreaFns } from '../../../util/inputs.js';
 import { SlashTokenContent } from '../../../util/slashMenu/SlashTokenContent.js';
@@ -18,6 +18,7 @@ import { SelectedFiles } from '../files/SelectedFiles.js';
 import { IconX } from '../icons/IconX.js';
 import { Checkpoint } from '../chatComponents/Checkpoint.js';
 import { ChatScrollActions } from '../../utils/scrollUtils.js';
+import { RunnerThreadCloudIcon } from '../runner/RunnerThreadCloudIcon.js';
 
 type ChatBubbleMode = 'display' | 'edit'
 
@@ -46,6 +47,13 @@ export const UserMessageComponent = React.memo(({ chatMessage, messageIdx, isChe
 	const accessor = useAccessor()
 	const chatThreadsService = accessor.get('IChatThreadService')
 	const connectedDocument = useConnectedDocument()
+	const remoteTasks = useRemoteTasks()
+	const remoteIsRunning = remoteTasks.some(task => task.editorThreadId === threadId
+		&& !['COMPLETED', 'FAILED', 'CANCELLED', 'TIMED_OUT', 'LOST'].includes(task.state))
+	const isRemoteUserTurn = remoteTasks.some(task =>
+		task.editorThreadId === threadId
+		&& (task.editorMessageIndex ?? 0) === messageIdx + 1
+	)
 
 	// global state
 	let isBeingEdited = false
@@ -146,6 +154,7 @@ export const UserMessageComponent = React.memo(({ chatMessage, messageIdx, isChe
 	}, [chatMessage.displayContent, mode])
 
 	const onOpenEdit = () => {
+		if (remoteIsRunning) return
 		stagedSlashTokensBeforeEditRef.current = [
 			...(chatThreadsService.getThread(threadId)?.state.stagedSlashTokens ?? []),
 		]
@@ -434,18 +443,24 @@ export const UserMessageComponent = React.memo(({ chatMessage, messageIdx, isChe
 			// style chatbubble according to role
 			className={`
             text-left rounded-xl max-w-full
-            ${mode === 'edit' ? ''
-					: mode === 'display' ? 'p-2 flex flex-col bg-vscode-input-bg text-void-fg-1 overflow-x-auto cursor-pointer border border-void-border-2 shadow-sm' : ''
+			${mode === 'edit' ? ''
+					: mode === 'display' ? `relative p-2 flex flex-col bg-vscode-input-bg text-void-fg-1 overflow-x-auto ${remoteIsRunning ? 'cursor-default' : 'cursor-pointer'} border border-void-border-2 shadow-sm` : ''
 				}
         `}
 			onClick={() => {
-				if (mode !== 'display') return
+				if (mode !== 'display' || remoteIsRunning) return
 				// Don't hijack a text selection — copying your own message text requires
 				// finishing a selection inside the bubble without entering edit mode.
 				if (connectedDocument.getSelection()?.toString()) return
 				onOpenEdit()
 			}}
 		>
+			{mode === 'display' && isRemoteUserTurn && (
+				<RunnerThreadCloudIcon
+					size={11}
+					className="absolute top-1.5 right-1.5 opacity-50 pointer-events-none"
+				/>
+			)}
 			{chatbubbleContents}
 		</div>
 		<div

@@ -1423,6 +1423,8 @@ export const VoidCustomDropdownBox = <T extends NonNullable<any>>({
 	showCheckmarkOnSelected = false,
 	searchable = false,
 	highlightSelectedBg = true,
+	searchPlaceholder = 'Search…',
+	isOptionDisabled,
 }: {
 	options: T[];
 	selectedOption: T | undefined;
@@ -1442,6 +1444,8 @@ export const VoidCustomDropdownBox = <T extends NonNullable<any>>({
 	showCheckmarkOnSelected?: boolean;
 	searchable?: boolean;
 	highlightSelectedBg?: boolean;
+	searchPlaceholder?: string;
+	isOptionDisabled?: (option: T) => boolean;
 }) => {
 	const [isOpen, setIsOpen] = useState(false);
 	const [hoveredOption, setHoveredOption] = useState<T | null>(null);
@@ -1595,7 +1599,7 @@ export const VoidCustomDropdownBox = <T extends NonNullable<any>>({
 			<button
 				type='button'
 				ref={refs.setReference}
-				className="flex items-center h-4 bg-transparent whitespace-nowrap hover:brightness-90 w-full text-void-fg-1"
+				className="flex flex-row items-center h-4 bg-transparent whitespace-nowrap hover:brightness-90 w-full text-void-fg-1"
 				style={{ opacity: opacity / 100 }}
 				onClick={() => setIsOpen(!isOpen)}
 			>
@@ -1644,7 +1648,7 @@ export const VoidCustomDropdownBox = <T extends NonNullable<any>>({
 							autoFocus
 							value={searchQuery}
 							onChange={(e) => setSearchQuery(e.target.value)}
-							placeholder="Search models..."
+							placeholder={searchPlaceholder}
 							className="@@void-dropdown-search-input w-full px-2.5 py-1 bg-transparent outline-none text-[12px] text-void-fg-1 placeholder:text-void-fg-3 border-b border-void-border-2"
 						/>
 					)}
@@ -1655,6 +1659,7 @@ export const VoidCustomDropdownBox = <T extends NonNullable<any>>({
 							const thisOptionIsSelected = getOptionsEqual(option, selectedOption);
 							const optionName = getOptionDropdownName(option);
 							const Icon = getOptionIcon?.(option);
+							const disabled = !!isOptionDisabled?.(option);
 
 							return (
 								<div
@@ -1665,19 +1670,22 @@ export const VoidCustomDropdownBox = <T extends NonNullable<any>>({
 										}
 									}}
 									className={`
-						flex items-center px-2 py-1 rounded-md cursor-pointer
+						flex items-center px-2 py-1 rounded-md
 						transition-colors text-xs
-						${thisOptionIsSelected && highlightSelectedBg
+						${disabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}
+						${thisOptionIsSelected && highlightSelectedBg && !disabled
 											? "bg-[var(--void-dropdown-active-bg)]"
-											: "hover:bg-[var(--void-dropdown-hover-bg)]"
+											: disabled ? "" : "hover:bg-[var(--void-dropdown-hover-bg)]"
 										}
 						`}
 									onClick={() => {
+										if (disabled) { return; }
 										onChangeOption(option);
 										setIsOpen(false);
 									}}
-									onMouseEnter={() => setHoveredOption(option)}
+									onMouseEnter={() => { if (!disabled) { setHoveredOption(option); } }}
 									onMouseLeave={() => setHoveredOption(null)}
+									aria-disabled={disabled || undefined}
 								>
 									{/* Custom option rendering or default */}
 									{renderOption ? (

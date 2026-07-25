@@ -15,7 +15,7 @@ import { defaultProviderSettings, getModelCapabilities, ModelOverrides } from '.
 import { clearOrbitProviderModelMetadata, setOrbitProviderModelMetadata } from './orbitProviderModelMetadata.js';
 import { clearClinePassModelMetadata, setClinePassModelMetadata } from './clinePassModelMetadata.js';
 import { VOID_SETTINGS_STORAGE_KEY } from './storageKeys.js';
-import { defaultSettingsOfProvider, displayInfoOfProviderName, FeatureName, ProviderName, ModelSelectionOfFeature, SettingsOfProvider, SettingName, providerNames, ModelSelection, modelSelectionsEqual, featureNames, VoidStatefulModelInfo, GlobalSettings, GlobalSettingName, defaultGlobalSettings, ModelSelectionOptions, OptionsOfModelSelection, ChatMode, OverridesOfModel, defaultOverridesOfModel, MCPUserStateOfName as MCPUserStateOfName, MCPUserState, authGatedProviderNames } from './orbitSettingsTypes.js';
+import { defaultSettingsOfProvider, displayInfoOfProviderName, FeatureName, ProviderName, ModelSelectionOfFeature, SettingsOfProvider, SettingName, providerNames, ModelSelection, modelSelectionsEqual, featureNames, VoidStatefulModelInfo, GlobalSettings, GlobalSettingName, defaultGlobalSettings, ModelSelectionOptions, OptionsOfModelSelection, ChatMode, OverridesOfModel, defaultOverridesOfModel, MCPUserStateOfName as MCPUserStateOfName, MCPUserState, authGatedProviderNames, normalizeExecutionTargetSetting } from './orbitSettingsTypes.js';
 import { IOrbitProviderAuthService, OrbitProviderAuthState } from './orbitProviderAuthService.js';
 import { IClinePassAuthService } from './clinePassAuthService.js';
 import { OrbitProviderModelResponse, ClinePassModelResponse } from './sendLLMMessageTypes.js';
@@ -371,6 +371,9 @@ class VoidSettingsService extends Disposable implements IVoidSettingsService {
 
 			// add autoAcceptLLMChanges feature
 			if (readS.globalSettings.autoAcceptLLMChanges === undefined) readS.globalSettings.autoAcceptLLMChanges = false;
+
+			// E26: coerce executionTarget to a valid ExecutionTargetId
+			readS.globalSettings.executionTarget = normalizeExecutionTargetSetting(readS.globalSettings.executionTarget);
 		}
 		catch (e) {
 			// Preserve the already-read settings (including API keys) rather than wiping them.

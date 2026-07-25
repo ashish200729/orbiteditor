@@ -353,6 +353,30 @@
 	}
 }
 
+/* Spinning loader used by thread list / status indicators (U1).
+   Tailwind's animate-spin is available too, but this class is shared with
+   non-Tailwind contexts and respects prefers-reduced-motion centrally. */
+.orbit-spin {
+	animation: orbit-spin-rotate 0.9s linear infinite;
+}
+@keyframes orbit-spin-rotate {
+	from { transform: rotate(0deg); }
+	to { transform: rotate(360deg); }
+}
+/* Focus ring for keyboard-accessible thread rows / "More" (a11y). */
+.agent-history-thread-row:focus-visible,
+.agent-history-more-row:focus-visible {
+	outline: none;
+	box-shadow: 0 0 0 1px var(--vscode-focusBorder, #0078d4);
+}
+@media (prefers-reduced-motion: reduce) {
+	.orbit-spin,
+	.orbit-shimmer,
+	.plan-spinner {
+		animation: none;
+	}
+}
+
 /* Slash `/token` text color — input overlay + sent message bubbles */
 .void-slash-token-text {
 	color: var(--void-slash-token-fg);

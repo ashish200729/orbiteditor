@@ -118,6 +118,7 @@ const ModelSelectBox = ({ options, featureName, className }: { options: ModelOpt
 		matchInputWidth={false}
 		opacity={75}
 		searchable
+		searchPlaceholder='Search models…'
 		showCheckmarkOnSelected
 		highlightSelectedBg={false}
 	/>

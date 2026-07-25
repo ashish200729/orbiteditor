@@ -7,8 +7,10 @@ import { useMemo, useState } from 'react';
 import { CopyButton, IconShell1 } from '../markdown/ApplyBlockHoverButtons.js';
 import { useAccessor, useChatThreadsState, useRunningThreadIds, useSettingsState } from '../util/services.js';
 import { IconX } from './SidebarChat.js';
-import { Check, Copy, Icon, LoaderCircle, MessageCircleQuestion, Trash2, UserCheck, X } from 'lucide-react';
+import { Check, Copy, Icon, Trash2, UserCheck, X } from 'lucide-react';
 import { IsRunningType, ThreadType } from '../../../chatThreadService.js';
+import { RunnerThreadCloudIcon } from './components/runner/RunnerThreadCloudIcon.js';
+import { ThreadStatusIcon } from '../util/ThreadStatusIcon.js';
 
 
 const numInitialThreads = 3
@@ -237,13 +239,20 @@ const PastThreadElement = ({ pastThread, idx, hoveredIdx, setHoveredIdx, isRunni
 	>
 		<div className="flex items-center justify-between gap-1">
 			<span className="flex items-center gap-2 min-w-0 overflow-hidden">
-				{/* spinner */}
-				{isRunning === 'LLM' || isRunning === 'tool' || isRunning === 'idle' ? <LoaderCircle className="animate-spin bg-void-stroke-1 flex-shrink-0 flex-grow-0" size={14} />
-					:
-					isRunning === 'awaiting_user' ? <MessageCircleQuestion className="bg-void-stroke-1 flex-shrink-0 flex-grow-0" size={14} />
-						:
-						null}
-				{/* name */}
+				<ThreadStatusIcon
+					isRunning={isRunning}
+					isDraft={false}
+					idleDisplay="none"
+					size="xs"
+				/>
+				{pastThread.runnerProfile?.hasRemoteTurns && (
+					<RunnerThreadCloudIcon
+						size={12}
+						title={pastThread.runnerProfile.lastRunnerName
+							? `Self-hosted Runner · ${pastThread.runnerProfile.lastRunnerName}`
+							: 'Self-hosted Runner'}
+					/>
+				)}
 				<span className="truncate overflow-hidden text-ellipsis"
 					data-tooltip-id='void-tooltip'
 					data-tooltip-content={numMessages + ' messages'}

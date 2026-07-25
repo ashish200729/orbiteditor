@@ -53,3 +53,15 @@ export const AGENT_WINDOW_STATE_BY_WORKSPACE_PREFIX = 'orbit.agentWindow.stateBy
  * (grouping, ordering, workspace show mode). APPLICATION scope.
  */
 export const AGENT_HISTORY_LIST_PREFS_STORAGE_KEY = 'orbit.agentHistoryListPrefs'
+
+/**
+ * Encrypted paired self-hosted runner credentials (device tokens).
+ * APPLICATION + MACHINE scope — never log decrypted contents.
+ */
+export const PAIRED_RUNNERS_STORAGE_KEY = 'orbit.runners.pairedCredentialsI'
+
+/**
+ * Active remote task summaries for reconnect/replay after editor restart.
+ * APPLICATION scope. Does not store credentials.
+ */
+export const REMOTE_TASKS_STORAGE_KEY = 'orbit.runners.remoteTasksI'
