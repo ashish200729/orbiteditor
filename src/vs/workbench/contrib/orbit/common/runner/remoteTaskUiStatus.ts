@@ -66,6 +66,56 @@ export function remoteSubmitStageLabel(stage: RemoteSubmitStage): string {
 	return REMOTE_SUBMIT_STAGE_LABELS[stage];
 }
 
+/**
+ * True when `lastError` describes the *runner* going away (deploy, SIGTERM,
+ * crash), not an intentional cancel from Orbit or the dashboard.
+ *
+ * Older runner builds marked these as CANCELLED with "runner shutting down",
+ * which made the UI look like the user cancelled. Detect that copy forever so
+ * a mixed fleet still shows the truth.
+ */
+export function isRunnerInfrastructureStopError(lastError: string | null | undefined): boolean {
+	const err = (lastError ?? '').trim().toLowerCase();
+	if (!err) return false;
+	return (
+		err.includes('runner shutting down')
+		|| err.includes('self-hosted runner stopped')
+		|| err.includes('self-hosted runner crashed')
+		|| err.includes('runner was restarted')
+		|| err.includes('runner crashed while')
+		|| err.includes('stopped unexpectedly while this task')
+		|| err.includes('docker compose up --build')
+		|| err.includes('emergency shutdown')
+	);
+}
+
+/**
+ * One line for empty/fail-closed transcripts. Never says "cancelled" when the
+ * runner itself died — that is the #1 source of "I never cancelled" confusion.
+ */
+export function formatRemoteTaskTerminalMessage(
+	state: string | undefined,
+	lastError: string | null | undefined,
+): string {
+	const err = (lastError ?? '').trim();
+	const infra = isRunnerInfrastructureStopError(err);
+
+	if (infra || state === 'LOST') {
+		const prefix = 'Self-hosted Runner stopped';
+		return err ? `${prefix}: ${err}` : `${prefix}. Reconnect and resubmit to continue.`;
+	}
+	if (state === 'CANCELLED') {
+		return err ? `Remote task cancelled: ${err}` : 'Remote task cancelled.';
+	}
+	if (state === 'TIMED_OUT') {
+		return err ? `Remote task timed out: ${err}` : 'Remote task timed out.';
+	}
+	if (state === 'FAILED') {
+		return err ? `Remote task failed: ${err}` : 'Remote task failed.';
+	}
+	return err ? `Remote task finished: ${err}` : 'Remote task finished.';
+}
+
 const PROVISIONING_STATES: ReadonlySet<RunnerTaskState> = new Set<RunnerTaskState>([
 	'ASSIGNED',
 	'PROVISIONING',

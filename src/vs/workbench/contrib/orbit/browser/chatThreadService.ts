@@ -37,6 +37,7 @@ import { VoidFileSnapshot } from '../common/editCodeServiceTypes.js';
 import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { truncate } from '../../../../base/common/strings.js';
 import { THREAD_STORAGE_KEY, QUEUED_MESSAGES_STORAGE_KEY } from '../common/storageKeys.js';
+import { formatRemoteTaskTerminalMessage } from '../common/runner/remoteTaskUiStatus.js';
 import { IConvertToLLMMessageService } from './convertToLLMMessageService.js';
 import { RunOnceScheduler, timeout } from '../../../../base/common/async.js';
 import { deepClone } from '../../../../base/common/objects.js';
@@ -4137,20 +4138,9 @@ We only need to do it for files that were edited since `from`, ie files between 
 		// path retries forever and the command bar stays in draft mode.
 		let appendix = toAppend
 		if (appendix.length === 0) {
-			const err = (opts?.lastError ?? '').trim()
-			const state = opts?.state
-			const prefix = state === 'CANCELLED'
-				? 'Remote task cancelled'
-				: state === 'TIMED_OUT'
-					? 'Remote task timed out'
-					: state === 'LOST'
-						? 'Lost connection to the Self-hosted Runner'
-						: state === 'FAILED'
-							? 'Remote task failed'
-							: 'Remote task finished'
 			appendix = [{
 				role: 'assistant' as const,
-				displayContent: err ? `${prefix}: ${err}` : `${prefix}.`,
+				displayContent: formatRemoteTaskTerminalMessage(opts?.state, opts?.lastError),
 				reasoning: '',
 				anthropicReasoning: null,
 			} satisfies ChatMessage]

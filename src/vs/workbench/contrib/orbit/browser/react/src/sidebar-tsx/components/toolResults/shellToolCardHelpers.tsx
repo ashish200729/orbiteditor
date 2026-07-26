@@ -44,8 +44,9 @@ export const getShellCardMetaTags = (
 	if (toolName === 'Shell') {
 		const shellParams = params as BuiltinToolCallParams['Shell'];
 		if (shellParams.workingDirectory) tags.push('cd');
+		// blockUntilMs is a timeout *budget*, not measured duration. Showing "30s"
+		// made every default Shell look like it ran for 30 seconds (or timed out).
 		if (shellParams.blockUntilMs === 0) tags.push('bg');
-		else if (shellParams.blockUntilMs > 0) tags.push(`${Math.round(shellParams.blockUntilMs / 1000)}s`);
 		if (shellParams.notifyOnOutput) tags.push('notify');
 	} else {
 		const awaitParams = params as BuiltinToolCallParams['AwaitShell'];
@@ -53,7 +54,6 @@ export const getShellCardMetaTags = (
 		else tags.push('sleep');
 		if (awaitParams.pattern) tags.push('pattern');
 		if (awaitParams.blockUntilMs === 0) tags.push('now');
-		else if (awaitParams.blockUntilMs > 0) tags.push(`${Math.round(awaitParams.blockUntilMs / 1000)}s`);
 	}
 	return tags;
 };

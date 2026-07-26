@@ -17,6 +17,7 @@ import {
 import type { BuiltinToolCallParams, ToolCallParams, ToolName } from '../toolsServiceTypes.js';
 import type { RunnerTaskEventPayload } from './runnerProtocol.js';
 import type { RemoteTaskSummary } from './runnerTypes.js';
+import { formatRemoteTaskTerminalMessage } from './remoteTaskUiStatus.js';
 
 type EventData = Record<string, unknown>;
 
@@ -687,14 +688,7 @@ const rememberAssistantIndex = (iteration: number | undefined, index: number): v
 			? messages.some(message => message.role === 'assistant' && message.displayContent.includes(err))
 			: messages.some(message => message.role === 'assistant');
 		if (!alreadyHasError) {
-			const prefix = summary.state === 'CANCELLED'
-				? 'Remote task cancelled'
-				: summary.state === 'TIMED_OUT'
-					? 'Remote task timed out'
-					: summary.state === 'LOST'
-						? 'Lost connection to the Self-hosted Runner'
-						: 'Remote task failed';
-			messages.push(assistantMessage(err ? `${prefix}: ${err}` : `${prefix}.`));
+			messages.push(assistantMessage(formatRemoteTaskTerminalMessage(summary.state, summary.lastError)));
 		}
 	}
 
