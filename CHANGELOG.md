@@ -2,6 +2,43 @@
 
 All notable changes to Orbit Editor are documented here.
 
+## 0.5.0
+
+### Self-hosted Runner
+
+Run agent tasks on your own machine or server with a self-hosted `@orbit/runner` daemon. Orbit Editor stays the control UI — create tasks, stream live events, approve permissions, cancel, and reconnect. The runner owns the full agent loop (model calls and tools). Keys stay on the runner.
+
+In the chat composer, pick **Local** or **Self-hosted Runner**. Local remains the default and uses the existing in-process agent unchanged.
+
+- **Pair a runner.** Settings → Self-hosted Runners: enter a one-time pairing code and the runner WebSocket URL (default `ws://127.0.0.1:7421/ws`). Credentials are encrypted at rest. Non-loopback runners require `wss://`.
+- **Bring your own providers.** Orbit syncs your Chat BYOK providers to the paired runner so you do not re-type API keys. Remote tasks send only `providerId` + `modelId`.
+- **Same composer, remote execution.** Open a git repo with a GitHub or GitLab HTTPS remote, select a paired runner and branch, and submit as usual. Orbit clones from the remote on the runner — unpushed local commits are not available until you push.
+- **Live control.** Stream reasoning and tool activity, respond to approval prompts, cancel in flight, and reconnect after an editor restart with sequenced replay.
+- **Handoff when done.** Completion cards offer **Open PR**, **Checkout locally** (or a sibling worktree if your tree is dirty), and **Apply locally** when HEAD still matches the pinned base. Follow-up turns in the same thread reuse the same `orbit/…` branch.
+- **Protocol.** `orbit-runner-protocol/1` with capability negotiation (`git_github`, `git_gitlab`, `git_push`, `shell`, `file_tools`). See `docs/self-hosted-runner.md`.
+
+Not available on runner v1: Orbit Provider, ClinePass, ChatGPT Plus/Pro OAuth, SuperGrok, native Anthropic, and Google Vertex (ADC). Use a BYOK or OpenAI-compatible Chat model for remote tasks.
+
+### Agent project workspaces
+
+Agent windows now keep project context isolated per workspace instead of sharing one global folder set.
+
+- **Dedicated workspaces.** Create and switch agent project workspaces with their own folders, recents, and last-used state.
+- **Workspace picker.** Quickly open, switch, or create workspaces from the agent window without mixing terminals, files, and chat context across projects.
+- **Safer isolation.** Terminals, tools, semantic search, and chat history stay scoped to the active agent workspace so parallel agent work does not collide.
+
+### macOS install
+
+- **Recommended (no Gatekeeper warning):**
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/ashish200729/orbiteditor/main/install.sh | bash
+  ```
+- **Or download the `.dmg`** from the release, drag Orbit to Applications, then run once:
+  ```bash
+  xattr -cr /Applications/Orbit.app
+  ```
+  (Orbit isn't notarized by Apple yet, so a browser-downloaded `.dmg` shows a one-time "unverified developer" prompt; the command above clears it.)
+
 ## 0.4.1
 
 ### 🎫 ClinePass — open-weight models through your Cline subscription
