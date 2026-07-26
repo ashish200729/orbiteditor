@@ -51,3 +51,7 @@ debug.log
 /Orbit-*-setup.exe
 # Read-write DMG mountpoint artifacts (rw.<id>.Orbit-*.dmg)
 /rw.*.Orbit-*.dmg
+
+# Orbit auto-update signing private key — NEVER commit
+orbit-update-private.pem
+.orbit-update-public.b64
