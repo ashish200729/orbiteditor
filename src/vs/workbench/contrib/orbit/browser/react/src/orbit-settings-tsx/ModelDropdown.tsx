@@ -119,6 +119,7 @@ const ModelSelectBox = ({ options, featureName, className }: { options: ModelOpt
 		opacity={75}
 		searchable
 		searchPlaceholder='Search models…'
+		searchEmptyLabel='No models found'
 		showCheckmarkOnSelected
 		highlightSelectedBg={false}
 	/>

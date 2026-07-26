@@ -112,7 +112,7 @@ export const ExecutionTargetPicker = ({
 	}, [isRunnerOnline]);
 
 	return (
-		<div className={className ?? ''}>
+		<div className={`min-w-0 ${className ?? ''}`}>
 			<VoidCustomDropdownBox
 				className={runnerChromeTriggerClassName}
 				options={options}

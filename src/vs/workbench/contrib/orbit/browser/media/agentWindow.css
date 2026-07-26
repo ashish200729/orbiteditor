@@ -2212,6 +2212,7 @@
 	flex: 0 0 auto;
 	position: relative;
 	display: flex;
+	flex-wrap: nowrap;
 	align-items: center;
 	gap: 2px;
 	height: auto;
@@ -2221,6 +2222,12 @@
 	background: transparent;
 	-webkit-app-region: no-drag;
 	z-index: 5;
+	/* Workspace name + run target + branch must stay on one line in a narrow
+	   pop-out. Without these the row overflows its container instead of the
+	   individual triggers truncating. */
+	min-width: 0;
+	max-width: 100%;
+	overflow: hidden;
 }
 
 .void-agent-workspace-header-btn {
@@ -2240,8 +2247,12 @@
 	line-height: 1;
 	letter-spacing: 0;
 	cursor: pointer;
-	min-width: 0;
+	/* Shrinks first: the workspace name is the least load-bearing of the three
+	   controls, and it keeps a readable floor. */
+	flex: 0 1 auto;
+	min-width: 4.5rem;
 	max-width: 200px;
+	overflow: hidden;
 	white-space: nowrap;
 	transition: background-color 0.12s ease, color 0.12s ease;
 }
@@ -2609,7 +2620,9 @@
    Compact Cursor-style control above the empty-thread composer. Hidden after
    the first message. Portaled menu uses opaque fill (no vibrancy bleed). */
 .void-agent-chat-run-header {
-	flex: 0 0 auto;
+	/* Shrinkable, so the run target and branch truncate instead of overflowing
+	   the header when the workspace name is long. */
+	flex: 0 1 auto;
 	display: flex;
 	flex-direction: row;
 	flex-wrap: nowrap;
@@ -2617,6 +2630,7 @@
 	gap: 6px;
 	padding: 0 2px 2px;
 	min-width: 0;
+	overflow: hidden;
 	-webkit-app-region: no-drag;
 }
 

@@ -118,6 +118,195 @@ type RunnerRuntimeState = {
 	protocolVersion?: string;
 };
 
+/**
+ * How long an authenticated control socket is kept open after its last use.
+ *
+ * Submitting a remote task issues several RPCs back to back (provider catalog,
+ * optional provider sync, model resolve). Opening a fresh TLS + WebSocket +
+ * auth cycle for each one adds seconds of dead air against a remote runner, so
+ * the socket is held briefly and reused instead.
+ */
+const POOLED_SOCKET_IDLE_MS = 45_000;
+
+/** Cap on how long a control socket may take to open before we give up. */
+const RUNNER_CONNECT_TIMEOUT_MS = 15_000;
+
+/**
+ * True for failures that mean "this socket is gone", as opposed to the runner
+ * deliberately rejecting the request. Only these are worth retrying.
+ */
+function isRetriableSocketError(err: unknown): boolean {
+	const message = err instanceof Error ? err.message : String(err);
+	return /connection|closed|socket|timed out|network/i.test(message);
+}
+
+type PendingWait = {
+	types: Set<string>;
+	resolve: (m: RunnerEnvelope) => void;
+	reject: (e: Error) => void;
+	timer: ReturnType<typeof setTimeout>;
+};
+
+/**
+ * A single runner control socket with request/response matching.
+ *
+ * Responses are matched by message type, so callers must not overlap two
+ * exchanges that await the same type; {@link PooledRunnerSocket.run} serializes
+ * them for that reason.
+ */
+class PooledRunnerSocket {
+	private readonly _pending: PendingWait[] = [];
+	private _closed = false;
+	private _queue: Promise<unknown> = Promise.resolve();
+	private _inFlight = 0;
+	private _idleTimer: ReturnType<typeof setTimeout> | undefined;
+	/** Fired when the socket drops, so the owner can evict it from the pool. */
+	onDidClose: (() => void) | undefined;
+
+	private constructor(
+		private readonly _ws: WebSocket,
+		private readonly _hostUrl: string,
+		private readonly _onInvalidMessage: (err: unknown) => void,
+	) {
+		this._ws.onmessage = (ev) => this._handleMessage(ev);
+		this._ws.onerror = () => this._failAll(new Error(`Lost the connection to the runner at ${this._hostUrl}.`));
+		this._ws.onclose = (ev) => this._failAll(new Error(`The runner closed the connection (code ${ev.code}).`));
+	}
+
+	static connect(
+		hostUrl: string,
+		connectTimeoutMs: number,
+		onInvalidMessage: (err: unknown) => void,
+	): Promise<PooledRunnerSocket> {
+		return new Promise((resolve, reject) => {
+			let ws: WebSocket;
+			try {
+				ws = new WebSocket(hostUrl);
+			} catch (e) {
+				reject(e instanceof Error ? e : new Error(String(e)));
+				return;
+			}
+			let settled = false;
+			// Browsers surface no connect timeout of their own, so a black-holed
+			// host would otherwise hang until the caller's own timeout fires.
+			const timer = setTimeout(() => {
+				if (settled) return;
+				settled = true;
+				try { ws.close(); } catch { /* ignore */ }
+				reject(new Error(`Timed out connecting to the runner at ${hostUrl}.`));
+			}, connectTimeoutMs);
+			ws.onopen = () => {
+				if (settled) return;
+				settled = true;
+				clearTimeout(timer);
+				resolve(new PooledRunnerSocket(ws, hostUrl, onInvalidMessage));
+			};
+			ws.onerror = () => {
+				if (settled) return;
+				settled = true;
+				clearTimeout(timer);
+				reject(new Error(`Could not connect to the runner at ${hostUrl}. Is the runner running and reachable?`));
+			};
+			ws.onclose = (ev) => {
+				if (settled) return;
+				settled = true;
+				clearTimeout(timer);
+				reject(new Error(`The runner refused the connection (code ${ev.code}).`));
+			};
+		});
+	}
+
+	get isOpen(): boolean {
+		return !this._closed && this._ws.readyState === WebSocket.OPEN;
+	}
+
+	send = (msg: RunnerEnvelope): void => {
+		if (!this.isOpen) {
+			throw new Error('The connection to the runner is no longer open.');
+		}
+		this._ws.send(JSON.stringify(msg));
+	};
+
+	wait = (types: string[], timeoutMs: number): Promise<RunnerEnvelope> => new Promise((resolve, reject) => {
+		if (!this.isOpen) {
+			reject(new Error('The connection to the runner is no longer open.'));
+			return;
+		}
+		const timer = setTimeout(() => {
+			const idx = this._pending.findIndex(p => p.resolve === resolve);
+			if (idx >= 0) this._pending.splice(idx, 1);
+			reject(new Error('The runner did not respond in time.'));
+		}, timeoutMs);
+		this._pending.push({ types: new Set(types), resolve, reject, timer });
+	});
+
+	/** Serializes exchanges so concurrent callers cannot consume each other's replies. */
+	run<T>(exchange: () => Promise<T>): Promise<T> {
+		this._inFlight++;
+		this._cancelIdleTimer();
+		const result = this._queue.then(exchange, exchange);
+		this._queue = result.then(() => undefined, () => undefined);
+		return result.finally(() => { this._inFlight--; });
+	}
+
+	/**
+	 * Starts the idle countdown once nothing is using the socket. Callers still
+	 * queued behind the current exchange keep it alive, so a slow RPC can never
+	 * have the socket closed out from under it.
+	 */
+	scheduleIdleClose(idleMs: number, onExpire: () => void): void {
+		this._cancelIdleTimer();
+		if (this._closed || this._inFlight > 0) return;
+		this._idleTimer = setTimeout(() => {
+			this._idleTimer = undefined;
+			onExpire();
+			this.close();
+		}, idleMs);
+	}
+
+	close(): void {
+		if (this._closed) return;
+		this._closed = true;
+		this._cancelIdleTimer();
+		this._failAll(new Error('The connection to the runner was closed.'), true);
+		try { this._ws.close(); } catch { /* ignore */ }
+	}
+
+	private _cancelIdleTimer(): void {
+		if (this._idleTimer) {
+			clearTimeout(this._idleTimer);
+			this._idleTimer = undefined;
+		}
+	}
+
+	private _handleMessage(ev: MessageEvent): void {
+		const text = typeof ev.data === 'string' ? ev.data : String(ev.data);
+		const parsed = parseRunnerWireJson(text);
+		if (!parsed.ok) {
+			this._onInvalidMessage(parsed.error);
+			return;
+		}
+		const idx = this._pending.findIndex(p => p.types.has(parsed.message.type));
+		if (idx < 0) return;
+		const p = this._pending.splice(idx, 1)[0];
+		clearTimeout(p.timer);
+		p.resolve(parsed.message);
+	}
+
+	private _failAll(err: Error, silent = false): void {
+		const wasClosed = this._closed;
+		this._closed = true;
+		for (const p of this._pending) {
+			clearTimeout(p.timer);
+			p.reject(err);
+		}
+		this._pending.length = 0;
+		if (!wasClosed && !silent) {
+			this.onDidClose?.();
+		}
+	}
+}
+
 class RunnerService extends Disposable implements IRunnerService {
 	declare readonly _serviceBrand: undefined;
 
@@ -144,6 +333,10 @@ class RunnerService extends Disposable implements IRunnerService {
 	/** Backoff for idle heartbeats when a runner is offline/error. */
 	private readonly _heartbeatBackoffMs = new Map<string, number>();
 	private _heartbeatTimer: number | undefined;
+	/** Warm authenticated control sockets, keyed by runner. */
+	private readonly _sockets = new Map<string, PooledRunnerSocket>();
+	/** In-flight connect attempts, so concurrent callers share one handshake. */
+	private readonly _socketConnects = new Map<string, Promise<PooledRunnerSocket>>();
 
 	constructor(
 		@IStorageService private readonly _storageService: IStorageService,
@@ -161,6 +354,7 @@ class RunnerService extends Disposable implements IRunnerService {
 		// and apply backoff for offline ones (E14) — avoids full testConnection churn.
 		this._heartbeatTimer = mainWindow.setInterval(() => { void this._tickHeartbeats(); }, 60_000);
 		this._register({ dispose: () => { if (this._heartbeatTimer) { mainWindow.clearInterval(this._heartbeatTimer); } } });
+		this._register({ dispose: () => this._closeAllPooledSockets() });
 		this._register(this._settingsService.onDidChangeState(() => {
 			if (this._settingsSyncTimer) {
 				clearTimeout(this._settingsSyncTimer);
@@ -339,6 +533,7 @@ class RunnerService extends Disposable implements IRunnerService {
 		await this._loadPromise;
 		const before = this._credentials.length;
 		this._credentials = this._credentials.filter(c => c.runnerId !== runnerId);
+		this._closePooledSocket(runnerId);
 		this._runtime.delete(runnerId);
 		this._activeTaskCounts.delete(runnerId);
 		this._heartbeatBackoffMs.delete(runnerId);
@@ -830,49 +1025,131 @@ class RunnerService extends Disposable implements IRunnerService {
 		void this.syncProvidersToRunner(runnerId, { mode: 'chat_only' });
 	}
 
-	/** Auth hello → auth, then run exchange. */
-	private _authenticatedExchange(
+	/**
+	 * Runs an exchange on an authenticated control socket, reusing a warm one
+	 * when available. Submitting a task fires several RPCs in a row; reusing the
+	 * socket removes a full connect + auth round trip from each of them.
+	 */
+	private async _authenticatedExchange(
 		cred: PairedRunnerCredential,
 		exchange: (
 			send: (msg: RunnerEnvelope) => void,
 			wait: (types: string[], timeoutMs: number) => Promise<RunnerEnvelope>,
 		) => Promise<RunnerEnvelope>,
 	): Promise<RunnerEnvelope> {
-		return this._wsRoundTrip(cred.hostUrl, async (send, wait) => {
-			send(createRunnerEnvelope('hello', {
-				clientName: 'orbit-editor',
-				clientVersion: String(this._productService.version || '0.0.0'),
-				deviceId: cred.deviceId,
-			}));
-			const welcome = await wait(['welcome', 'error'], 15_000);
-			if (welcome.type === 'error') {
-				return welcome;
+		try {
+			return await this._runOnPooledSocket(cred, exchange);
+		} catch (err) {
+			// A pooled socket can be closed by the runner between calls. One
+			// transparent retry on a fresh connection keeps that invisible.
+			this._closePooledSocket(cred.runnerId);
+			if (isRetriableSocketError(err)) {
+				return await this._runOnPooledSocket(cred, exchange);
 			}
-			const welcomeCheck = validateRunnerWelcome(welcome.payload as RunnerWelcomePayload);
-			if (!welcomeCheck.ok) {
-				return createRunnerEnvelope('error', welcomeCheck.error);
-			}
-			send(createRunnerEnvelope('auth', {
-				deviceId: cred.deviceId,
-				credential: cred.credential,
-			}));
-			const auth = await wait(['auth.result', 'error'], 15_000);
-			if (auth.type === 'error') {
-				return auth;
-			}
-			const authPayload = auth.payload as { ok: boolean; error?: string; capabilities?: RunnerCapabilities };
-			if (!authPayload.ok) {
-				return createRunnerEnvelope('error', {
-					code: 'UNAUTHORIZED',
-					message: authPayload.error || 'Unauthorized',
-					retriable: false,
+			throw err;
+		}
+	}
+
+	private async _runOnPooledSocket(
+		cred: PairedRunnerCredential,
+		exchange: (
+			send: (msg: RunnerEnvelope) => void,
+			wait: (types: string[], timeoutMs: number) => Promise<RunnerEnvelope>,
+		) => Promise<RunnerEnvelope>,
+	): Promise<RunnerEnvelope> {
+		const socket = await this._acquireAuthenticatedSocket(cred);
+		try {
+			return await socket.run(() => exchange(socket.send, socket.wait));
+		} finally {
+			socket.scheduleIdleClose(POOLED_SOCKET_IDLE_MS, () => {
+				if (this._sockets.get(cred.runnerId) === socket) {
+					this._sockets.delete(cred.runnerId);
+				}
+			});
+		}
+	}
+
+	private async _acquireAuthenticatedSocket(cred: PairedRunnerCredential): Promise<PooledRunnerSocket> {
+		const existing = this._sockets.get(cred.runnerId);
+		if (existing?.isOpen) {
+			return existing;
+		}
+		const inFlight = this._socketConnects.get(cred.runnerId);
+		if (inFlight) {
+			return inFlight;
+		}
+
+		const connecting = (async () => {
+			const socket = await PooledRunnerSocket.connect(
+				cred.hostUrl,
+				RUNNER_CONNECT_TIMEOUT_MS,
+				(err) => this._logService.warn('[orbit-runner] Invalid message', safeForLog(err)),
+			);
+			socket.onDidClose = () => {
+				if (this._sockets.get(cred.runnerId) === socket) {
+					this._sockets.delete(cred.runnerId);
+				}
+			};
+			try {
+				await socket.run(async () => {
+					socket.send(createRunnerEnvelope('hello', {
+						clientName: 'orbit-editor',
+						clientVersion: String(this._productService.version || '0.0.0'),
+						deviceId: cred.deviceId,
+					}));
+					const welcome = await socket.wait(['welcome', 'error'], 15_000);
+					if (welcome.type === 'error') {
+						throw new Error(formatRunnerError(welcome.payload as { code?: string; message: string }));
+					}
+					const welcomeCheck = validateRunnerWelcome(welcome.payload as RunnerWelcomePayload);
+					if (!welcomeCheck.ok) {
+						throw new Error(formatRunnerError(welcomeCheck.error));
+					}
+					socket.send(createRunnerEnvelope('auth', {
+						deviceId: cred.deviceId,
+						credential: cred.credential,
+					}));
+					const auth = await socket.wait(['auth.result', 'error'], 15_000);
+					if (auth.type === 'error') {
+						throw new Error(formatRunnerError(auth.payload as { code?: string; message: string }));
+					}
+					const authPayload = auth.payload as { ok: boolean; error?: string; capabilities?: RunnerCapabilities };
+					if (!authPayload.ok) {
+						throw new Error(authPayload.error || 'The runner rejected this device. Re-pair it in Settings → Self-hosted Runners.');
+					}
+					if (authPayload.capabilities) {
+						this.cacheNegotiatedCapabilities(cred.runnerId, authPayload.capabilities);
+					}
 				});
+			} catch (err) {
+				socket.close();
+				throw err;
 			}
-			if (authPayload.capabilities) {
-				this.cacheNegotiatedCapabilities(cred.runnerId, authPayload.capabilities);
-			}
-			return exchange(send, wait);
-		});
+			this._sockets.set(cred.runnerId, socket);
+			return socket;
+		})();
+
+		this._socketConnects.set(cred.runnerId, connecting);
+		try {
+			return await connecting;
+		} finally {
+			this._socketConnects.delete(cred.runnerId);
+		}
+	}
+
+	private _closePooledSocket(runnerId: string): void {
+		const socket = this._sockets.get(runnerId);
+		if (socket) {
+			this._sockets.delete(runnerId);
+			socket.onDidClose = undefined;
+			socket.close();
+		}
+	}
+
+	private _closeAllPooledSockets(): void {
+		for (const runnerId of [...this._sockets.keys()]) {
+			this._closePooledSocket(runnerId);
+		}
 	}
 
 	private async _loadStore(): Promise<void> {

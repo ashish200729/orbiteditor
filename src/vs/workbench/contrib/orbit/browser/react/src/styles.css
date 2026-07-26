@@ -347,6 +347,7 @@
 	.void-composer-action,
 	.void-message-queue__action,
 	.void-message-queue__item,
+	.orbit-submit-segment-active,
 	.orbit-card-enter {
 		transition: none;
 		animation: none;
@@ -702,6 +703,16 @@ select:-webkit-autofill:focus {
 	from { opacity: 0; transform: translateY(4px); }
 	to { opacity: 1; transform: none; }
 }
+/* Active segment of the remote submit stepper — breathes so a multi-second
+   pre-flight reads as in-progress rather than stalled. */
+@keyframes orbit-submit-segment-pulse {
+	0%, 100% { opacity: 0.45; }
+	50% { opacity: 1; }
+}
+.orbit-submit-segment-active {
+	animation: orbit-submit-segment-pulse 1.4s ease-in-out infinite;
+}
+
 .orbit-card-enter {
 	animation: orbit-card-enter 0.18s cubic-bezier(0.16, 1, 0.3, 1);
 	/* Set per-instance via inline style `--orbit-stagger: N` (e.g. rows revealed together in a

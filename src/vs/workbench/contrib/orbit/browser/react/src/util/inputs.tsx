@@ -1424,6 +1424,7 @@ export const VoidCustomDropdownBox = <T extends NonNullable<any>>({
 	searchable = false,
 	highlightSelectedBg = true,
 	searchPlaceholder = 'Search…',
+	searchEmptyLabel = 'No matches',
 	isOptionDisabled,
 }: {
 	options: T[];
@@ -1445,6 +1446,8 @@ export const VoidCustomDropdownBox = <T extends NonNullable<any>>({
 	searchable?: boolean;
 	highlightSelectedBg?: boolean;
 	searchPlaceholder?: string;
+	/** Shown when the search filter matches nothing. Defaults to a generic label — set it per dropdown. */
+	searchEmptyLabel?: string;
 	isOptionDisabled?: (option: T) => boolean;
 }) => {
 	const [isOpen, setIsOpen] = useState(false);
@@ -1654,7 +1657,7 @@ export const VoidCustomDropdownBox = <T extends NonNullable<any>>({
 					)}
 					<div className="overflow-auto max-h-80 py-1 px-1">
 						{visibleOptions.length === 0 ? (
-							<div className="px-2 py-1 text-[12px] text-void-fg-3">No models found</div>
+							<div className="px-2 py-1 text-[12px] text-void-fg-3">{searchEmptyLabel}</div>
 						) : visibleOptions.map((option) => {
 							const thisOptionIsSelected = getOptionsEqual(option, selectedOption);
 							const optionName = getOptionDropdownName(option);

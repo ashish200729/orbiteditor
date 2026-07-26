@@ -43,10 +43,12 @@ export const RunnerExecutionChrome = ({
 	}, [remoteTasks, threadId]);
 
 	return (
-		<div className="agent-chat-run-header flex flex-row items-center gap-1.5 min-w-0">
-			<ExecutionTargetPicker />
+		<div className="agent-chat-run-header flex flex-row flex-nowrap items-center gap-1.5 min-w-0 w-full">
+			<ExecutionTargetPicker className="min-w-0 shrink" />
 			{isRemoteTarget ? (
 				<RunnerBranchDropdown
+					className="shrink"
+					loading={workspaceGit.loading}
 					root={workspaceGit.root}
 					branch={workspaceGit.branch}
 					branches={workspaceGit.branches}

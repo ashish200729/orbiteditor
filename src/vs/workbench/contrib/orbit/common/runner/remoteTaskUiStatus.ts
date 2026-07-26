@@ -32,6 +32,40 @@ export type RemoteTaskUiPhase =
 	| 'done'
 	| 'idle';
 
+/**
+ * Stages of the local pre-flight that runs when a remote turn is submitted,
+ * before the task exists on the runner.
+ *
+ * These are editor-side round trips to the runner (provider catalog, optional
+ * provider sync, model resolve). Against a remote host they can take several
+ * seconds, and previously produced no feedback at all beyond a disabled Send
+ * button — which read as the app having hung.
+ */
+export type RemoteSubmitStage =
+	| 'checking-model'
+	| 'syncing-provider'
+	| 'resolving-model'
+	| 'starting-task';
+
+/** Ordered for a stepper; index doubles as progress position. */
+export const REMOTE_SUBMIT_STAGES: readonly RemoteSubmitStage[] = [
+	'checking-model',
+	'syncing-provider',
+	'resolving-model',
+	'starting-task',
+];
+
+const REMOTE_SUBMIT_STAGE_LABELS: Record<RemoteSubmitStage, string> = {
+	'checking-model': 'Checking your model on the runner',
+	'syncing-provider': 'Syncing your provider to the runner',
+	'resolving-model': 'Confirming the model is ready',
+	'starting-task': 'Starting the task',
+};
+
+export function remoteSubmitStageLabel(stage: RemoteSubmitStage): string {
+	return REMOTE_SUBMIT_STAGE_LABELS[stage];
+}
+
 const PROVISIONING_STATES: ReadonlySet<RunnerTaskState> = new Set<RunnerTaskState>([
 	'ASSIGNED',
 	'PROVISIONING',

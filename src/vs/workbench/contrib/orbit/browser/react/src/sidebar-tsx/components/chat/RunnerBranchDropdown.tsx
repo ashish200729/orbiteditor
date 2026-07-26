@@ -25,6 +25,7 @@ export const RunnerBranchDropdown = ({
 	branches,
 	onSelectBranch,
 	disabled,
+	loading,
 }: {
 	className?: string
 	root: string | null
@@ -32,6 +33,7 @@ export const RunnerBranchDropdown = ({
 	branches: string[]
 	onSelectBranch: (branch: string) => Promise<void>
 	disabled?: boolean
+	loading?: boolean
 }) => {
 	const [busy, setBusy] = useState(false)
 	const isDisabled = !!disabled || busy
@@ -61,15 +63,28 @@ export const RunnerBranchDropdown = ({
 	const getName = useCallback((b: string) => b, [])
 	const getBranchIcon = useCallback(() => GitBranch, [])
 
+	if (loading) {
+		return (
+			<div
+				className={`${runnerChromeTriggerClassName} ${className ?? ''} opacity-60 pointer-events-none`}
+				title='Looking for a git repository…'
+				aria-label='Loading branches'
+			>
+				<GitBranch size={12} className='shrink-0 opacity-70' aria-hidden='true' />
+				<span className='truncate'>Loading…</span>
+			</div>
+		)
+	}
+
 	if (!root) {
 		return (
 			<div
 				className={`${runnerChromeTriggerClassName} ${className ?? ''} opacity-70 pointer-events-none`}
-				title='Open a git repository to run on a self-hosted runner'
-				aria-label='No git repository'
+				title='A self-hosted runner clones your repository, so this window needs an open git repository.'
+				aria-label='No git repository open'
 			>
 				<GitBranch size={12} className='shrink-0 opacity-70' aria-hidden='true' />
-				<span className='truncate'>No git repo</span>
+				<span className='truncate'>No repository</span>
 			</div>
 		)
 	}
@@ -78,11 +93,11 @@ export const RunnerBranchDropdown = ({
 		return (
 			<div
 				className={`${runnerChromeTriggerClassName} ${className ?? ''} opacity-70 pointer-events-none`}
-				title='No remote branches found'
-				aria-label='No branches'
+				title='This repository has no branches on its origin remote. Push a branch first.'
+				aria-label='No remote branches'
 			>
 				<GitBranch size={12} className='shrink-0 opacity-70' aria-hidden='true' />
-				<span className='truncate'>No branches</span>
+				<span className='truncate'>No remote branch</span>
 			</div>
 		)
 	}
@@ -108,12 +123,15 @@ export const RunnerBranchDropdown = ({
 				opacity={100}
 				searchable={options.length > 8}
 				searchPlaceholder='Search branches…'
+				searchEmptyLabel='No branches match that search'
 			/>
 		</div>
 	)
 }
 
 export type WorkspaceGitContext = {
+	/** True until the first git resolve settles. Distinguishes "no repo" from "not looked yet". */
+	loading: boolean
 	root: string | null
 	remoteUrl: string | null
 	branch: string | null
@@ -139,6 +157,9 @@ export const useWorkspaceGitForRunner = (isAgentWindow = false): WorkspaceGitCon
 	const [branches, setBranches] = useState<string[]>([])
 	const [commit, setCommit] = useState<string | null>(null)
 	const [error, setError] = useState<string | null>(null)
+	// Starts true: `root` is null before the first resolve, and rendering that as
+	// "No git repo" made every open flash a false error.
+	const [loading, setLoading] = useState(true)
 
 	const refresh = useCallback(async () => {
 		setError(null)
@@ -193,6 +214,8 @@ export const useWorkspaceGitForRunner = (isAgentWindow = false): WorkspaceGitCon
 			setError(remoteError)
 		} catch (e) {
 			setError(e instanceof Error ? e.message : String(e))
+		} finally {
+			setLoading(false)
 		}
 	}, [git, workspaceService, settingsService, isAgentWindow])
 
@@ -225,5 +248,5 @@ export const useWorkspaceGitForRunner = (isAgentWindow = false): WorkspaceGitCon
 		})
 	}, [remoteUrl, branches, settingsService, root, git])
 
-	return { root, remoteUrl, branch, commit, branches, error, refresh, selectBranch }
+	return { loading, root, remoteUrl, branch, commit, branches, error, refresh, selectBranch }
 }

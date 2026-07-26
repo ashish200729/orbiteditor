@@ -13,8 +13,9 @@ import { buildRunnerGitSpec } from '../../../../common/runner/gitRemoteHelpers.j
 import { explainModelAvailability, JIT_SYNC_RECOVERABLE_CODES } from '../../../../common/runner/runnerProviderIntegration.js';
 import type { ProviderName } from '../../../../common/orbitSettingsTypes.js';
 import { remoteTaskChatMessages, remoteTaskHistoryAnchor, shouldSkipRemoteUserMessage } from '../../../../common/runner/remoteTaskChatMessages.js';
-import { remoteChatStatusLineLabel, remoteTaskUiPhase, remoteTaskUiPhaseLabel } from '../../../../common/runner/remoteTaskUiStatus.js';
+import { remoteChatStatusLineLabel, remoteTaskUiPhase, remoteTaskUiPhaseLabel, type RemoteSubmitStage } from '../../../../common/runner/remoteTaskUiStatus.js';
 import { RemoteSubmitAlert } from './components/runner/RemoteSubmitAlert.js';
+import { RemoteSubmitProgress } from './components/runner/RemoteSubmitProgress.js';
 
 // Common imports
 import { URI } from '../../../../../../../base/common/uri.js';
@@ -209,6 +210,7 @@ const SidebarChatLoaded = ({ isAgentWindow = false, currentThread }: { isAgentWi
 	const voidSettingsService = accessor.get('IVoidSettingsService')
 	const [remoteSubmitError, setRemoteSubmitError] = useState<string | null>(null)
 	const [remoteSubmitPending, setRemoteSubmitPending] = useState(false)
+	const [remoteSubmitStage, setRemoteSubmitStage] = useState<RemoteSubmitStage>('checking-model')
 	const remoteSubmitPendingRef = useRef(false)
 	/** TaskId of a remote task the user just asked to stop. Cleared once the
 	 * task reaches a terminal state. Drives the "Stopping…" status sub-phase so
@@ -250,6 +252,9 @@ const SidebarChatLoaded = ({ isAgentWindow = false, currentThread }: { isAgentWi
 			: 'local'
 	const isRemoteTarget = executionTarget !== 'local'
 	const remoteRunnerId = runnerIdFromExecutionTarget(executionTarget)
+	const activeRunnerName = remoteRunnerId
+		? accessor.get('IRunnerService').getRunner(remoteRunnerId)?.name
+		: undefined
 
 	useEffect(() => {
 		if (!isRemoteTarget) {
@@ -537,6 +542,7 @@ const SidebarChatLoaded = ({ isAgentWindow = false, currentThread }: { isAgentWi
 
 			remoteSubmitPendingRef.current = true
 			setRemoteSubmitPending(true)
+			setRemoteSubmitStage('checking-model')
 			let messageIndex: number | null = null
 			try {
 				let cat = await runnerService.fetchProviderCatalog(runnerId)
@@ -546,6 +552,7 @@ const SidebarChatLoaded = ({ isAgentWindow = false, currentThread }: { isAgentWi
 				}
 				let avail = explainModelAvailability(cat.providers, modelSelection.providerName, modelSelection.modelName)
 				if (!avail.ok && JIT_SYNC_RECOVERABLE_CODES.has(avail.code)) {
+					setRemoteSubmitStage('syncing-provider')
 					await runnerService.syncProvidersToRunner(runnerId, {
 						mode: 'selected',
 						providers: [modelSelection.providerName as ProviderName],
@@ -561,6 +568,7 @@ const SidebarChatLoaded = ({ isAgentWindow = false, currentThread }: { isAgentWi
 					setRemoteSubmitError(avail.message)
 					return
 				}
+				setRemoteSubmitStage('resolving-model')
 				const resolved = await runnerService.resolveModelOnRunner(
 					runnerId,
 					modelSelection.providerName,
@@ -605,6 +613,7 @@ const SidebarChatLoaded = ({ isAgentWindow = false, currentThread }: { isAgentWi
 					setRemoteSubmitError('Could not add message to thread.')
 					return
 				}
+				setRemoteSubmitStage('starting-task')
 				const threadMessages = chatThreadsService.getThread(threadId)?.messages ?? []
 				const injectIndex = messageIndex + 1
 				const result = await remoteTaskService.createTask({
@@ -1115,7 +1124,14 @@ className={`min-h-[40px] px-0.5 py-0.5 resize-none placeholder:text-void-fg-4`}
 				onDismiss={() => { /* re-evaluated each render from attachments; dismiss is per-mount */ }}
 			/>
 		)}
-		{(remoteSubmitError || (isRemoteTarget && workspaceGit.error)) && (
+		{remoteSubmitPending && (
+			<RemoteSubmitProgress
+				className='mx-2 mb-1'
+				stage={remoteSubmitStage}
+				runnerName={activeRunnerName}
+			/>
+		)}
+		{!remoteSubmitPending && (remoteSubmitError || (isRemoteTarget && !workspaceGit.loading && workspaceGit.error)) && (
 			<RemoteSubmitAlert
 				className='mx-2 mb-1'
 				message={remoteSubmitError ?? workspaceGit.error}
@@ -1140,7 +1156,14 @@ className={`min-h-[40px] px-0.5 py-0.5 resize-none placeholder:text-void-fg-4`}
 					onDismiss={() => { /* re-evaluated each render from attachments */ }}
 				/>
 			)}
-			{(remoteSubmitError || (isRemoteTarget && workspaceGit.error)) && (
+			{remoteSubmitPending && (
+				<RemoteSubmitProgress
+					className='mx-1'
+					stage={remoteSubmitStage}
+					runnerName={activeRunnerName}
+				/>
+			)}
+			{!remoteSubmitPending && (remoteSubmitError || (isRemoteTarget && !workspaceGit.loading && workspaceGit.error)) && (
 				<RemoteSubmitAlert
 					className='mx-1'
 					message={remoteSubmitError ?? workspaceGit.error}
