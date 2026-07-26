@@ -4,11 +4,11 @@
 	"assets": {
 		"darwin-arm64": {
 			"url": "https://github.com/ashish200729/orbiteditor/releases/download/v0.5.0/Orbit-0.5.0-darwin-arm64.dmg",
-			"sha256": "0eab7bbe17582c7ac5009bec7cff4dc61a2fc905b6260c183d1a2fbcda26ba66"
+			"sha256": "cf6028ca26c244cadb3ab04497ad16ead9a23ec37e1c8c841a3ae34f38cc721a"
 		},
 		"darwin-x64": {
 			"url": "https://github.com/ashish200729/orbiteditor/releases/download/v0.5.0/Orbit-0.5.0-darwin-x64.dmg",
-			"sha256": "c1ad5da9aa00acf822d76cf2c0e9a95a16cd0fba89996d1223eeaf269f98ecb8"
+			"sha256": "1f3c93da0191c5724291732909d79deb2374133e254dc06575c4a1b3ba0c0379"
 		},
 		"win32-x64": {
 			"url": "https://github.com/ashish200729/orbiteditor/releases/download/v0.4.1/Orbit-0.4.1-win32-x64-setup.exe",
@@ -18,5 +18,7 @@
 			"url": "https://github.com/ashish200729/orbiteditor/releases/download/v0.4.1/Orbit-0.4.1-win32-arm64-setup.exe",
 			"sha256": "9f5c9434d4c1a4930496badea5f3d0ff6ae4ce9341ef13a4c18362909123fdd8"
 		}
-	}
+	},
+	"commit": "2873d978ee31acef3c88f2bfb32a84e5dcfd5cfb",
+	"signature": "YIaIALCD7wbS03+5YwOuRKZ3RE0YEg1JFGE/UBzarrh4jQ5D57dBqN03Xe08kaJlaOl1w+QRLy67S/qUaB9GAg=="
 }
