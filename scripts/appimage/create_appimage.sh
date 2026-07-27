@@ -108,6 +108,6 @@ EXPECTED_TOOL_SHA256="${APPIMAGETOOL_SHA256:-$DEFAULT_TOOL_SHA256}"
 printf '%s  %s\n' "$EXPECTED_TOOL_SHA256" "$TOOL" | sha256sum --check --status
 chmod 0755 "$TOOL"
 mkdir -p "$(dirname "$OUTPUT")"
-ARCH="$APPIMAGE_ARCH" "$TOOL" --appimage-extract-and-run -n "$APP_DIR" "$OUTPUT"
+APPIMAGE_EXTRACT_AND_RUN=1 ARCH="$APPIMAGE_ARCH" "$TOOL" -n "$APP_DIR" "$OUTPUT"
 chmod 0755 "$OUTPUT"
 echo "Created $OUTPUT"
