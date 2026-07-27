@@ -10,9 +10,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.generatePackageDeps = generatePackageDeps;
 const child_process_1 = require("child_process");
 const fs_1 = require("fs");
-const os_1 = require("os");
 const path_1 = __importDefault(require("path"));
-const cgmanifest_json_1 = __importDefault(require("../../../cgmanifest.json"));
 const dep_lists_1 = require("./dep-lists");
 function generatePackageDeps(files, arch, chromiumSysroot, vscodeSysroot) {
     const dependencies = files.map(file => calculatePackageDeps(file, arch, chromiumSysroot, vscodeSysroot));
@@ -31,17 +29,7 @@ function calculatePackageDeps(binaryPath, arch, chromiumSysroot, vscodeSysroot) 
         // The package might not exist. Don't re-throw the error here.
         console.error('Tried to stat ' + binaryPath + ' but failed.');
     }
-    // Get the Chromium dpkg-shlibdeps file.
-    const chromiumManifest = cgmanifest_json_1.default.registrations.filter(registration => {
-        return registration.component.type === 'git' && registration.component.git.name === 'chromium';
-    });
-    const dpkgShlibdepsUrl = `https://raw.githubusercontent.com/chromium/chromium/${chromiumManifest[0].version}/third_party/dpkg-shlibdeps/dpkg-shlibdeps.pl`;
-    const dpkgShlibdepsScriptLocation = `${(0, os_1.tmpdir)()}/dpkg-shlibdeps.pl`;
-    const result = (0, child_process_1.spawnSync)('curl', [dpkgShlibdepsUrl, '-o', dpkgShlibdepsScriptLocation]);
-    if (result.status !== 0) {
-        throw new Error('Cannot retrieve dpkg-shlibdeps. Stderr:\n' + result.stderr);
-    }
-    const cmd = [dpkgShlibdepsScriptLocation, '--ignore-weak-undefined'];
+    const cmd = ['--ignore-missing-info'];
     switch (arch) {
         case 'amd64':
             cmd.push(`-l${chromiumSysroot}/usr/lib/x86_64-linux-gnu`, `-l${chromiumSysroot}/lib/x86_64-linux-gnu`, `-l${vscodeSysroot}/usr/lib/x86_64-linux-gnu`, `-l${vscodeSysroot}/lib/x86_64-linux-gnu`);
@@ -54,9 +42,10 @@ function calculatePackageDeps(binaryPath, arch, chromiumSysroot, vscodeSysroot) 
             break;
     }
     cmd.push(`-l${chromiumSysroot}/usr/lib`);
+    cmd.push(`-l${path_1.default.dirname(path_1.default.resolve(binaryPath))}`);
     cmd.push(`-L${vscodeSysroot}/debian/libxkbfile1/DEBIAN/shlibs`);
     cmd.push('-O', '-e', path_1.default.resolve(binaryPath));
-    const dpkgShlibdepsResult = (0, child_process_1.spawnSync)('perl', cmd, { cwd: chromiumSysroot });
+    const dpkgShlibdepsResult = (0, child_process_1.spawnSync)('dpkg-shlibdeps', cmd, { cwd: chromiumSysroot });
     if (dpkgShlibdepsResult.status !== 0) {
         throw new Error(`dpkg-shlibdeps failed with exit code ${dpkgShlibdepsResult.status}. stderr:\n${dpkgShlibdepsResult.stderr} `);
     }

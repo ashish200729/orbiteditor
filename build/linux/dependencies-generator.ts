@@ -6,6 +6,7 @@
 'use strict';
 
 import { spawnSync } from 'child_process';
+import { existsSync } from 'fs';
 import path from 'path';
 import { getChromiumSysroot, getVSCodeSysroot } from './debian/install-sysroot';
 import { generatePackageDeps as generatePackageDepsDebian } from './debian/calculate-deps';
@@ -16,14 +17,9 @@ import { DebianArchString, isDebianArchString } from './debian/types';
 import { isRpmArchString, RpmArchString } from './rpm/types';
 import product = require('../../product.json');
 
-// A flag that can easily be toggled.
-// Make sure to compile the build directory after toggling the value.
-// If false, we warn about new dependencies if they show up
-// while running the prepare package tasks for a release.
-// If true, we fail the build if there are new dependencies found during that task.
-// The reference dependencies, which one has to update when the new dependencies
-// are valid, are in dep-lists.ts
-const FAIL_BUILD_FOR_NEW_DEPENDENCIES: boolean = true;
+// Release builds fail when generated dependencies drift from the reviewed list.
+// Local builds on newer distributions can opt in to the detected list.
+const FAIL_BUILD_FOR_NEW_DEPENDENCIES: boolean = process.env['VSCODE_LINUX_ALLOW_DEPENDENCY_CHANGES'] !== '1';
 
 // Based on https://source.chromium.org/chromium/chromium/src/+/refs/tags/132.0.6834.210:chrome/installer/linux/BUILD.gn;l=64-80
 // and the Linux Archive build
@@ -59,8 +55,11 @@ export async function getDependencies(packageType: 'deb' | 'rpm', buildDir: stri
 	const appPath = path.join(buildDir, applicationName);
 	// Add the native modules
 	const files = findResult.stdout.toString().trimEnd().split('\n');
-	// Add the tunnel binary.
-	files.push(path.join(buildDir, 'bin', product.tunnelApplicationName));
+	// Add the tunnel binary when this product ships one.
+	const tunnelPath = path.join(buildDir, 'bin', product.tunnelApplicationName);
+	if (existsSync(tunnelPath)) {
+		files.push(tunnelPath);
+	}
 	// Add the main executable.
 	files.push(appPath);
 	// Add chrome sandbox and crashpad handler.

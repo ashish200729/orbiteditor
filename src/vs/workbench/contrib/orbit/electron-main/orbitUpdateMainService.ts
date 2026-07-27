@@ -23,6 +23,7 @@ import { compareOrbitVersions, getCurrentOrbitVersion, getOrbitPlatformAssetKey,
 import { IVoidUpdateService } from '../common/orbitUpdateService.js';
 import { VoidCheckUpdateRespose } from '../common/orbitUpdateServiceTypes.js';
 import { preflightMacInstall, resolveMacAppBundlePath, resolveMacInstallTarget, spawnMacDmgInstaller } from './orbitUpdateInstall.darwin.js';
+import { detectLinuxPackageType, prepareLinuxUpdateInstall } from './orbitUpdateInstall.linux.js';
 import { verifyOrbitManifestSignature } from './orbitUpdateSignature.js';
 
 class OrbitManifestSignatureError extends Error { }
@@ -44,6 +45,7 @@ export class VoidMainUpdateService extends Disposable implements IVoidUpdateServ
 
 	private _downloadPromise: Promise<IDownloadedUpdate | undefined> | undefined;
 	private _downloadedUpdate: IDownloadedUpdate | undefined;
+	private readonly _linuxPackageType = isLinux ? detectLinuxPackageType() : undefined;
 
 	constructor(
 		@IProductService private readonly _productService: IProductService,
@@ -65,7 +67,7 @@ export class VoidMainUpdateService extends Disposable implements IVoidUpdateServ
 
 		try {
 			const manifest = await this._fetchManifest();
-			const platformKey = getOrbitPlatformAssetKey();
+			const platformKey = getOrbitPlatformAssetKey(this._linuxPackageType);
 			const asset = manifest.assets[platformKey];
 
 			if (!asset?.url) {
@@ -182,8 +184,7 @@ export class VoidMainUpdateService extends Disposable implements IVoidUpdateServ
 		}
 
 		if (isLinux) {
-			await fs.promises.chmod(packagePath, 0o755);
-			spawn(packagePath, [], { detached: true, stdio: 'ignore' });
+			await prepareLinuxUpdateInstall(packagePath, this._productService.nameLong);
 			await this._lifecycleMainService.quit(true);
 			return;
 		}
@@ -252,7 +253,7 @@ export class VoidMainUpdateService extends Disposable implements IVoidUpdateServ
 			throw new Error('GitHub Releases API returned an invalid payload');
 		}
 
-		const platformKey = getOrbitPlatformAssetKey();
+		const platformKey = getOrbitPlatformAssetKey(this._linuxPackageType);
 		const assets: IOrbitUpdateManifest['assets'] = {};
 
 		for (const releaseAsset of release.assets) {
@@ -263,8 +264,15 @@ export class VoidMainUpdateService extends Disposable implements IVoidUpdateServ
 				assets['darwin-x64'] = { url: releaseAsset.browser_download_url };
 			} else if (name.includes('win32') && name.endsWith('.exe')) {
 				assets['win32-x64'] = { url: releaseAsset.browser_download_url };
-			} else if (name.includes('linux') && (name.endsWith('.appimage') || name.endsWith('.tar.gz'))) {
-				assets['linux-x64'] = { url: releaseAsset.browser_download_url };
+			} else if (name.includes('linux')) {
+				const arch = name.includes('arm64') || name.includes('aarch64') ? 'arm64' : 'x64';
+				if (name.endsWith('.deb')) {
+					assets[`linux-${arch}-deb`] = { url: releaseAsset.browser_download_url };
+				} else if (name.endsWith('.rpm')) {
+					assets[`linux-${arch}-rpm`] = { url: releaseAsset.browser_download_url };
+				} else if (name.endsWith('.appimage')) {
+					assets[`linux-${arch}-appimage`] = { url: releaseAsset.browser_download_url };
+				}
 			}
 		}
 

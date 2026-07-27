@@ -23,6 +23,7 @@ import { availableTools, InternalToolInfo } from '../../common/prompt/prompts.js
 import { generateUuid } from '../../../../../base/common/uuid.js';
 import { getOpenAiCodexOAuthManager } from '../openai-codex/oauthManager.js';
 import { OPENAI_CODEX_OAUTH_CONFIG } from '../openai-codex/oauthConfig.js';
+import product from '../../../../../platform/product/common/product.js';
 import { getXAiGrokOAuthManager } from '../xai-grok/oauthManager.js';
 import { XAI_GROK_OAUTH_CONFIG } from '../xai-grok/oauthConfig.js';
 import { sendOrbitProviderChat } from './orbitProviderChat.js';
@@ -30,6 +31,7 @@ import { sendClinePassProviderChat } from './clinePassProviderChat.js';
 import { clinePassProviderList } from './clinePassProviderList.js';
 import { orbitProviderList } from './orbitProviderList.js';
 import { schemaOfToolInfo } from './toolSchema.js';
+import { buildOpenAiCodexRequestHeaders } from './openAiCodexRequestHeaders.js';
 
 const getGoogleApiKey = async () => {
 	// module‑level singleton
@@ -924,17 +926,20 @@ const sendOpenAICodexChat = async ({ messages, onText, onFinalMessage, onError, 
 		try {
 			response = await fetch(isXAiSuperGrok ? `${XAI_GROK_OAUTH_CONFIG.apiBaseUrl}/responses` : 'https://chatgpt.com/backend-api/codex/responses', {
 				method: 'POST',
-				headers: {
-					Authorization: `Bearer ${accessToken}`,
-					'Content-Type': 'application/json',
-					Accept: 'text/event-stream',
-					...(!isXAiSuperGrok ? {
+				headers: isXAiSuperGrok
+					? {
+						Authorization: `Bearer ${accessToken}`,
+						'Content-Type': 'application/json',
+						Accept: 'text/event-stream',
+						'User-Agent': 'orbit-editor',
+					}
+					: buildOpenAiCodexRequestHeaders({
+						accessToken,
+						accountId,
 						originator: OPENAI_CODEX_OAUTH_CONFIG.originatorHeader,
-						session_id: generateUuid(),
-						...(accountId ? { 'ChatGPT-Account-Id': accountId } : {}),
-					} : {}),
-					'User-Agent': 'orbit-editor',
-				},
+						sessionId: generateUuid(),
+						clientVersion: product.version,
+					}),
 				body: JSON.stringify(payload),
 				signal: controller.signal,
 			})

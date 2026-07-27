@@ -15,6 +15,7 @@ exports.additionalDeps = [
     'rpmlib(FileDigests) <= 4.6.0-1',
     'libvulkan.so.1()(64bit)',
     'libcurl.so.4()(64bit)',
+    'libsecret', // Electron safeStorage uses the desktop keyring instead of basic_text.
     'xdg-utils' // OS integration
 ];
 exports.referenceGeneratedDepsByArch = {
@@ -99,6 +100,7 @@ exports.referenceGeneratedDepsByArch = {
         'libpthread.so.0(GLIBC_2.3.4)(64bit)',
         'librt.so.1()(64bit)',
         'librt.so.1(GLIBC_2.2.5)(64bit)',
+        'libsecret',
         'libsmime3.so()(64bit)',
         'libsmime3.so(NSS_3.10)(64bit)',
         'libsmime3.so(NSS_3.2)(64bit)',
@@ -189,6 +191,7 @@ exports.referenceGeneratedDepsByArch = {
         'libpthread.so.0(GLIBC_2.4)',
         'librt.so.1',
         'librt.so.1(GLIBC_2.4)',
+        'libsecret',
         'libsmime3.so',
         'libsmime3.so(NSS_3.10)',
         'libsmime3.so(NSS_3.2)',
@@ -281,6 +284,7 @@ exports.referenceGeneratedDepsByArch = {
         'libpango-1.0.so.0()(64bit)',
         'libpthread.so.0()(64bit)',
         'libpthread.so.0(GLIBC_2.17)(64bit)',
+        'libsecret',
         'libsmime3.so()(64bit)',
         'libsmime3.so(NSS_3.10)(64bit)',
         'libsmime3.so(NSS_3.2)(64bit)',

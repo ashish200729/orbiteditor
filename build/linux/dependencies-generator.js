@@ -9,6 +9,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.getDependencies = getDependencies;
 const child_process_1 = require("child_process");
+const fs_1 = require("fs");
 const path_1 = __importDefault(require("path"));
 const install_sysroot_1 = require("./debian/install-sysroot");
 const calculate_deps_1 = require("./debian/calculate-deps");
@@ -18,14 +19,9 @@ const dep_lists_2 = require("./rpm/dep-lists");
 const types_1 = require("./debian/types");
 const types_2 = require("./rpm/types");
 const product = require("../../product.json");
-// A flag that can easily be toggled.
-// Make sure to compile the build directory after toggling the value.
-// If false, we warn about new dependencies if they show up
-// while running the prepare package tasks for a release.
-// If true, we fail the build if there are new dependencies found during that task.
-// The reference dependencies, which one has to update when the new dependencies
-// are valid, are in dep-lists.ts
-const FAIL_BUILD_FOR_NEW_DEPENDENCIES = true;
+// Release builds fail when generated dependencies drift from the reviewed list.
+// Local builds on newer distributions can opt in to the detected list.
+const FAIL_BUILD_FOR_NEW_DEPENDENCIES = process.env['VSCODE_LINUX_ALLOW_DEPENDENCY_CHANGES'] !== '1';
 // Based on https://source.chromium.org/chromium/chromium/src/+/refs/tags/132.0.6834.210:chrome/installer/linux/BUILD.gn;l=64-80
 // and the Linux Archive build
 // Shared library dependencies that we already bundle.
@@ -57,8 +53,11 @@ async function getDependencies(packageType, buildDir, applicationName, arch) {
     const appPath = path_1.default.join(buildDir, applicationName);
     // Add the native modules
     const files = findResult.stdout.toString().trimEnd().split('\n');
-    // Add the tunnel binary.
-    files.push(path_1.default.join(buildDir, 'bin', product.tunnelApplicationName));
+    // Add the tunnel binary when this product ships one.
+    const tunnelPath = path_1.default.join(buildDir, 'bin', product.tunnelApplicationName);
+    if ((0, fs_1.existsSync)(tunnelPath)) {
+        files.push(tunnelPath);
+    }
     // Add the main executable.
     files.push(appPath);
     // Add chrome sandbox and crashpad handler.

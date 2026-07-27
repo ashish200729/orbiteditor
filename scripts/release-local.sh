@@ -1,42 +1,68 @@
 #!/usr/bin/env bash
-# Build and publish an Orbit release locally, then refresh update/latest.json.
-#
-# Usage:
-#   ./scripts/release-local.sh                    # build darwin-arm64 from product.json version
-#   ./scripts/release-local.sh 0.2.0 darwin-arm64 # explicit version + platform
-#   SKIP_GH_RELEASE=1 ./scripts/release-local.sh  # skip GitHub release upload
-#
-# For macOS-only releases, prefer: ./scripts/publish-release.sh
-#
-# After publishing:
-#   git push origin main   # clients read update/latest.json from main
+# Build one Orbit platform, publish its artifacts, and refresh update/latest.json.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
-
-VERSION="${1:-}"
-if [[ -z "$VERSION" ]]; then
-	VERSION="$(node -p "require('./product.json').orbitVersion")"
+PRODUCT_VERSION="$(node -p "require('./product.json').orbitVersion")"
+VERSION="${1:-$PRODUCT_VERSION}"
+VERSION="${VERSION#v}"
+if [[ "$VERSION" != "$PRODUCT_VERSION" ]]; then
+	echo "Requested version $VERSION does not match product.json orbitVersion $PRODUCT_VERSION." >&2
+	exit 1
 fi
-
-TAG="v${VERSION#v}"
+TAG="v$VERSION"
 PLATFORM="${2:-darwin-arm64}"
+FILES=()
+ASSET_ARGS=(--version "$VERSION" --tag "$TAG" --merge)
 
-echo "Orbit local release: version=${VERSION} tag=${TAG} platform=${PLATFORM}"
-
+echo "Orbit local release: version=$VERSION tag=$TAG platform=$PLATFORM"
 npm run buildreact
 
 release_darwin() {
-	local arch="$1"
+	local arch="$1" app_dir="../Orbit-darwin-$1" dmg="Orbit-$VERSION-darwin-$1.dmg"
 	./scripts/build-macos-lowmem.sh "$arch"
-	local app_dir="../Orbit-darwin-${arch}"
-	if [[ ! -d "$app_dir" ]]; then
-		echo "Expected app bundle at $app_dir"
-		exit 1
-	fi
-	local dmg="Orbit-${VERSION}-darwin-${arch}.dmg"
+	[[ -d "$app_dir" ]] || { echo "Expected app bundle at $app_dir" >&2; exit 1; }
 	./scripts/make-dmg.sh "$app_dir" "$dmg"
+	FILES+=("$dmg")
+	ASSET_ARGS+=(--asset "darwin-$arch=$dmg")
+}
+
+release_linux() {
+	local arch="$1" deb_arch rpm_arch deb_src rpm_src
+	case "$arch" in
+		x64) deb_arch=amd64; rpm_arch=x86_64 ;;
+		arm64) deb_arch=arm64; rpm_arch=aarch64 ;;
+		*) echo "Unsupported Linux architecture: $arch" >&2; exit 1 ;;
+	esac
+
+	npm run gulp -- compile-build-without-mangling
+	rm -rf .build/extensions
+	npm run gulp -- compile-non-native-extensions-build
+	npm run gulp -- compile-extension-media-build
+	npm run gulp -- minify-vscode
+	npm run gulp -- "vscode-linux-$arch-min-ci"
+	npm run gulp -- "vscode-linux-$arch-prepare-deb"
+	npm run gulp -- "vscode-linux-$arch-build-deb"
+	npm run gulp -- "vscode-linux-$arch-prepare-rpm"
+	npm run gulp -- "vscode-linux-$arch-build-rpm"
+
+	deb_src="$(printf '%s\n' ".build/linux/deb/$deb_arch/deb/"*.deb | head -n 1)"
+	rpm_src="$(printf '%s\n' ".build/linux/rpm/$rpm_arch/"*.rpm | head -n 1)"
+	[[ -f "$deb_src" && -f "$rpm_src" ]] || { echo "Linux package build did not produce deb and rpm artifacts" >&2; exit 1; }
+
+	local deb="Orbit-$VERSION-linux-$arch.deb"
+	local rpm="Orbit-$VERSION-linux-$arch.rpm"
+	local appimage="Orbit-$VERSION-linux-$arch.AppImage"
+	cp "$deb_src" "$deb"
+	cp "$rpm_src" "$rpm"
+	./scripts/appimage/create_appimage.sh "$arch" "../Orbit-linux-$arch" "$ROOT/$appimage"
+	FILES+=("$deb" "$rpm" "$appimage")
+	ASSET_ARGS+=(
+		--asset "linux-$arch-deb=$deb"
+		--asset "linux-$arch-rpm=$rpm"
+		--asset "linux-$arch-appimage=$appimage"
+	)
 }
 
 case "$PLATFORM" in
@@ -45,55 +71,35 @@ case "$PLATFORM" in
 	win32-x64)
 		NODE_OPTIONS="--max-old-space-size=8192" npm run gulp -- vscode-win32-x64-min
 		NODE_OPTIONS="--max-old-space-size=8192" npm run gulp -- vscode-win32-x64-system-setup
-		mv .build/win32-x64/system-setup/VSCodeSetup.exe "Orbit-${VERSION}-win32-x64-setup.exe"
+		file="Orbit-$VERSION-win32-x64-setup.exe"
+		mv .build/win32-x64/system-setup/VSCodeSetup.exe "$file"
+		FILES+=("$file")
+		ASSET_ARGS+=(--asset "win32-x64=$file")
 		;;
-	linux-x64)
-		NODE_OPTIONS="--max-old-space-size=8192" npm run gulp -- vscode-linux-x64-min
-		(cd scripts/appimage && chmod +x create_appimage.sh && ./create_appimage.sh)
-		mv scripts/appimage/Orbit-x86_64.AppImage "Orbit-${VERSION}-linux-x64.AppImage"
-		;;
+	linux-x64) release_linux x64 ;;
+	linux-arm64) release_linux arm64 ;;
 	*)
-		echo "Unknown platform: $PLATFORM"
-		echo "Supported: darwin-arm64, darwin-x64, win32-x64, linux-x64"
+		echo "Unknown platform: $PLATFORM" >&2
+		echo "Supported: darwin-arm64, darwin-x64, win32-x64, linux-x64, linux-arm64" >&2
 		exit 1
 		;;
 esac
 
-# Update manifest for the built platform only (merge keeps other platforms)
-ASSET_ARGS=(--version "$VERSION" --tag "$TAG" --merge)
-case "$PLATFORM" in
-	darwin-arm64) ASSET_ARGS+=(--asset "darwin-arm64=Orbit-${VERSION}-darwin-arm64.dmg") ;;
-	darwin-x64) ASSET_ARGS+=(--asset "darwin-x64=Orbit-${VERSION}-darwin-x64.dmg") ;;
-	win32-x64) ASSET_ARGS+=(--asset "win32-x64=Orbit-${VERSION}-win32-x64-setup.exe") ;;
-	linux-x64) ASSET_ARGS+=(--asset "linux-x64=Orbit-${VERSION}-linux-x64.AppImage") ;;
-esac
-node scripts/update-latest-json.js "${ASSET_ARGS[@]}"
+if [[ "${SKIP_MANIFEST:-}" != 1 ]]; then
+	node scripts/update-latest-json.js "${ASSET_ARGS[@]}"
+fi
 
-if [[ "${SKIP_GH_RELEASE:-}" == "1" ]]; then
+if [[ "${SKIP_GH_RELEASE:-}" == 1 ]]; then
 	echo "SKIP_GH_RELEASE=1 — skipped GitHub release upload."
 elif command -v gh >/dev/null 2>&1; then
-	FILES=()
-	while IFS= read -r file; do
-		FILES+=("$file")
-	done < <(find "$ROOT" -maxdepth 1 \( -name 'Orbit-*.dmg' -o -name 'Orbit-*.exe' -o -name 'Orbit-*.AppImage' \) -print 2>/dev/null)
-
-	if [[ ${#FILES[@]} -gt 0 ]]; then
-		if gh release view "$TAG" >/dev/null 2>&1; then
-			gh release upload "$TAG" "${FILES[@]}" --clobber
-			echo "Uploaded to existing GitHub release ${TAG}"
-		else
-			gh release create "$TAG" "${FILES[@]}" --title "Orbit ${VERSION}" --notes "Orbit ${VERSION}"
-			echo "Created GitHub release ${TAG}"
-		fi
+	if gh release view "$TAG" >/dev/null 2>&1; then
+		gh release upload "$TAG" "${FILES[@]}" --clobber
 	else
-		echo "No release artifacts found in repo root; update/latest.json was still refreshed."
+		gh release create "$TAG" "${FILES[@]}" --title "Orbit $VERSION" --notes "Orbit $VERSION"
 	fi
 else
 	echo "gh CLI not found; skipped GitHub release upload."
 fi
 
-echo ""
-echo "Done."
-echo "  1. Verify artifacts and GitHub release (if created)"
-echo "  2. git push origin main   # required for in-app auto-update"
-echo "  3. git push origin ${TAG}  # if tag not yet pushed"
+echo "Built: ${FILES[*]}"
+echo "Push update/latest.json to main after verifying the release assets."

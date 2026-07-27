@@ -24,7 +24,7 @@ function getNpmProductionDependencies(folder) {
             if (/ELSPROBLEMS/.test(match[0])) {
                 continue;
             }
-            else if (/invalid: xterm/.test(match[0])) {
+            else if (/invalid: (?:xterm|typescript)/.test(match[0])) {
                 continue;
             }
             else if (/A complete log of this run/.test(match[0])) {

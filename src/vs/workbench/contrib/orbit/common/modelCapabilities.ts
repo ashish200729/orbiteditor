@@ -111,17 +111,12 @@ export const defaultModelsOfProvider = {
 		'cline-pass/qwen3.7-max',
 		'cline-pass/qwen3.7-plus',
 	],
-	openAICodex: [
-		'gpt-5.1-codex-max',
-		'gpt-5.1-codex',
-		'gpt-5.2-codex',
-		'gpt-5.2-codex-high',
-		'gpt-5.1',
-		'gpt-5',
-		'gpt-5-codex',
-		'gpt-5-codex-mini',
-		'gpt-5.1-codex-mini',
-		'gpt-5.2',
+	openAICodex: [ // https://developers.openai.com/codex/models
+		'gpt-5.6-sol',
+		'gpt-5.6-terra',
+		'gpt-5.6-luna',
+		'gpt-5.5',
+		'gpt-5.4-mini',
 	],
 	xAISuperGrok: [
 		'grok-composer-2.5-fast',
@@ -991,6 +986,56 @@ const openAISettings: VoidStaticProviderInfo = {
 	},
 	providerReasoningIOSettings: {
 		input: { includeInPayload: openAICompatIncludeInPayloadReasoning },
+	},
+}
+
+// ChatGPT Codex exposes a smaller effective runtime window than the same model
+// names on the metered API. Keep subscription metadata separate so prompt
+// truncation and cost estimates match the Codex service, not api.openai.com.
+// https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json
+const openAICodexBaseModelOptions = {
+	contextWindow: 272_000,
+	reservedOutputTokenSpace: 128_000,
+	cost: { input: 0, output: 0 },
+	downloadable: false,
+	supportsFIM: false,
+	specialToolFormat: 'openai-style',
+	supportsSystemMessage: 'developer-role',
+} as const
+
+const openAICodexModelOptions = {
+	'gpt-5.6-sol': {
+		...openAICodexBaseModelOptions,
+		reasoningCapabilities: { supportsReasoning: true, canTurnOffReasoning: false, canIOReasoning: true, reasoningSlider: { type: 'effort_slider', values: ['low', 'medium', 'high', 'xhigh', 'max'], default: 'low' } },
+	},
+	'gpt-5.6-terra': {
+		...openAICodexBaseModelOptions,
+		reasoningCapabilities: { supportsReasoning: true, canTurnOffReasoning: false, canIOReasoning: true, reasoningSlider: { type: 'effort_slider', values: ['low', 'medium', 'high', 'xhigh', 'max'], default: 'medium' } },
+	},
+	'gpt-5.6-luna': {
+		...openAICodexBaseModelOptions,
+		reasoningCapabilities: { supportsReasoning: true, canTurnOffReasoning: false, canIOReasoning: true, reasoningSlider: { type: 'effort_slider', values: ['low', 'medium', 'high', 'xhigh', 'max'], default: 'medium' } },
+	},
+	'gpt-5.5': {
+		...openAICodexBaseModelOptions,
+		reasoningCapabilities: { supportsReasoning: true, canTurnOffReasoning: false, canIOReasoning: true, reasoningSlider: { type: 'effort_slider', values: ['low', 'medium', 'high', 'xhigh'], default: 'medium' } },
+	},
+	'gpt-5.4-mini': {
+		...openAICodexBaseModelOptions,
+		reasoningCapabilities: { supportsReasoning: true, canTurnOffReasoning: false, canIOReasoning: true, reasoningSlider: { type: 'effort_slider', values: ['low', 'medium', 'high', 'xhigh'], default: 'medium' } },
+	},
+} as const satisfies { [s: string]: VoidStaticModelInfo }
+
+const openAICodexSettings: VoidStaticProviderInfo = {
+	modelOptions: openAICodexModelOptions,
+	modelOptionsFallback: (modelName) => {
+		// OpenAI documents gpt-5.6 as an alias that currently routes to Sol.
+		if (modelName.toLowerCase() !== 'gpt-5.6') return null
+		return {
+			...openAICodexModelOptions['gpt-5.6-sol'],
+			modelName,
+			recognizedModelName: 'gpt-5.6-sol',
+		}
 	},
 }
 
@@ -2131,7 +2176,7 @@ const clinePassSettings: VoidStaticProviderInfo = {
 
 const modelSettingsOfProvider: { [providerName in ProviderName]: VoidStaticProviderInfo } = {
 	openAI: openAISettings,
-	openAICodex: openAISettings,
+	openAICodex: openAICodexSettings,
 	xAISuperGrok: xAISettings,
 	orbit: orbitProviderSettings,
 	clinePass: clinePassSettings,

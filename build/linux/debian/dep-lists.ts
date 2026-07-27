@@ -9,6 +9,7 @@ export const additionalDeps = [
 	'ca-certificates', // Make sure users have SSL certificates.
 	'libgtk-3-0 (>= 3.9.10) | libgtk-4-1',
 	'libnss3 (>= 3.26)',
+	'libsecret-1-0', // Electron safeStorage must not fall back to basic_text.
 	'libcurl3-gnutls | libcurl3-nss | libcurl4 | libcurl3', // For Breakpad crash reports.
 	'xdg-utils (>= 1.0.2)', // OS integration
 ];
@@ -45,6 +46,7 @@ export const referenceGeneratedDepsByArch = {
 		'libnss3 (>= 2:3.30)',
 		'libnss3 (>= 3.26)',
 		'libpango-1.0-0 (>= 1.14.0)',
+		'libsecret-1-0',
 		'libudev1 (>= 183)',
 		'libx11-6',
 		'libx11-6 (>= 2:1.4.99.1)',
@@ -82,6 +84,7 @@ export const referenceGeneratedDepsByArch = {
 		'libnss3 (>= 2:3.30)',
 		'libnss3 (>= 3.26)',
 		'libpango-1.0-0 (>= 1.14.0)',
+		'libsecret-1-0',
 		'libstdc++6 (>= 4.1.1)',
 		'libstdc++6 (>= 5)',
 		'libstdc++6 (>= 5.2)',
@@ -120,6 +123,7 @@ export const referenceGeneratedDepsByArch = {
 		'libnss3 (>= 2:3.30)',
 		'libnss3 (>= 3.26)',
 		'libpango-1.0-0 (>= 1.14.0)',
+		'libsecret-1-0',
 		'libstdc++6 (>= 4.1.1)',
 		'libstdc++6 (>= 5)',
 		'libstdc++6 (>= 5.2)',

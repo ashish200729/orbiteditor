@@ -1,0 +1,139 @@
+name: Release Linux
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Orbit version without a leading v
+        required: true
+        type: string
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: orbit-linux-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Install build and packaging tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            dbus-x11 \
+            dpkg-dev \
+            fakeroot \
+            g++ \
+            libfuse2t64 \
+            libkrb5-dev \
+            libsecret-1-dev \
+            libx11-dev \
+            libxkbfile-dev \
+            python-is-python3 \
+            rpm \
+            xvfb
+      - run: npm ci
+      - name: Resolve version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if [ -n "$INPUT_VERSION" ]; then
+            echo "value=${INPUT_VERSION#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Build Linux packages
+        env:
+          SKIP_GH_RELEASE: '1'
+          SKIP_MANIFEST: '1'
+        run: ./scripts/release-local.sh "${{ steps.version.outputs.value }}" "linux-${{ matrix.arch }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: orbit-linux-${{ matrix.arch }}
+          if-no-files-found: error
+          path: |
+            Orbit-${{ steps.version.outputs.value }}-linux-${{ matrix.arch }}.deb
+            Orbit-${{ steps.version.outputs.value }}-linux-${{ matrix.arch }}.rpm
+            Orbit-${{ steps.version.outputs.value }}-linux-${{ matrix.arch }}.AppImage
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: orbit-linux-*
+          merge-multiple: true
+      - name: Resolve version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if [ -n "$INPUT_VERSION" ]; then
+            echo "value=${INPUT_VERSION#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Verify signing key
+        env:
+          ORBIT_UPDATE_SIGNING_KEY: ${{ secrets.ORBIT_UPDATE_SIGNING_KEY }}
+        run: test -n "$ORBIT_UPDATE_SIGNING_KEY"
+      - name: Publish release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ steps.version.outputs.value }}"
+          TAG="v$VERSION"
+          files=(Orbit-"$VERSION"-linux-*)
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${files[@]}" --clobber
+          else
+            gh release create "$TAG" "${files[@]}" --title "Orbit $VERSION" --notes "Orbit $VERSION"
+          fi
+      - name: Sign update manifest
+        env:
+          ORBIT_UPDATE_SIGNING_KEY: ${{ secrets.ORBIT_UPDATE_SIGNING_KEY }}
+        run: |
+          VERSION="${{ steps.version.outputs.value }}"
+          node scripts/update-latest-json.js --version "$VERSION" --tag "v$VERSION" --merge \
+            --asset "linux-x64-deb=Orbit-$VERSION-linux-x64.deb" \
+            --asset "linux-x64-rpm=Orbit-$VERSION-linux-x64.rpm" \
+            --asset "linux-x64-appimage=Orbit-$VERSION-linux-x64.AppImage" \
+            --asset "linux-arm64-deb=Orbit-$VERSION-linux-arm64.deb" \
+            --asset "linux-arm64-rpm=Orbit-$VERSION-linux-arm64.rpm" \
+            --asset "linux-arm64-appimage=Orbit-$VERSION-linux-arm64.AppImage"
+      - name: Publish update manifest
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add update/latest.json
+          if git diff --cached --quiet; then
+            echo "update/latest.json is already current"
+          else
+            git commit -m "release: publish Orbit ${{ steps.version.outputs.value }} Linux updates"
+            git push origin main
+          fi

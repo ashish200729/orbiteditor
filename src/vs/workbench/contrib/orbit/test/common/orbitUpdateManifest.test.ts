@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------*/
 
 import * as assert from 'assert';
-import { canonicalOrbitJsonStringify, compareOrbitVersions, getCurrentOrbitVersion, getOrbitUpdateManifestUrl, normalizeOrbitVersion, orbitManifestSigningPayload } from '../../common/orbitUpdateManifest.js';
+import { canonicalOrbitJsonStringify, compareOrbitVersions, getCurrentOrbitVersion, getOrbitPlatformAssetKey, getOrbitUpdateManifestUrl, normalizeOrbitVersion, orbitManifestSigningPayload } from '../../common/orbitUpdateManifest.js';
 
 suite('orbitUpdateManifest', () => {
 	test('normalizeOrbitVersion strips leading v', () => {
@@ -28,6 +28,17 @@ suite('orbitUpdateManifest', () => {
 	test('getOrbitUpdateManifestUrl includes cache buster', () => {
 		const url = getOrbitUpdateManifestUrl();
 		assert.ok(url.includes('latest.json?t='));
+	});
+
+	test('uses package-specific Linux asset keys', () => {
+		if (process.platform === 'linux') {
+			const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
+			assert.strictEqual(getOrbitPlatformAssetKey('deb'), `linux-${arch}-deb`);
+			assert.strictEqual(getOrbitPlatformAssetKey('rpm'), `linux-${arch}-rpm`);
+			assert.strictEqual(getOrbitPlatformAssetKey('appimage'), `linux-${arch}-appimage`);
+			assert.strictEqual(getOrbitPlatformAssetKey('deb', 'x64'), 'linux-x64-deb');
+			assert.strictEqual(getOrbitPlatformAssetKey('appimage', 'arm64'), 'linux-arm64-appimage');
+		}
 	});
 
 	test('canonicalOrbitJsonStringify is independent of key order', () => {
