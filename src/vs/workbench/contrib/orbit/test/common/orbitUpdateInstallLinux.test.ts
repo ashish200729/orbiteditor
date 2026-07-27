@@ -12,7 +12,7 @@ import * as path from 'path';
 import { promiseWithResolvers } from '../../../../../base/common/async.js';
 import { detectLinuxPackageType, getElevatedLinuxInstallCommand, getLinuxUpdatePackageType, prepareLinuxUpdateInstall } from '../../electron-main/orbitUpdateInstall.linux.js';
 
-suite('orbitUpdateInstall.linux', () => {
+(process.platform === 'linux' ? suite : suite.skip)('orbitUpdateInstall.linux', () => {
 	test('selects package type from explicit packaging environment', () => {
 		assert.strictEqual(detectLinuxPackageType({ ORBIT_LINUX_PACKAGE_TYPE: 'deb' }), 'deb');
 		assert.strictEqual(detectLinuxPackageType({ ORBIT_LINUX_PACKAGE_TYPE: 'rpm' }), 'rpm');
