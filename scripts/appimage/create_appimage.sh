@@ -12,7 +12,7 @@ trap 'rm -rf "$WORK_DIR"' EXIT
 
 case "$TARGET_ARCH" in
 	x64) APPIMAGE_ARCH=x86_64 ;;
-	arm64) APPIMAGE_ARCH=aarch64 ;;
+	arm64) APPIMAGE_ARCH=arm_aarch64 ;;
 	*) echo "Unsupported AppImage architecture: $TARGET_ARCH (expected x64 or arm64)" >&2; exit 1 ;;
 esac
 
