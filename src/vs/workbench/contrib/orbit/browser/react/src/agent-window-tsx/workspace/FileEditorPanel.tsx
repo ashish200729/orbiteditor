@@ -29,6 +29,7 @@ import { IEditorProgressService } from '../../../../../../../../platform/progres
 import { IResolvedTextEditorModel } from '../../../../../../../../editor/common/services/resolverService.js';
 import { TextFileOperationError, TextFileOperationResult } from '../../../../../../../services/textfile/common/textfiles.js';
 import { FileOperationError, FileOperationResult } from '../../../../../../../../platform/files/common/files.js';
+import { IWorkbenchThemeService } from '../../../../../../../services/themes/common/workbenchThemeService.js';
 import { useAccessor, useAgentWorkspaceState } from '../../util/services.js';
 import { getConnectedDocument, getConnectedWindow, focusInConnectedWindow } from '../../util/connectedWindow.js';
 import type { WorkspacePanelProps } from './workspaceTypes.js';
@@ -566,7 +567,7 @@ export const FileEditorPanel = ({
 			// normal tag names when calling Document.prototype.createElement directly.
 			const createInConnectedDoc = Document.prototype.createElement.bind(connectedDoc) as (tagName: string) => HTMLElement;
 			const host = createInConnectedDoc('div');
-			host.className = 'agent-workspace-file-editor-host';
+			host.className = 'void-agent-workspace-file-editor-host';
 			host.style.position = 'absolute';
 			host.style.inset = '0';
 			host.style.width = '100%';
@@ -599,21 +600,55 @@ export const FileEditorPanel = ({
 					}
 				} catch { /* ignore */ }
 			};
-			syncTokenStyles();
 
 			const store = new DisposableStore();
 			editorStoreRef.current = store;
+
+			const attachMainTokenStyleObserver = (el: Element): void => {
+				const mo = new MutationObserver(() => syncTokenStyles());
+				mo.observe(el, { childList: true, characterData: true, subtree: true });
+				store.add({ dispose: () => mo.disconnect() });
+			};
+
+			syncTokenStyles();
+
+			const mainTokensEl = mainWindow.document.head.querySelector('style.vscode-tokens-styles');
+			if (mainTokensEl) {
+				attachMainTokenStyleObserver(mainTokensEl);
+			}
+
+			// TextMate may emit vscode-tokens-styles after the editor mounts.
+			const headObserver = new MutationObserver(mutations => {
+				for (const mutation of mutations) {
+					for (const node of mutation.addedNodes) {
+						if (node instanceof HTMLStyleElement && node.classList.contains('vscode-tokens-styles')) {
+							syncTokenStyles();
+							attachMainTokenStyleObserver(node);
+						}
+					}
+				}
+			});
+			headObserver.observe(mainWindow.document.head, { childList: true });
+			store.add({ dispose: () => headObserver.disconnect() });
+
+			const workbenchThemeService = accessor.get('IWorkbenchThemeService') as IWorkbenchThemeService;
+			store.add(workbenchThemeService.onDidColorThemeChange(() => syncTokenStyles()));
+
+			// Retry briefly when token CSS is not ready yet (cold start / theme load).
+			let tokenSyncAttempts = 0;
+			const retryTokenSync = (): void => {
+				syncTokenStyles();
+				const hasCss = !!mainWindow.document.head.querySelector('style.vscode-tokens-styles')?.textContent;
+				if (!hasCss && tokenSyncAttempts++ < 50) {
+					mainWindow.setTimeout(retryTokenSync, 100);
+				}
+			};
+			retryTokenSync();
+
 			const scopedInstantiation = instantiationService.createChild(
 				new ServiceCollection([IEditorProgressService, noopEditorProgressService]),
 			);
 			store.add(scopedInstantiation);
-
-			const mainTokensEl = mainWindow.document.head.querySelector('style.vscode-tokens-styles');
-			if (mainTokensEl) {
-				const mo = new MutationObserver(() => syncTokenStyles());
-				mo.observe(mainTokensEl, { childList: true, characterData: true, subtree: true });
-				store.add({ dispose: () => mo.disconnect() });
-			}
 			let editor: CodeEditorWidget;
 			try {
 				editor = scopedInstantiation.createInstance(

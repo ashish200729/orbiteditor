@@ -1144,10 +1144,10 @@ export class AgentWindowService extends Disposable implements IAgentWindowServic
 			return mainStyle?.textContent ?? '';
 		};
 
-		const apply = (): void => {
+		const apply = (): boolean => {
 			const css = readMainTokenCss();
 			if (!css) {
-				return;
+				return false;
 			}
 
 			// Prefer updating VS Code's own cloned sheet when present.
@@ -1167,9 +1167,24 @@ export class AgentWindowService extends Disposable implements IAgentWindowServic
 			if (target.textContent !== css) {
 				target.textContent = css;
 			}
+			return true;
 		};
 
-		apply();
+		if (!apply()) {
+			// Token CSS may not exist yet on cold start; retry briefly.
+			let attempts = 0;
+			const retryTimer = mainWindow.setInterval(() => {
+				if (this.auxWindow !== aux) {
+					mainWindow.clearInterval(retryTimer);
+					return;
+				}
+				attempts++;
+				if (apply() || attempts >= 50) {
+					mainWindow.clearInterval(retryTimer);
+				}
+			}, 100);
+			disposables.add(toDisposable(() => mainWindow.clearInterval(retryTimer)));
+		}
 
 		// Idempotent: only attach one live sync observer per Agents window lifetime.
 		if (this._editorTokenStylesSynced) {
