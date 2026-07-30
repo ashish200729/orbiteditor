@@ -9,7 +9,7 @@ import { MenuRegistry, MenuId, Action2, registerAction2, ISubmenuItem } from '..
 import { equalsIgnoreCase } from '../../../../base/common/strings.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { Categories } from '../../../../platform/action/common/actionCommonCategories.js';
-import { IWorkbenchThemeService, IWorkbenchTheme, ThemeSettingTarget, IWorkbenchColorTheme, IWorkbenchFileIconTheme, IWorkbenchProductIconTheme, ThemeSettings } from '../../../services/themes/common/workbenchThemeService.js';
+import { IWorkbenchThemeService, IWorkbenchTheme, ThemeSettingTarget, IWorkbenchColorTheme, IWorkbenchFileIconTheme, IWorkbenchProductIconTheme, ThemeSettings, ThemeSettingDefaults } from '../../../services/themes/common/workbenchThemeService.js';
 import { IExtensionsWorkbenchService } from '../../extensions/common/extensions.js';
 import { IExtensionGalleryService, IExtensionManagementService, IGalleryExtension } from '../../../../platform/extensionManagement/common/extensionManagement.js';
 import { IColorRegistry, Extensions as ColorRegistryExtensions } from '../../../../platform/theme/common/colorRegistry.js';
@@ -36,6 +36,7 @@ import { FileIconThemeData } from '../../../services/themes/browser/fileIconThem
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
+import { IHostColorSchemeService } from '../../../services/themes/common/hostColorSchemeService.js';
 
 import { mainWindow } from '../../../../base/browser/window.js';
 import { IPreferencesService } from '../../../services/preferences/common/preferences.js';
@@ -47,10 +48,14 @@ export const manageExtensionIcon = registerIcon('theme-selection-manage-extensio
 
 type PickerResult = 'back' | 'selected' | 'cancelled';
 
+const SYSTEM_THEME_PICK_ID = '__orbit_system_theme__';
+
 enum ConfigureItem {
 	BROWSE_GALLERY = 'marketplace',
 	EXTENSIONS_VIEW = 'extensions',
-	CUSTOM_TOP_ENTRY = 'customTopEntry'
+	CUSTOM_TOP_ENTRY = 'customTopEntry',
+	SYSTEM = 'system',
+	CUSTOM_THEMES = 'customThemes'
 }
 
 class MarketplaceThemesPicker {
@@ -68,6 +73,7 @@ class MarketplaceThemesPicker {
 	constructor(
 		private readonly getMarketplaceColorThemes: (publisher: string, name: string, version: string) => Promise<IWorkbenchTheme[]>,
 		private readonly marketplaceQuery: string,
+		private readonly onBeforeApplyTheme: (() => Promise<void>) | undefined,
 
 		@IExtensionGalleryService private readonly extensionGalleryService: IExtensionGalleryService,
 		@IExtensionManagementService private readonly extensionManagementService: IExtensionManagementService,
@@ -179,6 +185,7 @@ class MarketplaceThemesPicker {
 					quickpick.hide();
 					const success = await this.installExtension(themeItem.galleryExtension);
 					if (success) {
+						await this.onBeforeApplyTheme?.();
 						selectTheme(themeItem.theme, true);
 					} else {
 						selectTheme(currentTheme, true);
@@ -287,6 +294,17 @@ interface InstalledThemesPickerOptions {
 	readonly description?: string;
 	readonly toggles?: IQuickInputToggle[];
 	readonly onToggle?: (toggle: IQuickInputToggle, quickInput: IQuickPick<ThemeItem, { useSeparators: boolean }>) => Promise<void>;
+	/** When false, skip marketplace browse/install entries on the primary pick list. */
+	readonly includeMarketplaceEntry?: boolean;
+	/** Active item id when the system theme option should be focused. */
+	readonly activeItemId?: string;
+	readonly onSelectSystem?: () => Promise<void>;
+	readonly onPreviewSystem?: () => void;
+	/** Called before committing a concrete theme (not System / not cancel restore). */
+	readonly onBeforeApplyTheme?: () => Promise<void>;
+	readonly getCustomThemePicks?: () => QuickPickInput<ThemeItem>[];
+	readonly customThemesPlaceholder?: string;
+	readonly customThemesTitle?: string;
 }
 
 class InstalledThemesPicker {
@@ -305,9 +323,10 @@ class InstalledThemesPicker {
 	public async openQuickPick(picks: QuickPickInput<ThemeItem>[], currentTheme: IWorkbenchTheme) {
 
 		let marketplaceThemePicker: MarketplaceThemesPicker | undefined;
-		if (this.extensionGalleryService.isEnabled()) {
+		const includeMarketplaceEntry = this.options.includeMarketplaceEntry !== false;
+		if (includeMarketplaceEntry && this.extensionGalleryService.isEnabled()) {
 			if (await this.extensionResourceLoaderService.supportsExtensionGalleryResources() && this.options.browseMessage) {
-				marketplaceThemePicker = this.instantiationService.createInstance(MarketplaceThemesPicker, this.getMarketplaceColorThemes.bind(this), this.options.marketplaceTag);
+				marketplaceThemePicker = this.instantiationService.createInstance(MarketplaceThemesPicker, this.getMarketplaceColorThemes.bind(this), this.options.marketplaceTag, this.options.onBeforeApplyTheme);
 				picks = [configurationEntry(this.options.browseMessage, ConfigureItem.BROWSE_GALLERY), ...picks];
 			} else {
 				picks = [...picks, { type: 'separator' }, configurationEntry(this.options.installMessage, ConfigureItem.EXTENSIONS_VIEW)];
@@ -332,6 +351,102 @@ class InstalledThemesPicker {
 			}, applyTheme ? 0 : 200);
 		};
 
+		const pickCustomThemes = async (activeItemId: string | undefined): Promise<PickerResult> => {
+			let customPicks = this.options.getCustomThemePicks?.() ?? [];
+			let nestedMarketplacePicker: MarketplaceThemesPicker | undefined;
+			if (this.extensionGalleryService.isEnabled()) {
+				if (await this.extensionResourceLoaderService.supportsExtensionGalleryResources() && this.options.browseMessage) {
+					nestedMarketplacePicker = marketplaceThemePicker ?? this.instantiationService.createInstance(MarketplaceThemesPicker, this.getMarketplaceColorThemes.bind(this), this.options.marketplaceTag, this.options.onBeforeApplyTheme);
+					customPicks = [configurationEntry(this.options.browseMessage, ConfigureItem.BROWSE_GALLERY), ...customPicks];
+				} else {
+					customPicks = [...customPicks, { type: 'separator' }, configurationEntry(this.options.installMessage, ConfigureItem.EXTENSIONS_VIEW)];
+				}
+			}
+
+			const disposables = new DisposableStore();
+			return new Promise<PickerResult>((resolve) => {
+				let result: PickerResult | 'navigating' | undefined;
+				const autoFocusIndex = customPicks.findIndex(p => isItem(p) && p.id === activeItemId);
+				const quickpick = disposables.add(this.quickInputService.createQuickPick<ThemeItem>({ useSeparators: true }));
+				quickpick.items = customPicks;
+				quickpick.title = this.options.customThemesTitle ?? localize('themes.custom.title', "Custom Themes");
+				quickpick.placeholder = this.options.customThemesPlaceholder ?? localize('themes.custom.placeholder', "Select Custom Color Theme (Up/Down Keys to Preview)");
+				quickpick.buttons = [this.quickInputService.backButton];
+				quickpick.canSelectMany = false;
+				quickpick.matchOnDescription = true;
+				if (autoFocusIndex >= 0) {
+					quickpick.activeItems = [customPicks[autoFocusIndex] as ThemeItem];
+				}
+
+				disposables.add(quickpick.onDidAccept(async () => {
+					const theme = quickpick.selectedItems[0];
+					if (!theme || theme.configureItem) {
+						if (!theme || theme.configureItem === ConfigureItem.EXTENSIONS_VIEW) {
+							result = 'selected';
+							quickpick.hide();
+							this.extensionsWorkbenchService.openSearch(`${this.options.marketplaceTag} ${quickpick.value}`);
+						} else if (theme.configureItem === ConfigureItem.BROWSE_GALLERY && nestedMarketplacePicker) {
+							result = 'navigating';
+							const searchValue = quickpick.value;
+							quickpick.hide();
+							const res = await nestedMarketplacePicker.openQuickPick(searchValue, currentTheme, selectTheme);
+							if (res === 'back') {
+								resolve(await pickCustomThemes(activeItemId));
+								return;
+							}
+							resolve(res === 'selected' ? 'selected' : 'cancelled');
+						}
+					} else {
+						result = 'selected';
+						await this.options.onBeforeApplyTheme?.();
+						selectTheme(theme.theme, true);
+						quickpick.hide();
+					}
+				}));
+				disposables.add(quickpick.onDidChangeActive(themes => {
+					const item = themes[0];
+					if (item?.configureItem) {
+						selectTheme(currentTheme, false);
+						return;
+					}
+					selectTheme(item?.theme, false);
+				}));
+				disposables.add(quickpick.onDidTriggerButton(e => {
+					if (e === this.quickInputService.backButton) {
+						selectTheme(currentTheme, true);
+						result = 'back';
+						quickpick.hide();
+					}
+				}));
+				disposables.add(quickpick.onDidHide(() => {
+					if (result === 'navigating') {
+						return;
+					}
+					if (result === undefined) {
+						selectTheme(currentTheme, true);
+						result = 'cancelled';
+					}
+					resolve(result);
+				}));
+				disposables.add(quickpick.onDidTriggerItemButton(e => {
+					if (isItem(e.item)) {
+						const extensionId = e.item.theme?.extensionData?.extensionId;
+						if (extensionId) {
+							this.extensionsWorkbenchService.openSearch(`@id:${extensionId}`);
+						} else {
+							this.extensionsWorkbenchService.openSearch(`${this.options.marketplaceTag} ${quickpick.value}`);
+						}
+					}
+				}));
+				quickpick.show();
+			}).finally(() => {
+				disposables.dispose();
+				if (nestedMarketplacePicker && nestedMarketplacePicker !== marketplaceThemePicker) {
+					nestedMarketplacePicker.dispose();
+				}
+			});
+		};
+
 		const pickInstalledThemes = (activeItemId: string | undefined) => {
 			const disposables = new DisposableStore();
 			return new Promise<void>((s, _) => {
@@ -342,7 +457,9 @@ class InstalledThemesPicker {
 				quickpick.title = this.options.title;
 				quickpick.description = this.options.description;
 				quickpick.placeholder = this.options.placeholderMessage;
-				quickpick.activeItems = [picks[autoFocusIndex] as ThemeItem];
+				if (autoFocusIndex >= 0) {
+					quickpick.activeItems = [picks[autoFocusIndex] as ThemeItem];
+				}
 				quickpick.canSelectMany = false;
 				quickpick.toggles = this.options.toggles;
 				quickpick.toggles?.forEach(toggle => {
@@ -352,7 +469,22 @@ class InstalledThemesPicker {
 				disposables.add(quickpick.onDidAccept(async _ => {
 					isCompleted = true;
 					const theme = quickpick.selectedItems[0];
-					if (!theme || theme.configureItem) { // 'pick in marketplace' entry
+					if (!theme || theme.configureItem) {
+						if (theme?.configureItem === ConfigureItem.SYSTEM) {
+							await this.options.onSelectSystem?.();
+							quickpick.hide();
+							s();
+							return;
+						}
+						if (theme?.configureItem === ConfigureItem.CUSTOM_THEMES) {
+							quickpick.hide();
+							const res = await pickCustomThemes(currentTheme.id);
+							if (res === 'back') {
+								await pickInstalledThemes(this.options.activeItemId ?? currentTheme.id);
+							}
+							s();
+							return;
+						}
 						if (!theme || theme.configureItem === ConfigureItem.EXTENSIONS_VIEW) {
 							this.extensionsWorkbenchService.openSearch(`${this.options.marketplaceTag} ${quickpick.value}`);
 						} else if (theme.configureItem === ConfigureItem.BROWSE_GALLERY) {
@@ -364,13 +496,26 @@ class InstalledThemesPicker {
 							}
 						}
 					} else {
+						await this.options.onBeforeApplyTheme?.();
 						selectTheme(theme.theme, true);
 					}
 
 					quickpick.hide();
 					s();
 				}));
-				disposables.add(quickpick.onDidChangeActive(themes => selectTheme(themes[0]?.theme, false)));
+				disposables.add(quickpick.onDidChangeActive(themes => {
+					const item = themes[0];
+					if (item?.configureItem === ConfigureItem.SYSTEM) {
+						this.options.onPreviewSystem?.();
+						return;
+					}
+					if (item?.configureItem === ConfigureItem.CUSTOM_THEMES || item?.configureItem === ConfigureItem.BROWSE_GALLERY || item?.configureItem === ConfigureItem.EXTENSIONS_VIEW) {
+						// Keep current theme while hovering non-theme entries.
+						selectTheme(currentTheme, false);
+						return;
+					}
+					selectTheme(item?.theme, false);
+				}));
 				disposables.add(quickpick.onDidHide(() => {
 					if (!isCompleted) {
 						selectTheme(currentTheme, true);
@@ -393,7 +538,7 @@ class InstalledThemesPicker {
 				disposables.dispose();
 			});
 		};
-		await pickInstalledThemes(currentTheme.id);
+		await pickInstalledThemes(this.options.activeItemId ?? currentTheme.id);
 
 		marketplaceThemePicker?.dispose();
 
@@ -417,22 +562,15 @@ registerAction2(class extends Action2 {
 		});
 	}
 
-	private getTitle(colorScheme: ColorScheme | undefined): string {
-		switch (colorScheme) {
-			case ColorScheme.DARK: return localize('themes.selectTheme.darkScheme', "Select Color Theme for System Dark Mode");
-			case ColorScheme.LIGHT: return localize('themes.selectTheme.lightScheme', "Select Color Theme for System Light Mode");
-			case ColorScheme.HIGH_CONTRAST_DARK: return localize('themes.selectTheme.darkHC', "Select Color Theme for High Contrast Dark Mode");
-			case ColorScheme.HIGH_CONTRAST_LIGHT: return localize('themes.selectTheme.lightHC', "Select Color Theme for High Contrast Light Mode");
-			default:
-				return localize('themes.selectTheme.default', "Select Color Theme (detect system color mode disabled)");
-		}
-	}
-
 	override async run(accessor: ServicesAccessor) {
 		const themeService = accessor.get(IWorkbenchThemeService);
 		const preferencesService = accessor.get(IPreferencesService);
+		const configurationService = accessor.get(IConfigurationService);
+		const hostColorSchemeService = accessor.get(IHostColorSchemeService);
+		const instantiationService = accessor.get(IInstantiationService);
 
 		const preferredColorScheme = themeService.getPreferredColorScheme();
+		const isDetectingColorScheme = !!configurationService.getValue(ThemeSettings.DETECT_COLOR_SCHEME);
 
 		let modeConfigureToggle;
 		if (preferredColorScheme) {
@@ -451,46 +589,124 @@ registerAction2(class extends Action2 {
 			});
 		}
 
-		const options = {
-			installMessage: localize('installColorThemes', "Install Additional Color Themes..."),
-			browseMessage: '$(plus) ' + localize('browseColorThemes', "Browse Additional Color Themes..."),
-			placeholderMessage: this.getTitle(preferredColorScheme),
-			marketplaceTag: 'category:themes',
-			toggles: [modeConfigureToggle],
-			onToggle: async (toggle, picker) => {
-				picker.hide();
-				await preferencesService.openSettings({ query: ThemeSettings.DETECT_COLOR_SCHEME });
-			}
-		} satisfies InstalledThemesPickerOptions;
-		const setTheme = (theme: IWorkbenchTheme | undefined, settingsTarget: ThemeSettingTarget) => themeService.setColorTheme(theme as IWorkbenchColorTheme, settingsTarget);
-		const getMarketplaceColorThemes = (publisher: string, name: string, version: string) => themeService.getMarketplaceColorThemes(publisher, name, version);
-
-		const instantiationService = accessor.get(IInstantiationService);
-		const picker = instantiationService.createInstance(InstalledThemesPicker, options, setTheme, getMarketplaceColorThemes);
-
 		const themes = await themeService.getColorThemes();
 		const currentTheme = themeService.getColorTheme();
 
-		const lightEntries = toEntries(themes.filter(t => t.type === ColorScheme.LIGHT), localize('themes.category.light', "light themes"));
-		const darkEntries = toEntries(themes.filter(t => t.type === ColorScheme.DARK), localize('themes.category.dark', "dark themes"));
-		const hcEntries = toEntries(themes.filter(t => isHighContrast(t.type)), localize('themes.category.hc', "high contrast themes"));
+		const orbitLightTheme = themes.find(t => t.settingsId === ThemeSettingDefaults.COLOR_THEME_LIGHT);
+		const orbitDarkTheme = themes.find(t => t.settingsId === ThemeSettingDefaults.COLOR_THEME_DARK);
 
-		let picks;
-		switch (preferredColorScheme) {
-			case ColorScheme.DARK:
-				picks = [...darkEntries, ...lightEntries, ...hcEntries];
-				break;
-			case ColorScheme.HIGH_CONTRAST_DARK:
-			case ColorScheme.HIGH_CONTRAST_LIGHT:
-				picks = [...hcEntries, ...lightEntries, ...darkEntries];
-				break;
-			case ColorScheme.LIGHT:
-			default:
-				picks = [...lightEntries, ...darkEntries, ...hcEntries];
-				break;
+		const getSystemTheme = (): IWorkbenchColorTheme | undefined => {
+			const detectHC = !!configurationService.getValue(ThemeSettings.DETECT_HC);
+			let settingsId: string | undefined;
+			if (detectHC && hostColorSchemeService.highContrast) {
+				settingsId = configurationService.getValue<string>(
+					hostColorSchemeService.dark ? ThemeSettings.PREFERRED_HC_DARK_THEME : ThemeSettings.PREFERRED_HC_LIGHT_THEME
+				);
+			} else {
+				settingsId = configurationService.getValue<string>(
+					hostColorSchemeService.dark ? ThemeSettings.PREFERRED_DARK_THEME : ThemeSettings.PREFERRED_LIGHT_THEME
+				);
+			}
+			return themes.find(t => t.settingsId === settingsId);
+		};
+
+		const systemAppearanceDescription = hostColorSchemeService.highContrast
+			? (hostColorSchemeService.dark
+				? localize('themes.system.hcDark', "High Contrast Dark")
+				: localize('themes.system.hcLight', "High Contrast Light"))
+			: (hostColorSchemeService.dark
+				? localize('themes.system.dark', "Dark")
+				: localize('themes.system.light', "Light"));
+
+		const systemItem: ThemeItem = {
+			id: SYSTEM_THEME_PICK_ID,
+			label: localize('themes.system.label', "System"),
+			description: localize('themes.system.description', "Match system appearance ({0})", systemAppearanceDescription),
+			alwaysShow: true,
+			configureItem: ConfigureItem.SYSTEM,
+		};
+
+		const customThemesItem: ThemeItem = {
+			id: ConfigureItem.CUSTOM_THEMES,
+			label: '$(symbol-color) ' + localize('themes.custom.label', "Custom Themes..."),
+			description: localize('themes.custom.description', "Browse all installed themes"),
+			alwaysShow: true,
+			configureItem: ConfigureItem.CUSTOM_THEMES,
+		};
+
+		const picks: QuickPickInput<ThemeItem>[] = [systemItem];
+		if (orbitLightTheme) {
+			picks.push(toEntry(orbitLightTheme));
 		}
-		await picker.openQuickPick(picks, currentTheme);
+		if (orbitDarkTheme) {
+			picks.push(toEntry(orbitDarkTheme));
+		}
+		picks.push({ type: 'separator' }, customThemesItem);
 
+		const isOrbitTheme = (theme: IWorkbenchTheme) =>
+			theme.settingsId === ThemeSettingDefaults.COLOR_THEME_DARK
+			|| theme.settingsId === ThemeSettingDefaults.COLOR_THEME_LIGHT;
+
+		let activeItemId: string;
+		if (isDetectingColorScheme) {
+			activeItemId = SYSTEM_THEME_PICK_ID;
+		} else if (isOrbitTheme(currentTheme)) {
+			activeItemId = currentTheme.id;
+		} else {
+			activeItemId = ConfigureItem.CUSTOM_THEMES;
+		}
+
+		const disableSystemDetection = async () => {
+			if (configurationService.getValue(ThemeSettings.DETECT_COLOR_SCHEME)) {
+				await configurationService.updateValue(ThemeSettings.DETECT_COLOR_SCHEME, false);
+			}
+		};
+
+		const options = {
+			installMessage: localize('installColorThemes', "Install Additional Color Themes..."),
+			browseMessage: '$(plus) ' + localize('browseColorThemes', "Browse Additional Color Themes..."),
+			placeholderMessage: localize('themes.selectTheme.orbit', "Select Color Theme (Up/Down Keys to Preview)"),
+			marketplaceTag: 'category:themes',
+			includeMarketplaceEntry: false,
+			activeItemId,
+			toggles: [modeConfigureToggle],
+			onToggle: async (_toggle, picker) => {
+				picker.hide();
+				await preferencesService.openSettings({ query: ThemeSettings.DETECT_COLOR_SCHEME });
+			},
+			onSelectSystem: async () => {
+				await configurationService.updateValue(ThemeSettings.DETECT_COLOR_SCHEME, true);
+				const systemTheme = getSystemTheme();
+				if (systemTheme) {
+					await themeService.setColorTheme(systemTheme, 'auto');
+				}
+			},
+			onPreviewSystem: () => {
+				const systemTheme = getSystemTheme();
+				if (systemTheme) {
+					themeService.setColorTheme(systemTheme, 'preview').then(undefined, onUnexpectedError);
+				}
+			},
+			onBeforeApplyTheme: disableSystemDetection,
+			getCustomThemePicks: () => {
+				const customThemes = themes.filter(t => !isOrbitTheme(t));
+				const lightEntries = toEntries(customThemes.filter(t => t.type === ColorScheme.LIGHT), localize('themes.category.light', "light themes"));
+				const darkEntries = toEntries(customThemes.filter(t => t.type === ColorScheme.DARK), localize('themes.category.dark', "dark themes"));
+				const hcEntries = toEntries(customThemes.filter(t => isHighContrast(t.type)), localize('themes.category.hc', "high contrast themes"));
+				if (hostColorSchemeService.dark) {
+					return [...darkEntries, ...lightEntries, ...hcEntries];
+				}
+				return [...lightEntries, ...darkEntries, ...hcEntries];
+			},
+			customThemesTitle: localize('themes.custom.title', "Custom Themes"),
+			customThemesPlaceholder: localize('themes.custom.placeholder', "Select Custom Color Theme (Up/Down Keys to Preview)"),
+		} satisfies InstalledThemesPickerOptions;
+
+		const setTheme = (theme: IWorkbenchTheme | undefined, settingsTarget: ThemeSettingTarget) => themeService.setColorTheme(theme as IWorkbenchColorTheme, settingsTarget);
+		const getMarketplaceColorThemes = (publisher: string, name: string, version: string) => themeService.getMarketplaceColorThemes(publisher, name, version);
+
+		const picker = instantiationService.createInstance(InstalledThemesPicker, options, setTheme, getMarketplaceColorThemes);
+		await picker.openQuickPick(picks, currentTheme);
 	}
 });
 
@@ -796,7 +1012,7 @@ registerAction2(class extends Action2 {
 			}, applyTheme ? 0 : 200);
 		};
 
-		const marketplaceThemePicker = instantiationService.createInstance(MarketplaceThemesPicker, getMarketplaceColorThemes, marketplaceTag);
+		const marketplaceThemePicker = instantiationService.createInstance(MarketplaceThemesPicker, getMarketplaceColorThemes, marketplaceTag, undefined);
 		await marketplaceThemePicker.openQuickPick('', themeService.getColorTheme(), selectTheme).then(undefined, onUnexpectedError);
 	}
 });
