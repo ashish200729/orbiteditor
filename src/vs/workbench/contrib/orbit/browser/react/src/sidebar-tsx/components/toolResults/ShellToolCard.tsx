@@ -340,6 +340,10 @@ export const ShellToolCard = ({ toolMessage, threadId }: ShellToolCardProps) => 
 							</div>
 						)}
 
+						{(!errorText && isRunning && isExpanded && !outputText.trim()) && (
+							<div className="text-void-fg-4/55 italic">Running command…</div>
+						)}
+
 						{(!errorText && ((outputText.trim() && !isRunning) || (isRunning && isExpanded && outputText.trim()))) &&
 							outputText.split('\n').map((line, idx) => (
 								<ShellOutputLine key={idx} line={line} />

@@ -219,23 +219,46 @@ export const RunnersSection = () => {
 		if (!copyRunnerId) {
 			return
 		}
+		let cancelled = false
 		const last = runnerService.getLastAutoCopyChatProviderResult(copyRunnerId)
 		if (last) {
 			setAutoCopyResult(last)
 		}
 		void (async () => {
-			const cat = await runnerService.fetchProviderCatalog(copyRunnerId)
-			if (!cat.ok) {
-				return
+			try {
+				const cat = await runnerService.fetchProviderCatalog(copyRunnerId)
+				if (cancelled) {
+					return
+				}
+				if (!cat.ok) {
+					setCopyErr(cat.error)
+					setCatalogText(null)
+					setSyncStatuses([])
+					return
+				}
+				setCopyErr(null)
+				setCatalogText(
+					cat.providers.length === 0
+						? 'No providers on runner yet.'
+						: cat.providers.map(p => `${p.displayName} (${p.providerId}) · ${p.models.length} models · credential=${p.hasCredential ? 'yes' : 'no'}`).join('\n'),
+				)
+				const statuses = await computeProviderSyncStatuses(settingsState.settingsOfProvider, cat.providers)
+				if (cancelled) {
+					return
+				}
+				setSyncStatuses(statuses)
+			} catch (e) {
+				if (cancelled) {
+					return
+				}
+				setCopyErr(e instanceof Error ? e.message : String(e))
+				setCatalogText(null)
+				setSyncStatuses([])
 			}
-			setCatalogText(
-				cat.providers.length === 0
-					? 'No providers on runner yet.'
-					: cat.providers.map(p => `${p.displayName} (${p.providerId}) · ${p.models.length} models · credential=${p.hasCredential ? 'yes' : 'no'}`).join('\n'),
-			)
-			const statuses = await computeProviderSyncStatuses(settingsState.settingsOfProvider, cat.providers)
-			setSyncStatuses(statuses)
 		})()
+		return () => {
+			cancelled = true
+		}
 	}, [runnerService, copyRunnerId, settingsState.settingsOfProvider])
 
 	const onPair = useCallback(async () => {

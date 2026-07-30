@@ -38,6 +38,7 @@ import './marketplaceCatalogService.js'
 
 // register css
 import './media/void.css'
+import './media/explorer.css'
 
 // update (frontend part, also see platform/)
 import './orbitUpdateActions.js'

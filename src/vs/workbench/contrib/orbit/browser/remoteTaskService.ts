@@ -17,6 +17,7 @@ import { assertNoUnsupportedCapabilities, defaultRemoteTaskCapabilities } from '
 import {
 	createRunnerEnvelope,
 	formatRunnerError,
+	isRunnerTaskState,
 	parseRunnerWireJson,
 	RUNNER_HEARTBEAT_INTERVAL_MS,
 	RUNNER_V1_CAPABILITIES,
@@ -63,6 +64,10 @@ const HEARTBEAT_ACK_TIMEOUT_MS = 45_000;
  */
 const MAX_RECONNECT_ATTEMPTS = 30;
 
+/** Bounded retries for retriable task.create (e.g. continuation workspace lock). */
+const MAX_CREATE_RETRIES = 5;
+const CREATE_RETRY_BASE_MS = 1_000;
+
 /** Soft warn when persisted remote-task summaries approach the retention cap. */
 const MAX_PERSISTED_TASKS = 100;
 
@@ -80,6 +85,9 @@ type Session = {
 	/** Fail-closed watchdog: if the task stays in CREATED/QUEUED with no
 	 * progress events for this long after a connect attempt, mark it FAILED. */
 	connectWatchdogTimer?: ReturnType<typeof setTimeout>;
+	/** Retries a retriable task.create without leaving the UI spinning forever. */
+	createRetryTimer?: ReturnType<typeof setTimeout>;
+	createRetryCount: number;
 	lastHeartbeatAckAt?: number;
 	outbox: RunnerEnvelope[];
 	events: RunnerTaskEventPayload[];
@@ -132,6 +140,7 @@ class RemoteTaskService extends Disposable implements IRemoteTaskService {
 				if (session.heartbeatTimer) { mainWindow.clearInterval(session.heartbeatTimer); }
 				if (session.closeTimer) { clearTimeout(session.closeTimer); }
 				if (session.connectWatchdogTimer) { clearTimeout(session.connectWatchdogTimer); }
+				if (session.createRetryTimer) { clearTimeout(session.createRetryTimer); }
 				try { session.ws?.close(); } catch { /* ignore */ }
 			}
 			if (this._persistTimer) { clearTimeout(this._persistTimer); }
@@ -200,6 +209,7 @@ class RemoteTaskService extends Disposable implements IRemoteTaskService {
 				authenticated: false,
 				reconnecting: false,
 				reconnectAttempts: 0,
+				createRetryCount: 0,
 				outbox: [],
 				events: [],
 				lastAckSeq: -1,
@@ -227,11 +237,12 @@ class RemoteTaskService extends Disposable implements IRemoteTaskService {
 		const session = this._sessions.get(taskId);
 		if (!session) { return; }
 		session.pendingCancelReason = reason ?? 'Cancelled from Orbit Editor';
-		// If we never authenticated, the runner never accepted the task — fail
-		// closed locally so the UI stops showing Running immediately instead
-		// of waiting for a task.cancel ack that will never come.
+		// If we never authenticated, the runner never accepted the task — mark
+		// CANCELLED locally so the UI stops immediately instead of waiting for
+		// a task.cancel ack that will never come.
 		if (!session.authenticated && !isTerminalTaskState(session.summary.state)) {
-			this._failClosed(session, session.pendingCancelReason, 'cancelled');
+			this._terminateSession(session, 'CANCELLED', session.pendingCancelReason);
+			session.pendingCancelReason = undefined;
 			return;
 		}
 		await this._persistSummaries();
@@ -254,6 +265,12 @@ class RemoteTaskService extends Disposable implements IRemoteTaskService {
 			if (s) {
 				s.wantOpen = true;
 				s.reconnectAttempts = 0;
+				s.reconnecting = true;
+				// Manual reconnect resumes the stream — do not replay a stale cancel.
+				if (isTerminalTaskState(s.summary.state)) {
+					s.pendingCancelReason = undefined;
+				}
+				this._onDidChangeTasks.fire();
 				await this._ensureSubscribed(s, true);
 			}
 			return;
@@ -292,6 +309,7 @@ class RemoteTaskService extends Disposable implements IRemoteTaskService {
 			if (session.heartbeatTimer) { mainWindow.clearInterval(session.heartbeatTimer); }
 			if (session.closeTimer) { clearTimeout(session.closeTimer); }
 			if (session.connectWatchdogTimer) { clearTimeout(session.connectWatchdogTimer); }
+			if (session.createRetryTimer) { clearTimeout(session.createRetryTimer); }
 			try { session.ws?.close(); } catch { /* ignore */ }
 			this._sessions.delete(taskId);
 			removed = true;
@@ -423,23 +441,16 @@ class RemoteTaskService extends Disposable implements IRemoteTaskService {
 			session.reconnecting = false;
 			session.reconnectAttempts = 0;
 			session.lastHeartbeatAckAt = Date.now();
-			// Auth succeeded — clear the connect watchdog. The heartbeat
-			// timeout (45s without ack) takes over from here.
-			this._clearConnectWatchdog(session);
+			// Auth succeeded. Keep the create/connect watchdog armed until the
+			// task is created or we observe progress — otherwise a retriable
+			// task.create rejection leaves the UI spinning forever.
+			if (session.pendingCreate) {
+				this._armConnectWatchdog(session);
+			} else {
+				this._clearConnectWatchdog(session);
+			}
 				if (session.pendingCreate && session.summary.git && session.summary.model && session.summary.chatMode) {
-					ws.send(JSON.stringify(createRunnerEnvelope('task.create', {
-						taskId: session.taskId,
-						parentTaskId: session.summary.parentTaskId,
-						prompt: session.summary.prompt,
-						model: session.summary.model,
-						git: session.summary.git,
-						requestedCapabilities: defaultRemoteTaskCapabilities(),
-						metadata: {
-							chatMode: session.summary.chatMode,
-							editorThreadId: session.summary.editorThreadId,
-							autoApprove: session.summary.autoApprove ?? {},
-						},
-					})));
+					this._sendTaskCreate(session, ws);
 				} else {
 					ws.send(JSON.stringify(createRunnerEnvelope('task.subscribe', {
 						taskId: session.taskId,
@@ -463,10 +474,14 @@ class RemoteTaskService extends Disposable implements IRemoteTaskService {
 					ws.send(JSON.stringify(queued));
 				}
 				if (session.pendingCancelReason) {
-					ws.send(JSON.stringify(createRunnerEnvelope('task.cancel', {
-						taskId: session.taskId,
-						reason: session.pendingCancelReason,
-					})));
+					if (isTerminalTaskState(session.summary.state)) {
+						session.pendingCancelReason = undefined;
+					} else {
+						ws.send(JSON.stringify(createRunnerEnvelope('task.cancel', {
+							taskId: session.taskId,
+							reason: session.pendingCancelReason,
+						})));
+					}
 				}
 				if (session.pendingApprovalResponse) {
 					ws.send(JSON.stringify(createRunnerEnvelope('approval.response', session.pendingApprovalResponse)));
@@ -505,6 +520,7 @@ class RemoteTaskService extends Disposable implements IRemoteTaskService {
 					// and new submits are allowed. User can still click Reconnect.
 					session.reconnecting = false;
 					session.wantOpen = false;
+					session.pendingCancelReason = undefined;
 					const applied = applyTaskStateTransition(session.summary.state, 'LOST');
 					session.summary = {
 						...session.summary,
@@ -539,6 +555,8 @@ class RemoteTaskService extends Disposable implements IRemoteTaskService {
 			const payload = msg.payload as { taskId: string; state: RunnerTaskState };
 			if (payload.taskId !== session.taskId) { return; }
 			session.pendingCreate = false;
+			session.createRetryCount = 0;
+			this._clearCreateRetry(session);
 			this._clearConnectWatchdog(session);
 			session.summary = { ...session.summary, state: payload.state, lastError: undefined, updatedAt: Date.now() };
 				this._sendOnSession(session, createRunnerEnvelope('task.subscribe', { taskId: session.taskId, fromSeq: session.lastAckSeq + 1 }));
@@ -555,8 +573,11 @@ class RemoteTaskService extends Disposable implements IRemoteTaskService {
 			};
 			if (payload.taskId !== session.taskId) { return; }
 			this._clearConnectWatchdog(session);
+			this._clearCreateRetry(session);
 			session.summary = { ...session.summary, state: payload.state, lastError: payload.error, updatedAt: Date.now() };
-				if (isTerminalTaskState(payload.state)) session.pendingCancelReason = undefined;
+				if (isTerminalTaskState(payload.state)) {
+					session.pendingCancelReason = undefined;
+				}
 				session.pendingPermission = payload.pendingApproval ? {
 					taskId: payload.pendingApproval.taskId,
 					approvalId: payload.pendingApproval.approvalId,
@@ -572,6 +593,7 @@ class RemoteTaskService extends Disposable implements IRemoteTaskService {
 					this._maybeMaterializeRemoteTurn(session);
 				}
 				this._persistSummariesDebounced();
+				this._syncBusyStatus();
 				this._onDidChangeTasks.fire();
 				break;
 			}
@@ -634,6 +656,23 @@ class RemoteTaskService extends Disposable implements IRemoteTaskService {
 						session.pendingApprovalResponse = undefined;
 					}
 				}
+				// Replayed (and live-duplicated) state events must update summary.state.
+				// Live `task.state` frames are easy to miss across the subscribe
+				// boundary; without this, terminal transitions leave the UI Running forever.
+				if (event.kind === 'state') {
+					const data = event.data as { to?: unknown; reason?: unknown } | undefined;
+					if (isRunnerTaskState(data?.to)) {
+						const reason = typeof data?.reason === 'string' ? data.reason : undefined;
+						this._updateState(session, data.to, reason);
+						if (isTerminalTaskState(data.to)) {
+							session.pendingCancelReason = undefined;
+							session.wantOpen = false;
+							this._clearCreateRetry(session);
+							this._scheduleTerminalClose(session);
+							this._maybeMaterializeRemoteTurn(session);
+						}
+					}
+				}
 				this._sendOnSession(session, createRunnerEnvelope('event.ack', {
 					taskId: session.taskId,
 					lastAckSeq: session.lastAckSeq,
@@ -647,6 +686,7 @@ class RemoteTaskService extends Disposable implements IRemoteTaskService {
 			const payload = msg.payload as { taskId: string; from: RunnerTaskState; to: RunnerTaskState; reason?: string };
 			if (payload.taskId !== session.taskId) { return; }
 			session.pendingCreate = false;
+			this._clearCreateRetry(session);
 			this._clearConnectWatchdog(session);
 			this._updateState(session, payload.to, payload.reason);
 				if (isTerminalTaskState(payload.to)) {
@@ -683,11 +723,17 @@ class RemoteTaskService extends Disposable implements IRemoteTaskService {
 				this._failClosed(session, formatRunnerError(err), err.code);
 				return;
 			}
+			if (session.pendingCreate && err.retriable) {
+				this._scheduleCreateRetry(session, formatRunnerError(err));
+				return;
+			}
+			// Reconnect after LOST (or any non-create path): surface a durable diagnosis.
 			session.summary = {
 				...session.summary,
 				lastError: formatRunnerError(err),
 				updatedAt: Date.now(),
 			};
+			this._persistSummariesDebounced();
 			this._onDidChangeTasks.fire();
 			break;
 		}
@@ -714,12 +760,25 @@ class RemoteTaskService extends Disposable implements IRemoteTaskService {
 		}
 		session.connectWatchdogTimer = setTimeout(() => {
 			session.connectWatchdogTimer = undefined;
-			// Only fail closed if we're still stuck pre-progress.
+			// Only fail closed if we're still stuck pre-progress (or a LOST reattach hung).
 			if (session.wantOpen && !isTerminalTaskState(session.summary.state)
-				&& (session.summary.state === 'CREATED' || session.summary.state === 'QUEUED')
+				&& (session.summary.state === 'CREATED' || session.summary.state === 'QUEUED' || session.pendingCreate)
 				&& session.events.length === 0) {
 				this._logService.warn(`[orbit-runner] connect watchdog fired for ${session.taskId} (state=${session.summary.state})`);
 				this._failClosed(session, 'Timed out connecting to the Self-hosted Runner. Reconnect or check the runner status.', 'connect_timeout');
+				return;
+			}
+			if (session.wantOpen && session.summary.state === 'LOST' && !session.connected) {
+				this._logService.warn(`[orbit-runner] reconnect watchdog fired for LOST task ${session.taskId}`);
+				session.wantOpen = false;
+				session.reconnecting = false;
+				session.summary = {
+					...session.summary,
+					lastError: 'Could not reattach to the Self-hosted Runner. Check that the runner is online, then click Reconnect again — or start a new task.',
+					updatedAt: Date.now(),
+				};
+				this._persistSummariesDebounced();
+				this._onDidChangeTasks.fire();
 			}
 		}, CONNECT_WATCHDOG_MS);
 	}
@@ -731,18 +790,97 @@ class RemoteTaskService extends Disposable implements IRemoteTaskService {
 		}
 	}
 
+	private _clearCreateRetry(session: Session): void {
+		if (session.createRetryTimer) {
+			clearTimeout(session.createRetryTimer);
+			session.createRetryTimer = undefined;
+		}
+	}
+
+	private _sendTaskCreate(session: Session, ws: WebSocket): void {
+		if (!session.summary.git || !session.summary.model || !session.summary.chatMode) {
+			return;
+		}
+		ws.send(JSON.stringify(createRunnerEnvelope('task.create', {
+			taskId: session.taskId,
+			parentTaskId: session.summary.parentTaskId,
+			prompt: session.summary.prompt,
+			model: session.summary.model,
+			git: session.summary.git,
+			requestedCapabilities: defaultRemoteTaskCapabilities(),
+			metadata: {
+				chatMode: session.summary.chatMode,
+				editorThreadId: session.summary.editorThreadId,
+				autoApprove: session.summary.autoApprove ?? {},
+			},
+		})));
+	}
+
+	private _scheduleCreateRetry(session: Session, message: string): void {
+		session.summary = {
+			...session.summary,
+			lastError: message,
+			updatedAt: Date.now(),
+		};
+		this._persistSummariesDebounced();
+		this._onDidChangeTasks.fire();
+
+		if (session.createRetryCount >= MAX_CREATE_RETRIES) {
+			this._failClosed(
+				session,
+				`${message} (gave up after ${MAX_CREATE_RETRIES} retries)`,
+				'create_retries_exhausted',
+			);
+			return;
+		}
+
+		session.createRetryCount += 1;
+		this._clearCreateRetry(session);
+		this._armConnectWatchdog(session);
+		const delay = Math.min(15_000, CREATE_RETRY_BASE_MS * (2 ** (session.createRetryCount - 1)));
+		this._logService.info(
+			`[orbit-runner] retrying task.create for ${session.taskId} in ${delay}ms (attempt ${session.createRetryCount}/${MAX_CREATE_RETRIES})`,
+		);
+		session.createRetryTimer = setTimeout(() => {
+			session.createRetryTimer = undefined;
+			if (!session.pendingCreate || isTerminalTaskState(session.summary.state)) {
+				return;
+			}
+			const ws = session.ws;
+			if (!ws || ws.readyState !== WebSocket.OPEN || !session.authenticated) {
+				// Socket dropped — _ensureSubscribed / onclose will re-send create after auth.
+				return;
+			}
+			this._sendTaskCreate(session, ws);
+		}, delay);
+	}
+
 	/**
 	 * Fail closed (R2): mark the task terminal FAILED, set lastError, stop
 	 * reconnecting, clear the running map, and materialize the remote turn so
 	 * the chat shows a visible error bubble instead of an eternal spinner.
 	 */
 	private _failClosed(session: Session, message: string, code: string | undefined, ws?: WebSocket): void {
+		this._terminateSession(session, 'FAILED', message, code, ws, true);
+	}
+
+	/** User/editor-initiated cancel or auth/connect failure with an explicit terminal state. */
+	private _terminateSession(
+		session: Session,
+		state: 'FAILED' | 'CANCELLED' | 'LOST',
+		message: string,
+		code?: string,
+		ws?: WebSocket,
+		materializeOnlyIfPendingCreate = false,
+	): void {
 		const wasPendingCreate = session.pendingCreate;
 		session.pendingCreate = false;
 		session.wantOpen = false;
 		session.reconnecting = false;
 		session.connected = false;
 		session.authenticated = false;
+		session.pendingCancelReason = undefined;
+		this._clearCreateRetry(session);
 		if (session.connectWatchdogTimer) {
 			clearTimeout(session.connectWatchdogTimer);
 			session.connectWatchdogTimer = undefined;
@@ -751,11 +889,10 @@ class RemoteTaskService extends Disposable implements IRemoteTaskService {
 			mainWindow.clearInterval(session.heartbeatTimer);
 			session.heartbeatTimer = undefined;
 		}
-		// Only flip to FAILED if not already terminal — preserves COMPLETED etc.
 		if (!isTerminalTaskState(session.summary.state)) {
 			session.summary = {
 				...session.summary,
-				state: 'FAILED',
+				state,
 				lastError: message,
 				updatedAt: Date.now(),
 			};
@@ -763,10 +900,7 @@ class RemoteTaskService extends Disposable implements IRemoteTaskService {
 			session.summary = { ...session.summary, lastError: message, updatedAt: Date.now() };
 		}
 		void this._persistSummaries();
-		// Materialize so an in-flight remote turn surfaces an error bubble
-		// instead of disappearing. Skip when there was never a pending create
-		// (e.g. reconnect of an already-materialized task) to avoid dupes.
-		if (wasPendingCreate) {
+		if (!materializeOnlyIfPendingCreate || wasPendingCreate) {
 			this._maybeMaterializeRemoteTurn(session);
 		}
 		this._syncBusyStatus();
@@ -794,10 +928,11 @@ class RemoteTaskService extends Disposable implements IRemoteTaskService {
 
 	private _updateState(session: Session, to: RunnerTaskState, message?: string): void {
 		const applied = applyTaskStateTransition(session.summary.state, to);
+		const terminalWithReason = to === 'FAILED' || to === 'LOST' || to === 'CANCELLED' || to === 'TIMED_OUT';
 		session.summary = {
 			...session.summary,
 			state: applied.state,
-			lastError: applied.error ?? (to === 'FAILED' || to === 'LOST' ? message : session.summary.lastError),
+			lastError: applied.error ?? (terminalWithReason && message ? message : session.summary.lastError),
 			updatedAt: Date.now(),
 		};
 		if (applied.error) {
@@ -890,13 +1025,16 @@ class RemoteTaskService extends Disposable implements IRemoteTaskService {
 							authenticated: false,
 							reconnecting: false,
 							reconnectAttempts: 0,
+							createRetryCount: 0,
 							outbox: [],
 							events,
 							lastAckSeq,
 							summary: { ...summary, lastSeq: lastAckSeq },
 							wantOpen: !isTerminalTaskState(summary.state),
 							pendingCreate: summary.state === 'CREATED',
-							pendingCancelReason: storedSession.pendingCancelReason,
+							pendingCancelReason: isTerminalTaskState(summary.state)
+								? undefined
+								: storedSession.pendingCancelReason,
 							pendingApprovalResponse: storedSession.pendingApprovalResponse,
 							pendingPermission: storedSession.pendingPermission,
 						});

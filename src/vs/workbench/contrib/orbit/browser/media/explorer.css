@@ -1,0 +1,164 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Orbit. All rights reserved.
+ *  Licensed under the MIT License. See License.txt for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* ============================================================================
+   ORBIT — Explorer row cards
+   ----------------------------------------------------------------------------
+   CRITICAL: Do NOT set overflow on `.monaco-list` or `.monaco-list-rows`.
+   Monaco virtualizes rows with position:absolute. Any non-visible overflow on
+   those containers forces overflow-y away from `visible` and blows row gaps.
+   Clip only on the outer view + each individual row.
+   Row height stays stock 22px — paint-only card, no size change.
+   ========================================================================== */
+
+.monaco-workbench .explorer-folders-view,
+.monaco-workbench .open-editors {
+	--orbit-explorer-card-radius: 5px;
+	--orbit-explorer-card-inset-x: 4px;
+}
+
+/* Clip horizontal spill at the VIEW edge only — never on list-rows. */
+.monaco-workbench .explorer-folders-view,
+.monaco-workbench .open-editors {
+	overflow-x: hidden;
+	max-width: 100%;
+}
+
+/* Per-row clip for the card / label. Does not affect virtualization. */
+.monaco-workbench .explorer-folders-view .monaco-list-rows > .monaco-list-row,
+.monaco-workbench .open-editors .monaco-list-rows > .monaco-list-row {
+	max-width: 100%;
+	box-sizing: border-box;
+	overflow: hidden;
+}
+
+/* Allow labels to shrink/ellipsis in a narrow sidebar */
+.monaco-workbench .explorer-folders-view .monaco-list-rows > .monaco-list-row .monaco-tl-contents,
+.monaco-workbench .explorer-folders-view .monaco-list-rows > .monaco-list-row .explorer-item,
+.monaco-workbench .explorer-folders-view .monaco-list-rows > .monaco-list-row .monaco-icon-label,
+.monaco-workbench .explorer-folders-view .monaco-list-rows > .monaco-list-row .monaco-icon-label > .monaco-icon-label-container,
+.monaco-workbench .explorer-folders-view .monaco-list-rows > .monaco-list-row .monaco-icon-name-container,
+.monaco-workbench .open-editors .monaco-list-rows > .monaco-list-row .open-editor,
+.monaco-workbench .open-editors .monaco-list-rows > .monaco-list-row .monaco-icon-label {
+	min-width: 0;
+}
+
+.monaco-workbench .explorer-folders-view .monaco-list-rows > .monaco-list-row .explorer-item > a,
+.monaco-workbench .explorer-folders-view .monaco-list-rows > .monaco-list-row .label-name,
+.monaco-workbench .open-editors .monaco-list-rows > .monaco-list-row .label-name {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	min-width: 0;
+}
+
+/* Kill full-bleed list wash; card paints the surface instead.
+   Sticky rows live outside `.monaco-list-rows` — leave them alone. */
+.monaco-workbench:not(.hc-black):not(.hc-light) .explorer-folders-view .monaco-list:not(.drop-target) .monaco-list-rows > .monaco-list-row:not(.drop-target),
+.monaco-workbench:not(.hc-black):not(.hc-light) .open-editors .monaco-list:not(.drop-target) .monaco-list-rows > .monaco-list-row:not(.drop-target) {
+	background-color: transparent !important;
+}
+
+.monaco-workbench .explorer-folders-view .monaco-list-rows > .monaco-list-row > .monaco-tl-row,
+.monaco-workbench .open-editors .monaco-list-rows > .monaco-list-row > .monaco-action-bar,
+.monaco-workbench .open-editors .monaco-list-rows > .monaco-list-row > .open-editor,
+.monaco-workbench .open-editors .monaco-list-rows > .monaco-list-row > .editor-group {
+	position: relative;
+	z-index: 1;
+}
+
+/* Card fills the full 22px row height (top/bottom = 0). Side inset only. */
+.monaco-workbench:not(.hc-black):not(.hc-light) .explorer-folders-view .monaco-list-rows > .monaco-list-row:not(.drop-target-before):not(.drop-target-after)::before,
+.monaco-workbench:not(.hc-black):not(.hc-light) .open-editors .monaco-list-rows > .monaco-list-row:not(.drop-target-before):not(.drop-target-after)::before {
+	content: "";
+	position: absolute;
+	inset: 0 var(--orbit-explorer-card-inset-x);
+	border-radius: var(--orbit-explorer-card-radius);
+	background-color: transparent;
+	box-shadow: none;
+	pointer-events: none;
+	z-index: 0;
+	box-sizing: border-box;
+}
+
+.monaco-workbench:not(.reduce-motion):not(.hc-black):not(.hc-light) .explorer-folders-view .monaco-list-rows > .monaco-list-row:not(.drop-target-before):not(.drop-target-after)::before,
+.monaco-workbench:not(.reduce-motion):not(.hc-black):not(.hc-light) .open-editors .monaco-list-rows > .monaco-list-row:not(.drop-target-before):not(.drop-target-after)::before {
+	transition: background-color 100ms ease-out, box-shadow 100ms ease-out;
+}
+
+.monaco-workbench:not(.hc-black):not(.hc-light) .explorer-folders-view .monaco-list:not(.drop-target):not(.dragging) .monaco-list-rows > .monaco-list-row:hover:not(.selected):not(.focused)::before,
+.monaco-workbench:not(.hc-black):not(.hc-light) .open-editors .monaco-list:not(.drop-target):not(.dragging) .monaco-list-rows > .monaco-list-row:hover:not(.selected):not(.focused)::before {
+	background-color: var(--vscode-list-hoverBackground);
+}
+
+.monaco-workbench:not(.hc-black):not(.hc-light) .explorer-folders-view .monaco-list-rows > .monaco-list-row.selected::before,
+.monaco-workbench:not(.hc-black):not(.hc-light) .open-editors .monaco-list-rows > .monaco-list-row.selected::before {
+	background-color: var(--vscode-list-inactiveSelectionBackground);
+}
+
+.monaco-workbench:not(.hc-black):not(.hc-light) .explorer-folders-view .monaco-list-rows > .monaco-list-row.focused::before,
+.monaco-workbench:not(.hc-black):not(.hc-light) .explorer-folders-view .monaco-list:focus .monaco-list-rows > .monaco-list-row.focused::before,
+.monaco-workbench:not(.hc-black):not(.hc-light) .explorer-folders-view .monaco-list:focus .monaco-list-rows > .monaco-list-row.focused.selected::before,
+.monaco-workbench:not(.hc-black):not(.hc-light) .open-editors .monaco-list-rows > .monaco-list-row.focused::before,
+.monaco-workbench:not(.hc-black):not(.hc-light) .open-editors .monaco-list:focus .monaco-list-rows > .monaco-list-row.focused::before,
+.monaco-workbench:not(.hc-black):not(.hc-light) .open-editors .monaco-list:focus .monaco-list-rows > .monaco-list-row.focused.selected::before {
+	background-color: var(--vscode-list-activeSelectionBackground, var(--vscode-list-focusBackground));
+}
+
+/* Clean soft card selection — no outline ring */
+.monaco-workbench:not(.hc-black):not(.hc-light) .explorer-folders-view .monaco-list:focus .monaco-list-rows > .monaco-list-row.focused::before,
+.monaco-workbench:not(.hc-black):not(.hc-light) .explorer-folders-view .monaco-list:focus .monaco-list-rows > .monaco-list-row.focused.selected::before,
+.monaco-workbench:not(.hc-black):not(.hc-light) .open-editors .monaco-list:focus .monaco-list-rows > .monaco-list-row.focused::before,
+.monaco-workbench:not(.hc-black):not(.hc-light) .open-editors .monaco-list:focus .monaco-list-rows > .monaco-list-row.focused.selected::before {
+	box-shadow: none;
+}
+
+.monaco-workbench:not(.hc-black):not(.hc-light) .explorer-folders-view .monaco-list:focus .monaco-list-rows > .monaco-list-row.focused,
+.monaco-workbench:not(.hc-black):not(.hc-light) .explorer-folders-view .monaco-list:focus .monaco-list-rows > .monaco-list-row.focused.selected,
+.monaco-workbench:not(.hc-black):not(.hc-light) .explorer-folders-view .monaco-list-rows > .monaco-list-row.selected,
+.monaco-workbench:not(.hc-black):not(.hc-light) .open-editors .monaco-list:focus .monaco-list-rows > .monaco-list-row.focused,
+.monaco-workbench:not(.hc-black):not(.hc-light) .open-editors .monaco-list:focus .monaco-list-rows > .monaco-list-row.focused.selected,
+.monaco-workbench:not(.hc-black):not(.hc-light) .open-editors .monaco-list-rows > .monaco-list-row.selected {
+	outline: none !important;
+	outline-offset: 0 !important;
+}
+
+/* Sticky scroll: opaque, no card pseudo */
+.monaco-workbench .explorer-folders-view .monaco-tree-sticky-container,
+.monaco-workbench .explorer-folders-view .monaco-tree-sticky-container .monaco-tree-sticky-row.monaco-list-row {
+	background-color: var(--vscode-sideBarStickyScroll-background, var(--vscode-sideBar-background)) !important;
+}
+
+.monaco-workbench .explorer-folders-view .monaco-tree-sticky-container .monaco-tree-sticky-row.monaco-list-row::before {
+	content: none !important;
+	display: none !important;
+}
+
+/* Twistie */
+.monaco-workbench .explorer-folders-view .monaco-list-rows > .monaco-list-row .monaco-tl-twistie {
+	opacity: 0.55;
+	transform: translateX(1px);
+	flex-shrink: 0;
+}
+
+.monaco-workbench:not(.reduce-motion) .explorer-folders-view .monaco-list-rows > .monaco-list-row .monaco-tl-twistie {
+	transition: opacity 100ms ease-out;
+}
+
+.monaco-workbench:not(.reduce-motion) .explorer-folders-view .monaco-list-rows > .monaco-list-row .monaco-tl-twistie::before {
+	display: inline-block;
+	transform-origin: center;
+	transition: transform 160ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.monaco-workbench .explorer-folders-view .monaco-list-rows > .monaco-list-row:hover .monaco-tl-twistie,
+.monaco-workbench .explorer-folders-view .monaco-list-rows > .monaco-list-row.focused .monaco-tl-twistie,
+.monaco-workbench .explorer-folders-view .monaco-list-rows > .monaco-list-row.selected .monaco-tl-twistie {
+	opacity: 0.95;
+}
+
+.monaco-workbench .explorer-folders-view .explorer-folders-view.highlight .monaco-list .monaco-tl-twistie {
+	opacity: 0.3;
+}

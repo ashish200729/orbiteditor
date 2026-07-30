@@ -34,6 +34,29 @@ type RemoteSetupParams = {
 	phase?: 'queue' | 'environment' | 'workspace' | 'config';
 };
 
+const findRunningShellIndex = (messages: ChatMessage[]): number => {
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const message = messages[i];
+		if (message.role === 'tool' && message.name === 'Shell' && message.type === 'running_now') {
+			return i;
+		}
+	}
+	return -1;
+};
+
+const appendRunningShellOutput = (messages: ChatMessage[], text: string): void => {
+	if (!text) { return; }
+	const index = findRunningShellIndex(messages);
+	if (index < 0) { return; }
+	const existing = messages[index];
+	if (existing.role !== 'tool' || existing.type !== 'running_now') { return; }
+	const prev = typeof existing.content === 'string' ? existing.content : '';
+	const next = (prev + text).slice(-MAX_SHELL_STREAM_CHARS);
+	messages[index] = { ...existing, content: next };
+};
+
+const MAX_SHELL_STREAM_CHARS = 500_000;
+
 const REMOTE_SETUP_TOOL = 'RemoteSetup' as ToolName;
 
 const dataOf = (event: RunnerTaskEventPayload): EventData =>
@@ -382,6 +405,43 @@ const rememberAssistantIndex = (iteration: number | undefined, index: number): v
 				label,
 				detail,
 			}, 'config');
+			continue;
+		}
+
+		if (event.kind === 'setup.progress') {
+			const progressMessage = textOf(data.message);
+			const phase = textOf(data.phase);
+			if (phase === 'image-pull' || phase === 'container') {
+				upsertLifecycleStep(messages, summary.taskId, {
+					id: phase,
+					label: progressMessage || (phase === 'image-pull' ? 'Downloading task image…' : 'Starting task container…'),
+				}, 'environment');
+			} else if (phase === 'clone' || phase === 'fetch' || phase === 'checkout' || phase === 'workspace-ready') {
+				upsertLifecycleStep(messages, summary.taskId, {
+					id: phase,
+					label: progressMessage || 'Setting up workspace…',
+				}, 'workspace');
+			} else if (phase === 'finalize') {
+				upsertLifecycleStep(messages, summary.taskId, {
+					id: 'finalize',
+					label: progressMessage || 'Preparing handoff…',
+				}, 'environment');
+			} else if (progressMessage) {
+				setLifecycleProgress(messages, summary.taskId, progressMessage);
+			}
+			continue;
+		}
+
+		if (event.kind === 'shell.output') {
+			const streamText = textOf(data.text);
+			if (streamText) {
+				appendRunningShellOutput(messages, streamText);
+			}
+			continue;
+		}
+
+		if (event.kind === 'shell.start' || event.kind === 'shell.end') {
+			// Lifecycle markers only — output is streamed via shell.output.
 			continue;
 		}
 

@@ -36,7 +36,7 @@
 
 		// ─── Side Bar ───────────────────────────────────────────
 		"sideBar.background": "#141414",
-		"sideBar.foreground": "#E4E4E48C",
+		"sideBar.foreground": "#E4E4E4B3",
 		"sideBar.border": "#E4E4E412",
 		"sideBar.dropBackground": "#E4E4E41A",
 		"sideBarTitle.foreground": "#E4E4E4CC",
@@ -158,19 +158,20 @@
 		"minimapGutter.modifiedBackground": "#6CB6FF",
 		"minimapGutter.deletedBackground": "#F14C4C",
 
-		// ─── Lists & Trees ──────────────────────────────────────
-		"list.activeSelectionBackground": "#E4E4E418",
+		// ─── Lists & Trees (explorer / sidebar) ─────────────────
+		// Soft neutral washes for inset explorer cards; focus ring is the accent.
+		"list.activeSelectionBackground": "#E4E4E41F",
 		"list.activeSelectionForeground": "#E4E4E4",
 		"list.activeSelectionIconForeground": "#E4E4E4",
-		"list.inactiveSelectionBackground": "#E4E4E412",
-		"list.inactiveSelectionForeground": "#E4E4E4CC",
-		"list.inactiveFocusBackground": "#E4E4E412",
-		"list.hoverBackground": "#E4E4E40D",
-		"list.hoverForeground": "#E4E4E4CC",
-		"list.focusBackground": "#E4E4E418",
+		"list.inactiveSelectionBackground": "#E4E4E416",
+		"list.inactiveSelectionForeground": "#E4E4E4E0",
+		"list.inactiveFocusBackground": "#E4E4E416",
+		"list.hoverBackground": "#E4E4E412",
+		"list.hoverForeground": "#E4E4E4E0",
+		"list.focusBackground": "#E4E4E41F",
 		"list.focusForeground": "#E4E4E4",
-		"list.focusOutline": "#0078D4",
-		"list.focusAndSelectionOutline": "#0078D4",
+		"list.focusOutline": "#6CADDF",
+		"list.focusAndSelectionOutline": "#6CADDF",
 		"list.dropBackground": "#E4E4E41A",
 		"list.highlightForeground": "#18A3FF",
 		"list.invalidItemForeground": "#F14C4C",
@@ -182,8 +183,8 @@
 		"listFilterWidget.noMatchesOutline": "#F14C4C",
 		"listFilterWidget.shadow": "#00000066",
 
-		"tree.indentGuidesStroke": "#E4E4E420",
-		"tree.inactiveIndentGuidesStroke": "#E4E4E412",
+		"tree.indentGuidesStroke": "#E4E4E430",
+		"tree.inactiveIndentGuidesStroke": "#E4E4E418",
 		"tree.tableColumnsBorder": "#E4E4E412",
 		"tree.tableOddRowsBackground": "#E4E4E406",
 

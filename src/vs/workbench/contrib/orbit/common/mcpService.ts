@@ -152,7 +152,21 @@ class MCPService extends Disposable implements IMCPService {
 		// the built-in `orbit-ide-browser` server enables/disables live.
 		this._register(voidSettingsService.onDidChangeState(() => {
 			const enabled = voidSettingsService.state.globalSettings.browserAutomationEnabled;
-			this.channel.call('setBrowserAutomationEnabled', { enabled }).catch(() => { /* ignore */ });
+			this.channel.call('setBrowserAutomationEnabled', { enabled }).then(
+				() => {
+					// Clear a prior sync error once the toggle succeeds again.
+					if (this.state.error?.includes('Browser Automation')) {
+						void this._setHasError(undefined);
+					}
+				},
+				(err: unknown) => {
+					const message = err instanceof Error ? err.message : String(err);
+					console.error('Error syncing browser automation enabled flag:', err);
+					void this._setHasError(
+						`Browser Automation could not be ${enabled ? 'enabled' : 'disabled'}: ${message}. Check MCP / main-process logs, then toggle again.`,
+					);
+				},
+			);
 		}));
 
 		// Re-merge when the workspace folders change (e.g. opening a project folder
@@ -193,14 +207,24 @@ class MCPService extends Disposable implements IMCPService {
 				await this.channel.call('setBrowserAutomationEnabled', { enabled });
 			} catch (error) {
 				console.error('Error syncing browser automation enabled flag:', error);
+				const message = error instanceof Error ? error.message : String(error);
+				await this._setHasError(
+					`Browser Automation could not be synced on startup: ${message}. Toggle it in Settings to retry.`,
+				);
 			}
 			try {
 				await this.channel.call('emitBuiltinServers', {});
 			} catch (error) {
 				console.error('Error emitting built-in MCP servers:', error);
+				const message = error instanceof Error ? error.message : String(error);
+				await this._setHasError(
+					`Built-in MCP servers failed to start: ${message}. Open Settings → MCP and refresh, or restart Orbit.`,
+				);
 			}
 		} catch (error) {
 			console.error('Error initializing MCPService:', error);
+			const message = error instanceof Error ? error.message : String(error);
+			await this._setHasError(`MCP failed to initialize: ${message}`);
 		}
 	}
 

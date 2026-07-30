@@ -104,6 +104,10 @@ export function formatRemoteTaskTerminalMessage(
 		const prefix = 'Self-hosted Runner stopped';
 		return err ? `${prefix}: ${err}` : `${prefix}. Reconnect and resubmit to continue.`;
 	}
+	if (state === 'CANCELLED' && isRunnerInfrastructureStopError(err)) {
+		const prefix = 'Self-hosted Runner stopped';
+		return err ? `${prefix}: ${err}` : `${prefix}. Reconnect and resubmit to continue.`;
+	}
 	if (state === 'CANCELLED') {
 		return err ? `Remote task cancelled: ${err}` : 'Remote task cancelled.';
 	}

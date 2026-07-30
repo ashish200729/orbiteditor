@@ -179,6 +179,45 @@ suite('remoteTaskChatMessages', () => {
 		assert.strictEqual(structured.fileContents, '# Welcome\n');
 	});
 
+	test('streams shell.output into the running Shell tool card content', () => {
+		const messages = remoteTaskChatMessages(summary, [
+			event(0, 'tool.start', {
+				toolCallId: 'call_shell',
+				name: 'Shell',
+				args: { command: 'npm test', block_until_ms: 30000 },
+			}),
+			event(1, 'shell.output', { stream: 'stdout', text: 'line 1\n' }),
+			event(2, 'shell.output', { stream: 'stdout', text: 'line 2\n' }),
+			event(3, 'tool.result', {
+				toolCallId: 'call_shell',
+				name: 'Shell',
+				ok: true,
+				output: 'line 1\nline 2\n',
+			}),
+		], { skipUserMessage: true });
+		const shell = messages.find(message => message.role === 'tool' && message.name === 'Shell');
+		assert.ok(shell && shell.role === 'tool');
+		if (shell?.role === 'tool' && shell.type === 'success') {
+			assert.strictEqual(shell.content, 'line 1\nline 2\n');
+		}
+	});
+
+	test('maps setup.progress to RemoteSetup lifecycle steps', () => {
+		const messages = remoteTaskChatMessages(summary, [
+			event(0, 'setup.progress', { phase: 'image-pull', message: 'Downloading the task image — 40%' }),
+			event(1, 'setup.progress', { phase: 'clone', message: 'Cloning acme/repo…' }),
+		], { skipUserMessage: true });
+		const setup = messages.find(message => message.role === 'tool' && message.name === 'RemoteSetup');
+		assert.ok(setup && setup.role === 'tool');
+		if (!setup || setup.role !== 'tool') {
+			return;
+		}
+		assert.strictEqual(setup.type, 'running_now');
+		const params = setup.params as { steps: Array<{ id: string; label: string }> };
+		assert.ok(params.steps.some(step => step.id === 'image-pull'));
+		assert.ok(params.steps.some(step => step.label.includes('Cloning acme/repo')));
+	});
+
 	test('maps Shell tool.result to structured result for ShellToolCard', () => {
 		const messages = remoteTaskChatMessages(summary, [
 			event(0, 'tool.start', {
@@ -372,6 +411,19 @@ suite('remoteTaskChatMessages', () => {
 		if (messages[0]?.role === 'assistant') {
 			assert.ok(messages[0].displayContent.includes('Timed out connecting'));
 			assert.ok(messages[0].displayContent.startsWith('Remote task failed:'));
+		}
+	});
+
+	test('surfaces CANCELLED summary.lastError in terminal transcript', () => {
+		const cancelled: RemoteTaskSummary = {
+			...summary,
+			state: 'CANCELLED',
+			lastError: 'Cancelled from Orbit Editor',
+		};
+		const messages = remoteTaskChatMessages(cancelled, [], { skipUserMessage: true });
+		assert.strictEqual(messages.length, 1);
+		if (messages[0]?.role === 'assistant') {
+			assert.ok(messages[0].displayContent.includes('cancelled'));
 		}
 	});
 

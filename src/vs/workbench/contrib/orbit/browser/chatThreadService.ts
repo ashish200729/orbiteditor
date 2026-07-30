@@ -3198,11 +3198,14 @@ We only need to do it for files that were edited since `from`, ie files between 
 
 	private _trackAgentRun(threadId: string, agentPromise: Promise<void>): void {
 		this._pendingAgentRunByThread.set(threadId, agentPromise);
-		agentPromise.finally(() => {
+		const cleanup = () => {
 			if (this._pendingAgentRunByThread.get(threadId) === agentPromise) {
 				this._pendingAgentRunByThread.delete(threadId);
 			}
-		});
+		};
+		// Use then(cleanup, cleanup) so a rejected agent run does not create an
+		// unhandled rejection on the derived finally() promise.
+		void agentPromise.then(cleanup, cleanup);
 	}
 
 	async waitForThreadAgentRunEnd(threadId: string): Promise<void> {

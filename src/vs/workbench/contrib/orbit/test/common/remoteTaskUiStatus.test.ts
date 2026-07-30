@@ -6,9 +6,11 @@
 import * as assert from 'assert';
 import {
 	commandBarThreadStatus,
+	formatRemoteTaskTerminalMessage,
 	isRemoteChatWaitingForResponse,
 	isRemoteTaskTerminal,
 	isRemoteTaskUiPhaseActive,
+	isRunnerInfrastructureStopError,
 	remoteChatStatusLineLabel,
 	remoteTaskUiPhase,
 	remoteTaskUiPhaseLabel,
@@ -139,6 +141,27 @@ suite('remoteTaskUiStatus', () => {
 			assert.strictEqual(isRemoteTaskUiPhaseActive('failed'), false);
 			assert.strictEqual(isRemoteTaskUiPhaseActive('done'), false);
 			assert.strictEqual(isRemoteTaskUiPhaseActive('idle'), false);
+		});
+	});
+
+	suite('formatRemoteTaskTerminalMessage', () => {
+		test('user cancel → Remote task cancelled', () => {
+			const msg = formatRemoteTaskTerminalMessage('CANCELLED', 'Cancelled from Orbit Editor');
+			assert.ok(msg.includes('cancelled'));
+			assert.ok(!msg.includes('Self-hosted Runner stopped'));
+		});
+
+		test('infrastructure CANCELLED → runner stopped (not user cancel)', () => {
+			const err = 'The Self-hosted Runner stopped while this task was running (deploy, restart, or host signal such as docker compose up --build / docker stop).';
+			assert.strictEqual(isRunnerInfrastructureStopError(err), true);
+			const msg = formatRemoteTaskTerminalMessage('CANCELLED', err);
+			assert.ok(msg.includes('Self-hosted Runner stopped'));
+			assert.ok(!msg.includes('Remote task cancelled'));
+		});
+
+		test('LOST → runner stopped wording', () => {
+			const msg = formatRemoteTaskTerminalMessage('LOST', 'Lost connection');
+			assert.ok(msg.includes('Self-hosted Runner stopped'));
 		});
 	});
 

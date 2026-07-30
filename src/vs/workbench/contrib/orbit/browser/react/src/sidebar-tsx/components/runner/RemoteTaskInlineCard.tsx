@@ -51,6 +51,7 @@ export const RemoteTaskInlineCard = ({
 	const [live, setLive] = useState(() => remoteTaskService.getLiveState(taskId))
 	const [handoffStatus, setHandoffStatus] = useState<string | null>(null)
 	const [handoffOk, setHandoffOk] = useState(false)
+	const [handoffBusy, setHandoffBusy] = useState(false)
 
 	useEffect(() => {
 		const refresh = () => setLive(remoteTaskService.getLiveState(taskId))
@@ -68,7 +69,14 @@ export const RemoteTaskInlineCard = ({
 	}, [taskId, remoteTaskService])
 
 	const onReconnect = useCallback(async () => {
-		await remoteTaskService.reconnect(taskId)
+		setHandoffStatus(null)
+		setHandoffOk(false)
+		try {
+			await remoteTaskService.reconnect(taskId)
+		} catch (e) {
+			setHandoffOk(false)
+			setHandoffStatus(e instanceof Error ? e.message : 'Could not reconnect to the self-hosted runner.')
+		}
 	}, [taskId, remoteTaskService])
 
 	const pending = live?.pendingPermission
@@ -166,99 +174,123 @@ export const RemoteTaskInlineCard = ({
 	const onOpenPr = useCallback(async () => {
 		setHandoffStatus(null)
 		setHandoffOk(false)
-		const opener = accessor.get('IOpenerService')
-		if (prData?.url) {
-			void opener.open(URI.parse(prData.url), { openExternal: true })
+		setHandoffBusy(true)
+		try {
+			const opener = accessor.get('IOpenerService')
+			if (prData?.url) {
+				void opener.open(URI.parse(prData.url), { openExternal: true })
+				setHandoffOk(true)
+				setHandoffStatus('Opened pull request / compare page.')
+				return
+			}
+			if (!workspaceRoot || !branchData?.name) {
+				setHandoffStatus('No pull request URL is available yet. Ensure the runner can push (credential allowlist).')
+				return
+			}
+			if (!(await assertSameRepo())) return
+			const git = accessor.get('IAgentGitService')
+			const base = branchData.baseBranch || branchData.baseCommit
+			const url = await git.getCompareUrl(workspaceRoot, { base, head: branchData.name })
+			if (!url) {
+				setHandoffStatus('Could not build a compare URL for this repository.')
+				return
+			}
+			void opener.open(URI.parse(url), { openExternal: true })
 			setHandoffOk(true)
-			setHandoffStatus('Opened pull request / compare page.')
-			return
+			setHandoffStatus('Opened compare page.')
+		} catch (e) {
+			setHandoffOk(false)
+			setHandoffStatus(e instanceof Error ? e.message : 'Could not open the pull request.')
+		} finally {
+			setHandoffBusy(false)
 		}
-		if (!workspaceRoot || !branchData?.name) {
-			setHandoffStatus('No pull request URL is available yet. Ensure the runner can push (credential allowlist).')
-			return
-		}
-		if (!(await assertSameRepo())) return
-		const git = accessor.get('IAgentGitService')
-		const base = branchData.baseBranch || branchData.baseCommit
-		const url = await git.getCompareUrl(workspaceRoot, { base, head: branchData.name })
-		if (!url) {
-			setHandoffStatus('Could not build a compare URL for this repository.')
-			return
-		}
-		void opener.open(URI.parse(url), { openExternal: true })
-		setHandoffOk(true)
-		setHandoffStatus('Opened compare page.')
 	}, [accessor, assertSameRepo, branchData, prData?.url, workspaceRoot])
 
 	const onCheckout = useCallback(async () => {
 		if (!workspaceRoot || !branchData?.name) return
 		setHandoffStatus(null)
 		setHandoffOk(false)
-		if (!(await assertSameRepo())) return
-		const git = accessor.get('IAgentGitService')
-		const status = await git.getStatus(workspaceRoot)
-		const dirty = status.files.length > 0
-		if (dirty) {
-			const repoName = workspaceRoot.replace(/[/\\]+$/, '').split(/[/\\]/).pop() || 'repo'
-			const short = branchData.name.replace(/^orbit\//, '')
-			const parentDir = workspaceRoot.replace(/[/\\]+$/, '').replace(/[/\\][^/\\]+$/, '') || workspaceRoot
-			const sep = workspaceRoot.includes('\\') ? '\\' : '/'
-			const worktreePath = `${parentDir}${sep}${repoName}-orbit-${short}`
+		setHandoffBusy(true)
+		try {
+			if (!(await assertSameRepo())) return
+			const git = accessor.get('IAgentGitService')
+			const status = await git.getStatus(workspaceRoot)
+			const dirty = status.files.length > 0
+			if (dirty) {
+				const repoName = workspaceRoot.replace(/[/\\]+$/, '').split(/[/\\]/).pop() || 'repo'
+				const short = branchData.name.replace(/^orbit\//, '')
+				const parentDir = workspaceRoot.replace(/[/\\]+$/, '').replace(/[/\\][^/\\]+$/, '') || workspaceRoot
+				const sep = workspaceRoot.includes('\\') ? '\\' : '/'
+				const worktreePath = `${parentDir}${sep}${repoName}-orbit-${short}`
+				const result = await git.checkoutRemoteBranch(workspaceRoot, {
+					remoteBranch: branchData.name,
+					localBranch: branchData.name,
+					createWorktreePath: worktreePath,
+				})
+				if (!result.ok) {
+					setHandoffStatus(
+						result.error
+							?? 'Could not create a worktree. Commit or stash local changes, or use Open PR.',
+					)
+					return
+				}
+				setHandoffOk(true)
+				setHandoffStatus(`Created worktree at ${worktreePath} on ${branchData.name}. Open that folder to review.`)
+				return
+			}
 			const result = await git.checkoutRemoteBranch(workspaceRoot, {
 				remoteBranch: branchData.name,
 				localBranch: branchData.name,
-				createWorktreePath: worktreePath,
 			})
 			if (!result.ok) {
-				setHandoffStatus(
-					result.error
-						?? 'Could not create a worktree. Commit or stash local changes, or use Open PR.',
-				)
+				setHandoffStatus(result.error ?? 'Could not check out the agent branch.')
 				return
 			}
 			setHandoffOk(true)
-			setHandoffStatus(`Created worktree at ${worktreePath} on ${branchData.name}. Open that folder to review.`)
-			return
+			setHandoffStatus(`Checked out ${branchData.name}.`)
+		} catch (e) {
+			setHandoffOk(false)
+			setHandoffStatus(e instanceof Error ? e.message : 'Could not check out the agent branch.')
+		} finally {
+			setHandoffBusy(false)
 		}
-		const result = await git.checkoutRemoteBranch(workspaceRoot, {
-			remoteBranch: branchData.name,
-			localBranch: branchData.name,
-		})
-		if (!result.ok) {
-			setHandoffStatus(result.error ?? 'Could not check out the agent branch.')
-			return
-		}
-		setHandoffOk(true)
-		setHandoffStatus(`Checked out ${branchData.name}.`)
 	}, [accessor, assertSameRepo, branchData, workspaceRoot])
 
 	const onApplyPatch = useCallback(async () => {
 		if (!workspaceRoot || typeof patchData?.patch !== 'string') return
 		setHandoffStatus(null)
 		setHandoffOk(false)
-		if (!(await assertSameRepo())) return
-		const git = accessor.get('IAgentGitService')
-		const status = await git.getStatus(workspaceRoot)
-		if (status.files.length > 0) {
-			setHandoffStatus('Commit or stash local changes before applying, or use Checkout locally / Open PR.')
-			return
-		}
-		const head = await git.getHeadCommit(workspaceRoot)
-		const base = typeof patchData.baseCommit === 'string' ? patchData.baseCommit : undefined
-		if (!base || head !== base) {
-			setHandoffStatus(
-				branchData?.pushed
-					? 'Local HEAD no longer matches the task base. Use Checkout locally or Open PR instead of Apply.'
-					: 'Local HEAD no longer matches the remote task base. Switch to the shown base commit before applying.',
-			)
-			return
-		}
-		const applied = await git.applyPatch(workspaceRoot, patchData.patch, {})
-		if (applied.ok) {
-			setHandoffOk(true)
-			setHandoffStatus('Remote changes applied to the local working tree.')
-		} else {
-			setHandoffStatus(applied.error ?? 'Could not apply remote changes.')
+		setHandoffBusy(true)
+		try {
+			if (!(await assertSameRepo())) return
+			const git = accessor.get('IAgentGitService')
+			const status = await git.getStatus(workspaceRoot)
+			if (status.files.length > 0) {
+				setHandoffStatus('Commit or stash local changes before applying, or use Checkout locally / Open PR.')
+				return
+			}
+			const head = await git.getHeadCommit(workspaceRoot)
+			const base = typeof patchData.baseCommit === 'string' ? patchData.baseCommit : undefined
+			if (!base || head !== base) {
+				setHandoffStatus(
+					branchData?.pushed
+						? 'Local HEAD no longer matches the task base. Use Checkout locally or Open PR instead of Apply.'
+						: 'Local HEAD no longer matches the remote task base. Switch to the shown base commit before applying.',
+				)
+				return
+			}
+			const applied = await git.applyPatch(workspaceRoot, patchData.patch, {})
+			if (applied.ok) {
+				setHandoffOk(true)
+				setHandoffStatus('Remote changes applied to the local working tree.')
+			} else {
+				setHandoffStatus(applied.error ?? 'Could not apply remote changes.')
+			}
+		} catch (e) {
+			setHandoffOk(false)
+			setHandoffStatus(e instanceof Error ? e.message : 'Could not apply remote changes.')
+		} finally {
+			setHandoffBusy(false)
 		}
 	}, [accessor, assertSameRepo, branchData?.pushed, patchData, workspaceRoot])
 
@@ -269,8 +301,11 @@ export const RemoteTaskInlineCard = ({
 	const state = live.summary.state
 	const isTerminal = ['COMPLETED', 'FAILED', 'CANCELLED', 'TIMED_OUT', 'LOST'].includes(state)
 	const isCompleted = state === 'COMPLETED'
+	const isLost = state === 'LOST'
 
-	const showReconnect = !isTerminal && !live.connected && !live.reconnecting
+	// LOST is terminal for busy/submit gating, but recovery must still offer Reconnect
+	// (the product message tells users to click it).
+	const showReconnect = isLost || (!isTerminal && !live.connected && !live.reconnecting)
 	const showHandoff = isCompleted && (!!branchData || !!patchData || !!prData)
 	const showError = !!live.summary.lastError
 	const showApproval = !!pending
@@ -363,10 +398,20 @@ export const RemoteTaskInlineCard = ({
 
 			{showReconnect && (
 				<div className='my-1 text-xs text-void-fg-3'>
-					<span>Connection to the self-hosted runner was lost. </span>
+					<span>
+						{isLost
+							? 'Connection to the self-hosted runner was lost after repeated reconnect attempts. '
+							: 'Connection to the self-hosted runner was lost. '}
+					</span>
 					<button type='button' className='inline-flex items-center gap-1 text-void-fg-2 hover:underline' onClick={() => void onReconnect()}>
 						<RefreshCw className='size-3' aria-hidden='true' /> Reconnect
 					</button>
+				</div>
+			)}
+
+			{!showHandoff && handoffStatus && (
+				<div className={`my-1 text-xs ${handoffOk ? 'text-[var(--vscode-testing-iconPassed)]' : 'text-[var(--vscode-errorForeground)]'}`}>
+					{handoffStatus}
 				</div>
 			)}
 
@@ -382,7 +427,7 @@ export const RemoteTaskInlineCard = ({
 					<div className='flex flex-wrap items-center gap-1.5'>
 						<button
 							type='button'
-							disabled={!canOpenPr}
+							disabled={!canOpenPr || handoffBusy}
 							title={pushDisabledReason}
 							className='px-2 py-1 rounded border text-xs enabled:hover:bg-void-bg-1 disabled:opacity-50'
 							style={{ borderColor: toolApprovalTheme.panelBorder }}
@@ -392,7 +437,7 @@ export const RemoteTaskInlineCard = ({
 						</button>
 						<button
 							type='button'
-							disabled={!canCheckout}
+							disabled={!canCheckout || handoffBusy}
 							title={pushDisabledReason || (!workspaceRoot ? 'Open the repository workspace first.' : undefined)}
 							className='px-2 py-1 rounded border text-xs enabled:hover:bg-void-bg-1 disabled:opacity-50'
 							style={{ borderColor: toolApprovalTheme.panelBorder }}
@@ -402,7 +447,7 @@ export const RemoteTaskInlineCard = ({
 						</button>
 						<button
 							type='button'
-							disabled={!canApplyPatch}
+							disabled={!canApplyPatch || handoffBusy}
 							title={applyDisabledReason}
 							className='px-2 py-1 rounded border text-xs enabled:hover:bg-void-bg-1 disabled:opacity-50'
 							style={{ borderColor: toolApprovalTheme.panelBorder }}
