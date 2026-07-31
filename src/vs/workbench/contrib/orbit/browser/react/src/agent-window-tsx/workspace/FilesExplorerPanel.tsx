@@ -24,7 +24,7 @@ import { basename as resourceBasename, dirname as resourceDirname, joinPath, rel
 import { IFileService, IFileStat } from '../../../../../../../../platform/files/common/files.js';
 import { IWorkspaceContextService, IWorkspaceFolder } from '../../../../../../../../platform/workspace/common/workspace.js';
 import { IConfigurationService } from '../../../../../../../../platform/configuration/common/configuration.js';
-import { isMacintosh } from '../../../../../../../../base/common/platform.js';
+import { isLinux, isMacintosh } from '../../../../../../../../base/common/platform.js';
 import { useAccessor } from '../../util/services.js';
 import { getConnectedDocument, getConnectedWindow, focusInConnectedWindow } from '../../util/connectedWindow.js';
 import { VsCodeFileIcon } from '../../sidebar-tsx/utils/fileIcons.js';
@@ -1925,7 +1925,7 @@ export const FilesExplorerPanel = ({
 					)}
 					<div className="agent-workspace-explorer-menu-sep" />
 					<button type="button" role="menuitem" className="agent-workspace-explorer-menu-item" onClick={() => revealInOS(contextMenu.node)}>
-						{isMacintosh ? 'Reveal in Finder' : 'Reveal in File Explorer'}
+						{isLinux ? 'Open Containing Folder' : isMacintosh ? 'Reveal in Finder' : 'Reveal in File Explorer'}
 					</button>
 					<button type="button" role="menuitem" className="agent-workspace-explorer-menu-item" onClick={() => void copyPath(contextMenu.node, false)}>
 						Copy Path

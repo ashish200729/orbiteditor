@@ -1,6 +1,6 @@
 [Desktop Entry]
 Name=@@NAME_LONG@@ - URL Handler
-Comment=Code Editing. Redefined.
+Comment=Open-source AI-powered code editor
 GenericName=Text Editor
 Exec=@@EXEC@@ --open-url %U
 Icon=@@ICON@@
@@ -9,4 +9,4 @@ NoDisplay=true
 StartupNotify=true
 Categories=Utility;TextEditor;Development;IDE;
 MimeType=x-scheme-handler/@@URLPROTOCOL@@;
-Keywords=vscode;
+Keywords=orbit;ai;

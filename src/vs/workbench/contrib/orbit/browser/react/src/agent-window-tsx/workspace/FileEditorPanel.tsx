@@ -20,7 +20,7 @@ import type { ICodeEditorViewState } from '../../../../../../../../editor/common
 import { URI } from '../../../../../../../../base/common/uri.js';
 import { VSBuffer } from '../../../../../../../../base/common/buffer.js';
 import { DisposableStore, IReference } from '../../../../../../../../base/common/lifecycle.js';
-import { isMacintosh } from '../../../../../../../../base/common/platform.js';
+import { isLinux, isMacintosh } from '../../../../../../../../base/common/platform.js';
 import { Schemas } from '../../../../../../../../base/common/network.js';
 import { mainWindow } from '../../../../../../../../base/browser/window.js';
 import { relativePath as resourceRelativePath, basename as resourceBasename, joinPath } from '../../../../../../../../base/common/resources.js';
@@ -965,7 +965,7 @@ export const FileEditorPanel = ({
 											}
 											nativeHostService.showItemInFolder(uri.fsPath);
 										}}>
-											{isMacintosh ? 'Reveal in Finder' : 'Reveal in File Explorer'}
+											{isLinux ? 'Open Containing Folder' : isMacintosh ? 'Reveal in Finder' : 'Reveal in File Explorer'}
 										</button>
 										<button type="button" role="menuitem" className="agent-workspace-file-menu-item" onClick={() => { setMenuOpen(false); void clipboardService.writeText(uri.fsPath || uri.path); }}>
 											Copy Path

@@ -29,6 +29,7 @@ export interface IOrbitUpdateManifest {
 	/** Base64 Ed25519 signature over {@link orbitManifestSigningPayload}. */
 	readonly signature?: string;
 }
+export type OrbitLinuxPackageType = 'deb' | 'rpm' | 'appimage';
 
 /**
  * Deterministic JSON serialization (recursively sorted object keys) so the
@@ -61,8 +62,8 @@ export function normalizeOrbitVersion(version: string): string {
 	return version.replace(/^v/i, '').trim();
 }
 
-export function getOrbitPlatformAssetKey(): string {
-	const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
+export function getOrbitPlatformAssetKey(linuxPackageType: OrbitLinuxPackageType = 'appimage', architecture: string = process.arch): string {
+	const arch = architecture === 'arm64' ? 'arm64' : 'x64';
 	if (isWindows) {
 		return `win32-${arch}`;
 	}
@@ -70,9 +71,9 @@ export function getOrbitPlatformAssetKey(): string {
 		return `darwin-${arch}`;
 	}
 	if (isLinux) {
-		return `linux-${arch}`;
+		return `linux-${arch}-${linuxPackageType}`;
 	}
-	return `linux-${arch}`;
+	return `linux-${arch}-${linuxPackageType}`;
 }
 
 export function compareOrbitVersions(current: string, latest: string): number {

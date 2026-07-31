@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { safeStorage as safeStorageElectron, app } from 'electron';
-import { isMacintosh, isWindows, isLinux } from '../../../base/common/platform.js';
+import { isMacintosh, isWindows } from '../../../base/common/platform.js';
 import { KnownStorageProvider, IEncryptionMainService, PasswordStoreCLIOption } from '../common/encryptionService.js';
 import { ILogService } from '../../log/common/log.js';
 
@@ -24,12 +24,6 @@ export class EncryptionMainService implements IEncryptionMainService {
 		@ILogService private readonly logService: ILogService
 	) {
 
-		// Void added this as a nice default for linux so you don't need to specify encryption provider
-		if (isLinux && !app.commandLine.getSwitchValue('password-store')) {
-			this.logService.trace('[EncryptionMainService] No password-store switch, defaulting to basic...');
-			app.commandLine.appendSwitch('password-store', PasswordStoreCLIOption.basic);
-		}
-
 		// if this commandLine switch is set, the user has opted in to using basic text encryption
 		if (app.commandLine.getSwitchValue('password-store') === PasswordStoreCLIOption.basic) {
 			this.logService.trace('[EncryptionMainService] setting usePlainTextEncryption to true...');
@@ -38,9 +32,28 @@ export class EncryptionMainService implements IEncryptionMainService {
 		}
 	}
 
+	private isUsingPlainTextStorage(): boolean {
+		if (isWindows || isMacintosh || !safeStorage.getSelectedStorageBackend) {
+			return false;
+		}
+		try {
+			return safeStorage.getSelectedStorageBackend() === KnownStorageProvider.basicText;
+		} catch (error) {
+			this.logService.error(error);
+			return false;
+		}
+	}
+
+	private assertSecureStorageBackend(): void {
+		if (this.isUsingPlainTextStorage()) {
+			throw new Error('Orbit requires a Linux keyring; refusing to store secrets with Electron basic_text encryption.');
+		}
+	}
+
 	async encrypt(value: string): Promise<string> {
 		this.logService.trace('[EncryptionMainService] Encrypting value...');
 		try {
+			this.assertSecureStorageBackend();
 			const result = JSON.stringify(safeStorage.encryptString(value));
 			this.logService.trace('[EncryptionMainService] Encrypted value.');
 			return result;
@@ -53,6 +66,7 @@ export class EncryptionMainService implements IEncryptionMainService {
 	async decrypt(value: string): Promise<string> {
 		let parsedValue: { data: string };
 		try {
+			this.assertSecureStorageBackend();
 			parsedValue = JSON.parse(value);
 			if (!parsedValue.data) {
 				throw new Error(`[EncryptionMainService] Invalid encrypted value: ${value}`);
@@ -71,7 +85,7 @@ export class EncryptionMainService implements IEncryptionMainService {
 
 	isEncryptionAvailable(): Promise<boolean> {
 		this.logService.trace('[EncryptionMainService] Checking if encryption is available...');
-		const result = safeStorage.isEncryptionAvailable();
+		const result = safeStorage.isEncryptionAvailable() && !this.isUsingPlainTextStorage();
 		this.logService.trace('[EncryptionMainService] Encryption is available: ', result);
 		return Promise.resolve(result);
 	}

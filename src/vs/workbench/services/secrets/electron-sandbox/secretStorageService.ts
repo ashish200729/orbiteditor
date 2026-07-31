@@ -8,7 +8,7 @@ import { isLinux } from '../../../../base/common/platform.js';
 import Severity from '../../../../base/common/severity.js';
 import { localize } from '../../../../nls.js';
 import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
-import { IEncryptionService, KnownStorageProvider, PasswordStoreCLIOption, isGnome, isKwallet } from '../../../../platform/encryption/common/encryptionService.js';
+import { IEncryptionService, KnownStorageProvider, isGnome, isKwallet } from '../../../../platform/encryption/common/encryptionService.js';
 import { INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
@@ -16,7 +16,6 @@ import { INotificationService, IPromptChoice } from '../../../../platform/notifi
 import { IOpenerService } from '../../../../platform/opener/common/opener.js';
 import { BaseSecretStorageService, ISecretStorageService } from '../../../../platform/secrets/common/secrets.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
-import { IJSONEditingService } from '../../configuration/common/jsonEditing.js';
 
 export class NativeSecretStorageService extends BaseSecretStorageService {
 
@@ -24,7 +23,6 @@ export class NativeSecretStorageService extends BaseSecretStorageService {
 		@INotificationService private readonly _notificationService: INotificationService,
 		@IDialogService private readonly _dialogService: IDialogService,
 		@IOpenerService private readonly _openerService: IOpenerService,
-		@IJSONEditingService private readonly _jsonEditingService: IJSONEditingService,
 		@INativeEnvironmentService private readonly _environmentService: INativeEnvironmentService,
 		@IStorageService storageService: IStorageService,
 		@IEncryptionService encryptionService: IEncryptionService,
@@ -72,17 +70,10 @@ export class NativeSecretStorageService extends BaseSecretStorageService {
 
 		const provider = await this._encryptionService.getKeyStorageProvider();
 		if (provider === KnownStorageProvider.basicText) {
-			const detail = localize('usePlainTextExtraSentence', "Open the troubleshooting guide to address this or you can use weaker encryption that doesn't use the OS keyring.");
-			const usePlainTextButton: IPromptChoice = {
-				label: localize('usePlainText', "Use weaker encryption"),
-				run: async () => {
-					await this._encryptionService.setUsePlainTextEncryption();
-					await this._jsonEditingService.write(this._environmentService.argvResource, [{ path: ['password-store'], value: PasswordStoreCLIOption.basic }], true);
-					this.reinitialize();
-				}
-			};
-			buttons.unshift(usePlainTextButton);
-
+			const detail = localize(
+				'orbitRequiresKeyring',
+				"Orbit requires an OS keyring and will not store secrets using weaker plaintext encryption. Open the troubleshooting guide to configure a supported keyring."
+			);
 			await this._dialogService.prompt({
 				type: 'error',
 				buttons,

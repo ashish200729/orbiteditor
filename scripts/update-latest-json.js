@@ -27,14 +27,30 @@ const fs = require('fs');
 const path = require('path');
 
 const REPO = 'ashish200729/orbiteditor';
-const VALID_KEYS = new Set(['darwin-arm64', 'darwin-x64', 'win32-x64', 'win32-arm64', 'linux-x64']);
+const VALID_KEYS = new Set([
+	'darwin-arm64',
+	'darwin-x64',
+	'win32-x64',
+	'win32-arm64',
+	'linux-x64-deb',
+	'linux-x64-rpm',
+	'linux-x64-appimage',
+	'linux-arm64-deb',
+	'linux-arm64-rpm',
+	'linux-arm64-appimage',
+]);
 
 const ARTIFACT_NAMES = {
 	'darwin-arm64': (version) => `Orbit-${version}-darwin-arm64.dmg`,
 	'darwin-x64': (version) => `Orbit-${version}-darwin-x64.dmg`,
 	'win32-x64': (version) => `Orbit-${version}-win32-x64-setup.exe`,
 	'win32-arm64': (version) => `Orbit-${version}-win32-arm64-setup.exe`,
-	'linux-x64': (version) => `Orbit-${version}-linux-x64.AppImage`,
+	'linux-x64-deb': (version) => `Orbit-${version}-linux-x64.deb`,
+	'linux-x64-rpm': (version) => `Orbit-${version}-linux-x64.rpm`,
+	'linux-x64-appimage': (version) => `Orbit-${version}-linux-x64.AppImage`,
+	'linux-arm64-deb': (version) => `Orbit-${version}-linux-arm64.deb`,
+	'linux-arm64-rpm': (version) => `Orbit-${version}-linux-arm64.rpm`,
+	'linux-arm64-appimage': (version) => `Orbit-${version}-linux-arm64.AppImage`,
 };
 
 function sha256(filePath) {
@@ -144,7 +160,9 @@ function main() {
 	const manifestPath = path.join(root, 'update', 'latest.json');
 
 	const existing = opts.merge ? loadExistingManifest(manifestPath) : { assets: {} };
-	const assets = { ...existing.assets };
+	// Never carry packages from an older release into a new version. Doing so
+	// labels stale binaries as the new release and can downgrade installations.
+	const assets = opts.merge && existing.version === opts.version ? { ...existing.assets } : {};
 
 	for (const [platformKey, filePath] of Object.entries(opts.assets)) {
 		if (!VALID_KEYS.has(platformKey)) {

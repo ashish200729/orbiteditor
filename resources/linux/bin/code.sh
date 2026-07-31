@@ -57,6 +57,12 @@ else
 	fi
 fi
 
+# Electron otherwise assumes X11 for CLI subcommands and can hang when a
+# session exposes only a native Wayland socket.
+if [ -n "${WAYLAND_DISPLAY:-}" ] && [ -z "${DISPLAY:-}" ] && [ -z "${ELECTRON_OZONE_PLATFORM_HINT:-}" ]; then
+	export ELECTRON_OZONE_PLATFORM_HINT=wayland
+fi
+
 ELECTRON="$VSCODE_PATH/@@APPNAME@@"
 CLI="$VSCODE_PATH/resources/app/out/cli.js"
 ELECTRON_RUN_AS_NODE=1 "$ELECTRON" "$CLI" "$@"

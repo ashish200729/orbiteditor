@@ -45,9 +45,11 @@ orbit-remotion/
 
 debug.log
 
-# Release build artifacts (built by scripts/build-macos-*.sh, publish-release.sh)
+# Release build artifacts
 /Orbit-*.dmg
 /Orbit-*.AppImage
+/Orbit-*.deb
+/Orbit-*.rpm
 /Orbit-*-setup.exe
 # Read-write DMG mountpoint artifacts (rw.<id>.Orbit-*.dmg)
 /rw.*.Orbit-*.dmg
