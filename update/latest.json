@@ -33,6 +33,14 @@
 		"linux-arm64-appimage": {
 			"url": "https://github.com/ashish200729/orbiteditor/releases/download/v0.5.3/Orbit-0.5.3-linux-arm64.AppImage",
 			"sha256": "557d37676021aae3cc881cd8d3ea3a5f53473e5e2907789a8bb997ddfcc3e119"
+		},
+		"win32-x64": {
+			"url": "https://github.com/ashish200729/orbiteditor/releases/download/v0.5.1/Orbit-0.5.1-win32-x64-setup.exe",
+			"sha256": "2d08c2fd46561822b3e052fe483ca87431a431561939fab735b8ca7d06cc9125"
+		},
+		"win32-arm64": {
+			"url": "https://github.com/ashish200729/orbiteditor/releases/download/v0.5.1/Orbit-0.5.1-win32-arm64-setup.exe",
+			"sha256": "6615321de289e48debf191029afcacb98cd499bfaac7f403099a34089ff979cf"
 		}
 	},
 	"signature": "vZ5q1fqSschDIn0Kuv7cu42xIgG01DTXpbwMTCc+aqEHx/flDNLx3bN1X/wr/ecNHJkedaH3/tpkiJHkQYu+Aw=="

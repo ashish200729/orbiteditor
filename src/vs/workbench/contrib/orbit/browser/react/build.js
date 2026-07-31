@@ -110,7 +110,7 @@ function buildExportRenameMap(unmangledContents, mangledContents) {
 	const map = new Map();
 
 	const constPattern = /export const ([A-Za-z_$][\w$]*)\s*=/g;
-	const functionPattern = /export function ([A-Za-z_$][\w$]*)/g;
+	const functionPattern = /export (?:async )?function ([A-Za-z_$][\w$]*)/g;
 	const varPattern = /export var ([A-Za-z_$][\w$]*)/g;
 	const classPattern = /export class ([A-Za-z_$][\w$]*)/g;
 	const namedExportPattern = /export\s*\{([^}]+)\}/g;
