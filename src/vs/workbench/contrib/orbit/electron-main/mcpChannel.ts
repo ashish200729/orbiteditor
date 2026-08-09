@@ -22,6 +22,7 @@ import { z } from 'zod';
 import { MCPUserStateOfName } from '../common/orbitSettingsTypes.js';
 import { OrbitBuiltinMcpRegistry } from './builtinMcp/orbitBuiltinMcpRegistry.js';
 import { makeOAuthProvider, runMcpOAuthFlow, clearStoredMcpTokens } from './mcpOAuth.js';
+import { fetchWithEndpointPolicy, remoteHttpEndpointPolicyError } from '../common/networkSecurity.js';
 
 const getClientConfig = (serverName: string) => {
 	return {
@@ -274,6 +275,7 @@ export class MCPChannel implements IServerChannel {
 				claimedServerNames.push(serverName)
 
 				const prevServer = this.infoOfClientId[serverName]?.mcpServer;
+				const previousEntry = this.infoOfClientId[serverName]?.mcpServerEntryJSON;
 
 				// close and delete the old client
 				if (type === 'removed' || type === 'updated') {
@@ -281,7 +283,11 @@ export class MCPChannel implements IServerChannel {
 					delete this.infoOfClientId[serverName]
 					// Fully removed: also drop any stored OAuth tokens so a later re-add
 					// starts a clean login instead of silently reusing an old grant.
-					if (type === 'removed') clearStoredMcpTokens(serverName)
+					const nextUrl = mcpServersJSON[serverName]?.url;
+					if (previousEntry?.url && (type === 'removed' || String(previousEntry.url) !== String(nextUrl ?? ''))) {
+						const oldUrl = previousEntry.url;
+						clearStoredMcpTokens(serverName, oldUrl instanceof URL ? oldUrl : new URL(String(oldUrl)));
+					}
 					this.mcpEmitters.serverEvent.onDelete.fire({ response: { prevServer, name: serverName, } })
 				}
 
@@ -301,6 +307,9 @@ export class MCPChannel implements IServerChannel {
 	}
 
 	private async _createClientUnsafe(server: MCPConfigFileEntryJSON, serverName: string, isOn: boolean): Promise<ClientInfo> {
+		if (!isOn) {
+			throw new Error(`Refusing to create disabled MCP server "${serverName}".`);
+		}
 
 		const clientConfig = getClientConfig(serverName)
 		const client = new Client(clientConfig)
@@ -314,9 +323,12 @@ export class MCPChannel implements IServerChannel {
 			// server needs auth and we have no token, connect throws UnauthorizedError,
 			// which _createClient maps to a 'needs-auth' status.
 			const serverUrl = server.url instanceof URL ? server.url : new URL(server.url as unknown as string);
+			const endpointError = remoteHttpEndpointPolicyError(serverUrl.toString(), `MCP server "${serverName}" URL`);
+			if (endpointError) throw new Error(endpointError);
+			const guardedFetch = (input: string | URL, init?: RequestInit) => fetchWithEndpointPolicy(input, init, `MCP server "${serverName}"`);
 			// first try HTTP, fall back to SSE
 			try {
-				transport = new StreamableHTTPClientTransport(serverUrl, { authProvider: makeOAuthProvider(serverName, false) });
+				transport = new StreamableHTTPClientTransport(serverUrl, { authProvider: makeOAuthProvider(serverName, serverUrl, false), fetch: guardedFetch });
 				await client.connect(transport);
 				console.log(`Connected via HTTP to ${serverName}`);
 				const { tools } = await client.listTools()
@@ -334,7 +346,7 @@ export class MCPChannel implements IServerChannel {
 				console.warn(`HTTP failed for ${serverName}, trying SSE…`, httpErr);
 				await client.close().catch(() => { });
 				try {
-					transport = new SSEClientTransport(serverUrl, { authProvider: makeOAuthProvider(serverName, false) });
+					transport = new SSEClientTransport(serverUrl, { authProvider: makeOAuthProvider(serverName, serverUrl, false), fetch: guardedFetch });
 					await client.connect(transport);
 					const { tools } = await client.listTools()
 					const toolsWithUniqueName = tools.map(({ name, ...rest }) => ({ name: this._addUniquePrefix(name), ...rest }))
@@ -407,6 +419,12 @@ export class MCPChannel implements IServerChannel {
 	}
 
 	private async _createClient(serverConfig: MCPConfigFileEntryJSON, serverName: string, isOn = true): Promise<ClientInfo> {
+		if (!isOn) {
+			const command = serverConfig.url
+				? String(serverConfig.url)
+				: `${serverConfig.command ?? ''} ${serverConfig.args?.join(' ') ?? ''}`.trim();
+			return { mcpServerEntryJSON: serverConfig, mcpServer: { status: 'offline', tools: [], command } };
+		}
 		try {
 			const c: ClientInfo = await this._createClientUnsafe(serverConfig, serverName, isOn)
 			return c
@@ -438,6 +456,9 @@ export class MCPChannel implements IServerChannel {
 	private async _authenticateMCPServer(serverName: string): Promise<{ ok: boolean; error?: string }> {
 		const info = this.infoOfClientId[serverName];
 		const entry = info?.mcpServerEntryJSON;
+		if (info?.mcpServer.status === 'offline') {
+			return { ok: false, error: 'Enable this MCP server before authenticating it.' };
+		}
 		if (!entry?.url) {
 			return { ok: false, error: 'This server does not use OAuth (no URL configured).' };
 		}
@@ -505,7 +526,7 @@ export class MCPChannel implements IServerChannel {
 		else {
 			// this.mcpEmitters.serverEvent.onChangeLoading.fire(getLoadingServerObject(serverName, isOn))
 			await this._closeClient(serverName)
-			delete this.infoOfClientId[serverName]._client
+			this.infoOfClientId[serverName] = await this._createClient(entry.mcpServerEntryJSON, serverName, false)
 
 			this.mcpEmitters.serverEvent.onUpdate.fire({
 				response: {

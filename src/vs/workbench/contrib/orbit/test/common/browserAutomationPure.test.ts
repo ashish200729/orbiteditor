@@ -7,6 +7,7 @@ import * as assert from 'assert';
 import {
 	isCdpMethodDenied,
 	isCdpEvalExpressionDenied,
+	isModelCdpMethodAllowed,
 	snapshotToYaml,
 	snapshotToInteractiveList,
 	interactiveRoleRank,
@@ -16,8 +17,20 @@ import {
 	MAX_SCREENSHOT_DIMENSION_CSS_PX,
 	MutableAXNode,
 } from '../../../../../platform/browserView/common/browserAutomationPure.js';
+import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 
 suite('browserAutomationPure - CDP denylist', () => {
+	ensureNoDisposablesAreLeakedInTestSuite();
+	test('model-facing CDP uses an exact reviewed allowlist', () => {
+		assert.ok(isModelCdpMethodAllowed(' DOM.getDocument '));
+		assert.ok(isModelCdpMethodAllowed('Performance.getMetrics'));
+		assert.ok(isModelCdpMethodAllowed('Profiler.stop'));
+		assert.ok(!isModelCdpMethodAllowed('Runtime.evaluate'));
+		assert.ok(!isModelCdpMethodAllowed('Runtime.callFunctionOn'));
+		assert.ok(!isModelCdpMethodAllowed('Network.getResponseBody'));
+		assert.ok(!isModelCdpMethodAllowed('DOM.setFileInputFiles'));
+		assert.ok(!isModelCdpMethodAllowed('FutureDomain.newMethod'));
+	});
 	test('denies Input.* methods (model must use click/type tools)', () => {
 		assert.ok(isCdpMethodDenied('Input.dispatchMouseEvent'));
 		assert.ok(isCdpMethodDenied('Input.insertText'));
@@ -75,6 +88,7 @@ suite('browserAutomationPure - CDP denylist', () => {
 });
 
 suite('browserAutomationPure - snapshotToYaml', () => {
+	ensureNoDisposablesAreLeakedInTestSuite();
 	test('emits url and title header comments', () => {
 		const yaml = snapshotToYaml({}, undefined, { url: 'https://example.com', title: 'Example' }, false);
 		assert.match(yaml, /# url: https:\/\/example\.com/);
@@ -131,6 +145,7 @@ suite('browserAutomationPure - snapshotToYaml', () => {
 });
 
 suite('browserAutomationPure - snapshotToInteractiveList', () => {
+	ensureNoDisposablesAreLeakedInTestSuite();
 	test('lists textboxes before buttons/links', () => {
 		const nodes: Record<string, MutableAXNode> = {
 			'ref-btn': { ref: 'ref-btn', role: 'button', name: 'Send', bounds: null, depth: 0 },
@@ -158,6 +173,7 @@ suite('browserAutomationPure - snapshotToInteractiveList', () => {
 });
 
 suite('browserAutomationPure - screenshot clip builders (Retina-safe)', () => {
+	ensureNoDisposablesAreLeakedInTestSuite();
 	test('buildFullPageScreenshotClip prefers cssContentSize over device-pixel contentSize', () => {
 		// Simulate a Retina Mac: cssContentSize is CSS px, contentSize is 2× device px.
 		const clip = buildFullPageScreenshotClip({

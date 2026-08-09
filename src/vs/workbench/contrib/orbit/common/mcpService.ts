@@ -16,7 +16,7 @@ import { VSBuffer } from '../../../../base/common/buffer.js';
 import { IChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
-import { MCPServerOfName, MCPConfigFileJSON, MCPConfigFileEntryJSON, MCPServer, MCPToolCallParams, RawMCPToolCall, MCPServerEventResponse, mergeMcpConfigsForProjects } from './mcpServiceTypes.js';
+import { MCPServerOfName, MCPConfigFileJSON, MCPConfigFileEntryJSON, MCPServer, MCPToolCallParams, RawMCPToolCall, MCPServerEventResponse, fingerprintProjectMcpServer, mergeMcpConfigsForProjects, projectMcpApprovalKey } from './mcpServiceTypes.js';
 import { Event, Emitter } from '../../../../base/common/event.js';
 import { InternalToolInfo } from './prompt/prompts.js';
 import { IVoidSettingsService } from './orbitSettingsService.js';
@@ -25,6 +25,7 @@ import { IStorageService, StorageScope, StorageTarget } from '../../../../platfo
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { AGENT_PROJECT_WORKSPACES_STORAGE_KEY } from './storageKeys.js';
 import { parseAgentWorkspaceState } from './agentWorkspaceHelpers.js';
+import { IWorkspaceTrustManagementService } from '../../../../platform/workspace/common/workspaceTrust.js';
 
 
 /** Scope of an MCP server: global (user) config or the current workspace's `.orbit/mcp.json`. */
@@ -90,7 +91,7 @@ const MCP_CONFIG_SAMPLE_STRING = JSON.stringify(MCP_CONFIG_SAMPLE, null, 2);
 
 // Workspace-scoped storage key holding the enable map for project MCP servers,
 // so toggling a `.orbit/mcp.json` server in one folder does not affect another.
-const WORKSPACE_MCP_ENABLE_KEY = 'orbit.mcp.workspaceEnabled';
+const PROJECT_MCP_APPROVALS_KEY = 'orbit.mcp.projectApprovals.v2';
 const IDE_MCP_CONTEXT = 'ide';
 const PROJECT_RUNTIME_PREFIX = 'orbit-project:';
 
@@ -122,6 +123,7 @@ class MCPService extends Disposable implements IMCPService {
 	private readonly scopeOfNameByContext = new Map<string, Record<string, MCPScope>>();
 	private readonly projectFolderOfNameByContext = new Map<string, Record<string, string | undefined>>();
 	private readonly isOnOfNameByContext = new Map<string, Record<string, boolean>>();
+	private readonly projectFingerprintOfNameByContext = new Map<string, Record<string, string>>();
 
 	// Emitters for server events
 	private readonly _onDidChangeState = new Emitter<void>();
@@ -136,6 +138,7 @@ class MCPService extends Disposable implements IMCPService {
 		@IVoidSettingsService private readonly voidSettingsService: IVoidSettingsService,
 		@IStorageService private readonly storageService: IStorageService,
 		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
+		@IWorkspaceTrustManagementService private readonly workspaceTrustService: IWorkspaceTrustManagementService,
 	) {
 		super();
 		this.channel = this.mainProcessService.getChannel('void-channel-mcp')
@@ -175,6 +178,12 @@ class MCPService extends Disposable implements IMCPService {
 		this._register(this.workspaceContextService.onDidChangeWorkspaceFolders(() => {
 			this._refreshMCPConfigFileWatchers();
 			this._refreshMCPServers().catch(err => console.error('Error refreshing MCP after workspace change:', err));
+		}));
+		this._register(this.workspaceTrustService.onDidChangeTrust(() => {
+			this._refreshMCPServers().catch(err => console.error('Error refreshing MCP after workspace trust change:', err));
+		}));
+		this._register(this.workspaceTrustService.onDidChangeTrustedFolders(() => {
+			this._refreshMCPServers().catch(err => console.error('Error refreshing MCP after trusted folders change:', err));
 		}));
 
 		// Agent-window workspace switches persist to APPLICATION storage — re-merge MCP.
@@ -499,7 +508,11 @@ class MCPService extends Disposable implements IMCPService {
 		const folderOfProjectUri = (mcpUri: URI): string => dirname(dirname(mcpUri)).toString();
 		const projects: Array<{ config: MCPConfigFileJSON | null; folderUri: string }> = [];
 		for (const uri of projectUris) {
-			const projectConfig = await this._parseMCPConfigFileAtUri(uri, 'project');
+			const folderUri = dirname(dirname(uri));
+			const trust = await this.workspaceTrustService.getUriTrustInfo(folderUri);
+			// Project MCP configuration is executable. Never even merge it into the
+			// agent-visible registry unless its exact source folder is trusted.
+			const projectConfig = trust.trusted ? await this._parseMCPConfigFileAtUri(uri, 'project') : null;
 			projects.push({ config: projectConfig, folderUri: folderOfProjectUri(uri) });
 		}
 		const { mcpServers, scopeOfName, projectFolderOfName } = mergeMcpConfigsForProjects(userConfig, projects);
@@ -508,33 +521,47 @@ class MCPService extends Disposable implements IMCPService {
 
 	// ---- workspace-scoped enable map (project servers) --------------------------------
 
-	private _readWorkspaceEnableMap(): { [name: string]: boolean } {
+	private _readProjectApprovalMap(): Record<string, string> {
 		try {
-			const raw = this.storageService.get(WORKSPACE_MCP_ENABLE_KEY, StorageScope.WORKSPACE);
+			const raw = this.storageService.get(PROJECT_MCP_APPROVALS_KEY, StorageScope.APPLICATION);
 			if (!raw) return {};
-			return JSON.parse(raw) as { [name: string]: boolean };
+			const parsed = JSON.parse(raw) as Record<string, unknown>;
+			return Object.fromEntries(Object.entries(parsed).filter((entry): entry is [string, string] => typeof entry[1] === 'string'));
 		} catch {
 			return {};
 		}
 	}
 
-	private _writeWorkspaceEnableMap(map: { [name: string]: boolean }): void {
-		this.storageService.store(WORKSPACE_MCP_ENABLE_KEY, JSON.stringify(map), StorageScope.WORKSPACE, StorageTarget.MACHINE);
+	private _writeProjectApprovalMap(map: Record<string, string>): void {
+		this.storageService.store(PROJECT_MCP_APPROVALS_KEY, JSON.stringify(map), StorageScope.APPLICATION, StorageTarget.MACHINE);
 	}
 
 	// Builds the combined enable map: user servers from settings, project servers
 	// from workspace storage (default on).
-	private _buildIsOnOfName(scopeOfName: { [name: string]: MCPScope }): { [name: string]: boolean } {
-		const wsEnable = this._readWorkspaceEnableMap();
+	private async _buildIsOnOfName(
+		config: MCPConfigFileJSON,
+		scopeOfName: { [name: string]: MCPScope },
+		projectFolderOfName: { [name: string]: string | undefined },
+	): Promise<{ enabled: Record<string, boolean>; projectFingerprints: Record<string, string> }> {
+		const approvals = this._readProjectApprovalMap();
 		const isOnOfName: { [name: string]: boolean } = {};
+		const projectFingerprints: Record<string, string> = {};
 		for (const [name, scope] of Object.entries(scopeOfName)) {
 			if (scope === 'project') {
-				isOnOfName[name] = wsEnable[name] ?? true;
+				const folderUri = projectFolderOfName[name];
+				const entry = config.mcpServers[name];
+				if (!folderUri || !entry) {
+					isOnOfName[name] = false;
+					continue;
+				}
+				const fingerprint = await fingerprintProjectMcpServer(folderUri, name, entry);
+				projectFingerprints[name] = fingerprint;
+				isOnOfName[name] = approvals[projectMcpApprovalKey(folderUri, name)] === fingerprint;
 			} else {
 				isOnOfName[name] = this.voidSettingsService.state.mcpUserStateOfName[name]?.isOn ?? true;
 			}
 		}
-		return isOnOfName;
+		return { enabled: isOnOfName, projectFingerprints };
 	}
 
 	// Handle server state changes
@@ -551,14 +578,11 @@ class MCPService extends Disposable implements IMCPService {
 		const nextScopes = new Map<string, Record<string, MCPScope>>();
 		const nextFolders = new Map<string, Record<string, string | undefined>>();
 		const nextEnabled = new Map<string, Record<string, boolean>>();
+		const nextProjectFingerprints = new Map<string, Record<string, string>>();
 		for (const [context, projectUris] of contexts) {
 			const { merged, scopeOfName, projectFolderOfName } = await this._loadMergedConfig(projectUris);
 			const logicalToRuntime: Record<string, string> = {};
-			const logicalEnabled = context === IDE_MCP_CONTEXT
-				? this._buildIsOnOfName(scopeOfName)
-				: Object.fromEntries(Object.entries(scopeOfName).map(([name, scope]) => [name, scope === 'user'
-					? (this.voidSettingsService.state.mcpUserStateOfName[name]?.isOn ?? true)
-					: true]));
+			const { enabled: logicalEnabled, projectFingerprints } = await this._buildIsOnOfName(merged, scopeOfName, projectFolderOfName);
 			for (const [logicalName, entry] of Object.entries(merged.mcpServers)) {
 				const runtimeName = scopeOfName[logicalName] === 'project'
 					? runtimeProjectName(context, logicalName)
@@ -571,6 +595,7 @@ class MCPService extends Disposable implements IMCPService {
 			nextScopes.set(context, scopeOfName);
 			nextFolders.set(context, projectFolderOfName);
 			nextEnabled.set(context, logicalEnabled);
+			nextProjectFingerprints.set(context, projectFingerprints);
 		}
 
 		const oldConfigFileNames = [...this.configuredRuntimeNames];
@@ -588,10 +613,12 @@ class MCPService extends Disposable implements IMCPService {
 		this.scopeOfNameByContext.clear();
 		this.projectFolderOfNameByContext.clear();
 		this.isOnOfNameByContext.clear();
+		this.projectFingerprintOfNameByContext.clear();
 		for (const [key, value] of nextMappings) this.logicalRuntimeNameByContext.set(key, value);
 		for (const [key, value] of nextScopes) this.scopeOfNameByContext.set(key, value);
 		for (const [key, value] of nextFolders) this.projectFolderOfNameByContext.set(key, value);
 		for (const [key, value] of nextEnabled) this.isOnOfNameByContext.set(key, value);
+		for (const [key, value] of nextProjectFingerprints) this.projectFingerprintOfNameByContext.set(key, value);
 		this._publishIDEState();
 
 		const addedServerNames = newConfigFileNames.filter(serverName => !oldConfigFileNames.includes(serverName));
@@ -609,7 +636,9 @@ class MCPService extends Disposable implements IMCPService {
 
 		// set all servers to loading
 		for (const serverName of newConfigFileNames) {
-			this._setRuntimeMCPServerState(serverName, { status: 'loading', tools: [] })
+			this._setRuntimeMCPServerState(serverName, runtimeIsOn[serverName]
+				? { status: 'loading', tools: [] }
+				: { status: 'offline', tools: [] })
 		}
 		const updatedServerNames = newConfigFileNames.filter(serverName => !addedServerNames.includes(serverName) && !removedServerNames.includes(serverName))
 
@@ -650,16 +679,23 @@ class MCPService extends Disposable implements IMCPService {
 
 		const scope = this.state.scopeOfName[serverName] ?? 'user';
 		if (scope === 'project') {
-			const map = this._readWorkspaceEnableMap();
-			map[serverName] = isOn;
-			this._writeWorkspaceEnableMap(map);
+			const folderUri = this.state.projectFolderOfName[serverName];
+			const fingerprint = this.projectFingerprintOfNameByContext.get(IDE_MCP_CONTEXT)?.[serverName];
+			if (!folderUri || !fingerprint) {
+				throw new Error(`Cannot enable project MCP server "${serverName}" without a trusted source folder and current configuration fingerprint.`);
+			}
+			const map = this._readProjectApprovalMap();
+			const key = projectMcpApprovalKey(folderUri, serverName);
+			if (isOn) map[key] = fingerprint;
+			else delete map[key];
+			this._writeProjectApprovalMap(map);
 		} else {
 			await this.voidSettingsService.setMCPServerState(serverName, { isOn });
 		}
 		const enabled = { ...(this.isOnOfNameByContext.get(IDE_MCP_CONTEXT) ?? {}), [serverName]: isOn };
 		this.isOnOfNameByContext.set(IDE_MCP_CONTEXT, enabled);
-		this._setRuntimeMCPServerState(runtimeName, { status: 'loading', tools: [] })
-		this.channel.call('toggleMCPServer', { serverName: runtimeName, isOn })
+		this._setRuntimeMCPServerState(runtimeName, isOn ? { status: 'loading', tools: [] } : { status: 'offline', tools: [] })
+		await this.channel.call('toggleMCPServer', { serverName: runtimeName, isOn })
 	}
 
 	// ---- config file mutation (marketplace + Add dialog) ------------------------------
@@ -705,16 +741,21 @@ class MCPService extends Disposable implements IMCPService {
 		const parsed = await this._parseMCPConfigFileForScope(scope, projectFolderUri);
 		if (!parsed?.mcpServers) return;
 		delete parsed.mcpServers[name];
-		// clean up workspace enable entry for project servers
+		// Remove the exact folder/name approval so a later re-add always starts
+		// disabled, even if it happens to recreate the old configuration.
 		if (scope === 'project') {
-			const map = this._readWorkspaceEnableMap();
-			if (name in map) { delete map[name]; this._writeWorkspaceEnableMap(map); }
+			const map = this._readProjectApprovalMap();
+			delete map[projectMcpApprovalKey(dirname(dirname(uri)).toString(), name)];
+			this._writeProjectApprovalMap(map);
 		}
 		await this._writeConfig(uri, parsed);
 	}
 
 
 	public async authenticateMCPServer(serverName: string): Promise<{ ok: boolean; error?: string }> {
+		if (this.state.isOnOfName[serverName] !== true) {
+			return { ok: false, error: 'Enable this MCP server before authenticating it.' };
+		}
 		const runtimeName = this.logicalRuntimeNameByContext.get(IDE_MCP_CONTEXT)?.[serverName] ?? serverName;
 		// Reflect the in-flight state immediately; the channel will emit the final state.
 		this._setRuntimeMCPServerState(runtimeName, { status: 'loading', tools: [] });

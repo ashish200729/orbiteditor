@@ -43,7 +43,10 @@ export const getShellCardMetaTags = (
 	const tags: string[] = [];
 	if (toolName === 'Shell') {
 		const shellParams = params as BuiltinToolCallParams['Shell'];
-		if (shellParams.workingDirectory) tags.push('cd');
+		if (shellParams.workingDirectory) {
+			const cwd = shellParams.workingDirectory;
+			tags.push(`cwd: ${cwd.length <= 32 ? cwd : `…${cwd.slice(-31)}`}`);
+		}
 		// blockUntilMs is a timeout *budget*, not measured duration. Showing "30s"
 		// made every default Shell look like it ran for 30 seconds (or timed out).
 		if (shellParams.blockUntilMs === 0) tags.push('bg');

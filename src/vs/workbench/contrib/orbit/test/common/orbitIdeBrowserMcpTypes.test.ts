@@ -5,8 +5,10 @@
 
 import * as assert from 'assert';
 import { ORBIT_IDE_BROWSER_TOOLS, ORBIT_IDE_BROWSER_TOOL_NAMES, ORBIT_IDE_BROWSER_MCP_SERVER_NAME, ORBIT_IDE_BROWSER_MCP_INSTRUCTIONS } from '../../common/builtinMcp/orbitIdeBrowserMcpTypes.js';
+import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 
 suite('orbitIdeBrowserMcpTypes - tool schema contract', () => {
+	ensureNoDisposablesAreLeakedInTestSuite();
 	test('server name and instructions are non-empty', () => {
 		assert.ok(ORBIT_IDE_BROWSER_MCP_SERVER_NAME.length > 0);
 		assert.ok(ORBIT_IDE_BROWSER_MCP_INSTRUCTIONS.length > 0);
@@ -88,7 +90,7 @@ suite('orbitIdeBrowserMcpTypes - tool schema contract', () => {
 		}
 	});
 
-	test('browser_cdp is NOT readOnly (Runtime.evaluate can mutate)', () => {
+	test('browser_cdp remains approval-gated even though its methods are allowlisted', () => {
 		const cdp = ORBIT_IDE_BROWSER_TOOLS.find(t => t.name === 'browser_cdp');
 		assert.ok(cdp);
 		assert.ok(cdp!.annotations?.readOnly !== true);
@@ -197,7 +199,8 @@ suite('orbitIdeBrowserMcpTypes - tool schema contract', () => {
 		assert.match(ORBIT_IDE_BROWSER_MCP_INSTRUCTIONS, /Lock\/unlock workflow/);
 		assert.match(ORBIT_IDE_BROWSER_MCP_INSTRUCTIONS, /Waiting strategy/);
 		assert.match(ORBIT_IDE_BROWSER_MCP_INSTRUCTIONS, /CDP USAGE/);
-		assert.match(ORBIT_IDE_BROWSER_MCP_INSTRUCTIONS, /Do not use browser_cdp with CDP Input\.\* methods/);
+		assert.match(ORBIT_IDE_BROWSER_MCP_INSTRUCTIONS, /browser_cdp uses an exact allowlist/);
+		assert.doesNotMatch(ORBIT_IDE_BROWSER_MCP_INSTRUCTIONS, /Use Runtime\.evaluate/);
 		assert.match(ORBIT_IDE_BROWSER_MCP_INSTRUCTIONS, /AVOID RABBIT HOLES/);
 		assert.match(ORBIT_IDE_BROWSER_MCP_INSTRUCTIONS, /browser_snapshot returns snapshot YAML/);
 	});

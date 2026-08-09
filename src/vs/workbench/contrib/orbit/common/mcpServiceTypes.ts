@@ -131,6 +131,48 @@ export interface MCPConfigFileJSON {
 	mcpServers: Record<string, MCPConfigFileEntryJSON>;
 }
 
+function canonicalizeConfigValue(value: unknown): unknown {
+	if (value instanceof URL) {
+		return value.toString();
+	}
+	if (Array.isArray(value)) {
+		return value.map(canonicalizeConfigValue);
+	}
+	if (value && typeof value === 'object') {
+		const result: Record<string, unknown> = {};
+		for (const key of Object.keys(value as Record<string, unknown>).sort()) {
+			const child = (value as Record<string, unknown>)[key];
+			if (child !== undefined) {
+				result[key] = canonicalizeConfigValue(child);
+			}
+		}
+		return result;
+	}
+	return value;
+}
+
+/**
+ * Stable, cryptographic approval fingerprint for a project MCP server. The
+ * source folder and logical name are included so an approval cannot be moved
+ * to another repository or server entry. Any executable configuration change
+ * invalidates the approval and returns the server to the disabled state.
+ */
+export async function fingerprintProjectMcpServer(
+	folderUri: string,
+	serverName: string,
+	entry: MCPConfigFileEntryJSON,
+): Promise<string> {
+	const material = JSON.stringify(canonicalizeConfigValue({ folderUri, serverName, entry }));
+	const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(material));
+	return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
+/** Storage key for one folder/name pair. The value stored under it is the
+ * approved configuration fingerprint, never a bare boolean. */
+export function projectMcpApprovalKey(folderUri: string, serverName: string): string {
+	return `${folderUri}\n${serverName}`;
+}
+
 /**
  * Merge a user-scoped and project-scoped MCP config. Project entries override user
  * entries on name collision. Returns the merged server map plus the scope each name

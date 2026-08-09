@@ -19,7 +19,12 @@ case "$(uname -s)" in
 		;;
 esac
 
-TMP_SCRIPT="$(mktemp)"
-trap 'rm -f "$TMP_SCRIPT"' EXIT
-curl --fail --location --silent --show-error "$RAW_BASE/$SCRIPT" --output "$TMP_SCRIPT"
+TMP_DIR="$(mktemp -d)"
+TMP_SCRIPT="$TMP_DIR/scripts/$SCRIPT"
+mkdir -p "$TMP_DIR/scripts"
+trap 'rm -rf "$TMP_DIR"' EXIT
+curl --fail --location --silent --show-error --proto '=https' --tlsv1.2 "$RAW_BASE/$SCRIPT" --output "$TMP_SCRIPT"
+if [[ "$SCRIPT" == install-macos.sh ]]; then
+	curl --fail --location --silent --show-error --proto '=https' --tlsv1.2 "$RAW_BASE/verify-update-manifest.js" --output "$TMP_DIR/scripts/verify-update-manifest.js"
+fi
 ORBIT_UPDATE_REPO="$REPO" ORBIT_UPDATE_MANIFEST_URL="$MANIFEST_URL" MANIFEST_URL="$MANIFEST_URL" bash "$TMP_SCRIPT"

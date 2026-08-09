@@ -33,7 +33,6 @@ import {
 } from '../common/browserAutomationPure.js';
 import { BrowserViewMainService } from './browserViewMainService.js';
 import { ILogService } from '../../log/common/log.js';
-import { Promises } from '../../../base/node/pfs.js';
 import { tmpdir } from 'os';
 import { join } from '../../../base/common/path.js';
 import { promises as fsPromises } from 'fs';
@@ -1853,12 +1852,11 @@ export class BrowserAutomationMainService extends Disposable implements IBrowser
 		const safeLabel = label.replace(/[^a-z0-9-_]/gi, '_').slice(0, 40) || 'response';
 		const stamp = Date.now();
 		const fileName = `orbit-browser-${safeLabel}-${stamp}.txt`;
-		const dir = join(tmpdir(), 'orbit-browser-automation');
 		try {
-			await fsPromises.mkdir(dir, { recursive: true });
+			const dir = await this.ensureSecureSpillDirectory();
 			await this.pruneSpillDirectory(dir);
 			const filePath = join(dir, fileName);
-			await Promises.writeFile(filePath, payload);
+			await fsPromises.writeFile(filePath, payload, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
 			const summary = `Response was ${byteLength} bytes (over ${thresholdBytes} threshold) and was written to a spill file: ${filePath}`;
 			this.logService.info(`[browserAutomation] Spilled ${byteLength}B for ${id} → ${filePath}`);
 			return { filePath, summary };
@@ -1882,18 +1880,33 @@ export class BrowserAutomationMainService extends Disposable implements IBrowser
 			.replace(/^\.+/, '')
 			.slice(0, 120) || `page-${Date.now()}`;
 		const withExt = /\.(png|jpe?g)$/i.test(base) ? base.replace(/\.(png|jpe?g)$/i, `.${ext}`) : `${base}.${ext}`;
-		const dir = join(tmpdir(), 'orbit-browser-automation');
 		try {
-			await fsPromises.mkdir(dir, { recursive: true });
+			const dir = await this.ensureSecureSpillDirectory();
 			await this.pruneSpillDirectory(dir);
-			const filePath = join(dir, withExt);
-			await Promises.writeFile(filePath, Buffer.from(base64Data, 'base64'));
+			let filePath = join(dir, withExt);
+			try {
+				await fsPromises.writeFile(filePath, Buffer.from(base64Data, 'base64'), { flag: 'wx', mode: 0o600 });
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+				filePath = join(dir, `${withExt.replace(/\.(png|jpe?g)$/i, '')}-${Date.now()}.${ext}`);
+				await fsPromises.writeFile(filePath, Buffer.from(base64Data, 'base64'), { flag: 'wx', mode: 0o600 });
+			}
 			this.logService.info(`[browserAutomation] Saved screenshot for ${id} → ${filePath}`);
 			return filePath;
 		} catch (e) {
 			this.logService.error(`[browserAutomation] Failed to save screenshot for ${id}:`, e);
 			return null;
 		}
+	}
+
+	private async ensureSecureSpillDirectory(): Promise<string> {
+		const dir = join(tmpdir(), 'orbit-browser-automation');
+		await fsPromises.mkdir(dir, { recursive: true, mode: 0o700 });
+		const stat = await fsPromises.lstat(dir);
+		if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('Browser spill path is not a safe directory.');
+		if (typeof process.getuid === 'function' && stat.uid !== process.getuid()) throw new Error('Browser spill directory is not owned by the current user.');
+		if (process.platform !== 'win32') await fsPromises.chmod(dir, 0o700);
+		return dir;
 	}
 
 	/** Deletes spill files older than 24h and caps the directory at ~50 files. */

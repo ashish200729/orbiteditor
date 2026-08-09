@@ -4,10 +4,24 @@
  *--------------------------------------------------------------------------------------*/
 
 import * as assert from 'assert';
-import { mergeMcpConfigs, mergeMcpConfigsForProjects, MCPConfigFileJSON } from '../../common/mcpServiceTypes.js';
+import { fingerprintProjectMcpServer, mergeMcpConfigs, mergeMcpConfigsForProjects, MCPConfigFileJSON, projectMcpApprovalKey } from '../../common/mcpServiceTypes.js';
 import { BUNDLED_MARKETPLACE_CATALOG } from '../../common/marketplace/catalog.js';
+import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 
 suite('mergeMcpConfigs', () => {
+	ensureNoDisposablesAreLeakedInTestSuite();
+	test('project approvals are folder/name/config bound and canonical', async () => {
+		const a = await fingerprintProjectMcpServer('file:///workspace/a', 'server', {
+			command: 'node', args: ['server.js'], env: { TOKEN: 'secret', MODE: 'safe' },
+		});
+		const same = await fingerprintProjectMcpServer('file:///workspace/a', 'server', {
+			env: { MODE: 'safe', TOKEN: 'secret' }, args: ['server.js'], command: 'node',
+		});
+		assert.strictEqual(a, same, 'object key order must not change an approval fingerprint');
+		assert.notStrictEqual(a, await fingerprintProjectMcpServer('file:///workspace/b', 'server', { command: 'node', args: ['server.js'], env: { TOKEN: 'secret', MODE: 'safe' } }));
+		assert.notStrictEqual(a, await fingerprintProjectMcpServer('file:///workspace/a', 'server', { command: 'node', args: ['changed.js'], env: { TOKEN: 'secret', MODE: 'safe' } }));
+		assert.notStrictEqual(projectMcpApprovalKey('file:///workspace/a', 'server'), projectMcpApprovalKey('file:///workspace/b', 'server'));
+	});
 	test('merges disjoint user + project servers with correct scope tags', () => {
 		const user: MCPConfigFileJSON = { mcpServers: { a: { command: 'ua' } } };
 		const project: MCPConfigFileJSON = { mcpServers: { b: { command: 'pb' } } };
@@ -51,6 +65,7 @@ suite('mergeMcpConfigs', () => {
 });
 
 suite('BundledMarketplaceCatalog', () => {
+	ensureNoDisposablesAreLeakedInTestSuite();
 	// Reproduce the service's search logic against the bundled data (kept in sync with
 	// BundledMarketplaceCatalogService) so the test needs no DI container.
 	const search = (query: string, filter: 'all' | 'mcp' | 'skill') => {
@@ -71,6 +86,17 @@ suite('BundledMarketplaceCatalog', () => {
 			ids.add(item.id);
 			assert.ok(item.name, `missing name for ${item.id}`);
 			assert.ok(item.kind === 'mcp' || item.kind === 'skill', `bad kind for ${item.id}`);
+		}
+	});
+
+	test('catalog npx packages are pinned to immutable versions', () => {
+		for (const item of BUNDLED_MARKETPLACE_CATALOG) {
+			const mcp = item.mcp;
+			if (item.kind !== 'mcp' || !mcp || mcp.command !== 'npx') { continue; }
+			const packageArg = mcp.args?.find(arg => !arg.startsWith('-'));
+			assert.ok(packageArg, `${item.id} must declare an npx package`);
+			assert.ok(!packageArg!.endsWith('@latest'), `${item.id} must not use @latest`);
+			assert.match(packageArg!, /^(@[^/]+\/[^@]+|[^@]+)@[^@]+$/, `${item.id} must pin an exact version`);
 		}
 	});
 

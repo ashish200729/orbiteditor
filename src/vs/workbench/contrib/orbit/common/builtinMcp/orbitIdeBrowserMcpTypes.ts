@@ -29,7 +29,7 @@ CORE WORKFLOW:
 5. Use browser_snapshot for accessibility context and browser_take_screenshot for visual verification.
 6. Use browser_click, browser_type, browser_fill, browser_select_option, browser_press_key, browser_scroll, and browser_drag for page interactions.
 7. Use browser_highlight and browser_get_bounding_box for visual grounding and coordinate diagnostics.
-8. Use browser_cdp for page inspection, profiling, runtime evaluation, DOM/CSS queries, and performance data.
+8. Use browser_cdp only for reviewed read-only page inspection, profiling, DOM/CSS queries, and performance data.
 
 AVOID RABBIT HOLES:
 1. Do not repeat the same failing action more than once without new evidence such as a fresh snapshot, a different ref, a changed page state, or a clear new hypothesis.
@@ -45,16 +45,13 @@ CRITICAL - Lock/unlock workflow:
 4. Only call browser_lock with action: "unlock" when completely done with ALL browser operations for this turn
 
 IMPORTANT - Waiting strategy:
-When waiting for page changes, prefer short CDP polling loops with Runtime.evaluate, DOM queries, Page lifecycle signals, or browser_snapshot checks rather than a single long wait.
+When waiting for page changes, prefer fresh browser_snapshot checks or reviewed DOM/performance CDP queries rather than a single long wait.
 
 CDP USAGE:
-- Use browser_cdp with a DevTools Protocol method and params object, for example Runtime.evaluate, DOM.getDocument, CSS.getComputedStyleForNode, Profiler.start/stop, Performance.getMetrics, Log.enable, and Network.enable.
-- Do not use browser_cdp with CDP Input.* methods. They are denied because they are focus-sensitive in Electron webviews and can route input to Orbit UI instead of the browser page.
+- Use browser_cdp with a reviewed DevTools Protocol inspection/profiling method and params object, for example DOM.getDocument, CSS.getComputedStyleForNode, Profiler.start/stop, Performance.getMetrics, or Log.enable.
+- browser_cdp uses an exact allowlist. Runtime evaluation, Input.*, network bodies, cookies, storage, navigation, downloads, permissions, target management, and filesystem-backed commands are unavailable.
 - Use browser_click, browser_type, browser_fill, browser_select_option, browser_press_key, browser_scroll, and browser_drag for clicks, typing, filling inputs, selecting options, keyboard actions, scrolling, and drag-and-drop.
-- Use Runtime.evaluate for advanced DOM-scoped interactions that the dedicated browser tools do not cover.
 - For profiling, call Profiler.enable, Profiler.start, reproduce the behavior, then Profiler.stop. The profile is saved to a file and returned as a log_file; read that file only when you need to inspect details.
-- For JavaScript evaluation, prefer Runtime.evaluate with returnByValue when possible.
-- Some browser-wide or sensitive CDP methods are denied, especially cookie, storage, permission, download, target-management, filesystem-backed file-input commands, system-level commands, and CDP navigation/history navigation commands.
 - Large CDP responses are saved to files instead of being inlined. Prefer using the returned file path over immediately stuffing large payloads into context; read focused sections only when needed.
 
 VISION:
@@ -367,11 +364,11 @@ export const ORBIT_IDE_BROWSER_TOOLS: readonly MCPTool[] = [
 	},
 	{
 		name: 'browser_cdp',
-		description: 'Send a Chrome DevTools Protocol command to the target browser tab. Do not use CDP Input.* methods; use dedicated browser tools for clicks, text input, key presses, scrolling, and drag-and-drop. Browser-wide, storage, cookie, permission, download, target-management, and system-level commands are denied.',
+		description: 'Send a reviewed Chrome DevTools Protocol inspection or profiling command to the target browser tab. An exact allowlist excludes runtime evaluation, input, network bodies, cookies, storage, navigation, downloads, permissions, target management, and filesystem access.',
 		inputSchema: {
 			type: 'object',
 			properties: {
-				method: { type: 'string', description: 'CDP method name, for example Runtime.evaluate, DOM.getDocument, Profiler.start, or Performance.getMetrics.' },
+				method: { type: 'string', description: 'Allowed CDP method name, for example DOM.getDocument, CSS.getComputedStyleForNode, Profiler.start, or Performance.getMetrics.' },
 				params: { type: 'object', description: 'CDP params object. Omit or pass {} when the command takes no params.' },
 				viewId: { type: 'string', description: 'Target browser tab ID. If omitted, uses the last interacted tab.' },
 				take_screenshot_afterwards: { type: 'boolean', description: 'When true, takes a screenshot after the CDP command completes. Defaults to false.' },

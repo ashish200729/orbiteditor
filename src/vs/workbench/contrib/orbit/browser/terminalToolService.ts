@@ -13,10 +13,11 @@ import { createDecorator } from '../../../../platform/instantiation/common/insta
 import { TerminalLocation } from '../../../../platform/terminal/common/terminal.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
-import { VSBuffer } from '../../../../base/common/buffer.js';
 import { ITerminalService, ITerminalInstance, ICreateTerminalOptions } from '../../terminal/browser/terminal.js';
 import { MAX_TERMINAL_CHARS } from '../common/prompt/prompts.js';
 import { timeout } from '../../../../base/common/async.js';
+import { validateShellRegexPattern } from '../common/shellToolHelpers.js';
+import { assertNoWorkspaceSymlinkTraversal } from '../common/agentPathSecurity.js';
 
 export type ShellRunResult = {
 	kind: 'done' | 'timeout' | 'backgrounded';
@@ -83,6 +84,7 @@ export interface ITerminalToolService {
 	listShellIds(): string[];
 	listShellIdsForThread(threadId: string): string[];
 	shellExists(shellId: string): boolean;
+	shellBelongsToThread(shellId: string, threadId: string): boolean;
 	getShell(shellId: string): ShellInstance | undefined;
 
 	runShell(
@@ -99,6 +101,7 @@ export interface ITerminalToolService {
 
 	awaitShell(
 		shellId: string | null,
+		threadId: string | null,
 		opts: { blockUntilMs: number; pattern: string | null }
 	): Promise<AwaitShellResult>;
 
@@ -121,20 +124,14 @@ export class TerminalToolService extends Disposable implements ITerminalToolServ
 	private defaultShellIdByThread: Record<string, string> = {};
 	private _sleepWaitRelease: (() => void) | undefined;
 
-	// Ring counter for full-output overflow files under .orbit/history (bounds clutter to N files).
-	private _shellOutputFileSeq = 0;
-
 	constructor(
 		@ITerminalService private readonly terminalService: ITerminalService,
 		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
 		@IFileService private readonly fileService: IFileService,
 	) {
 		super();
-		// Clean up shell output overflow files on dispose: these contain full terminal
-		// command output that may include sensitive data (API keys, credentials, etc.).
-		this._register(toDisposable(() => {
-			this._cleanupShellOutputFiles();
-		}));
+		const folder = this._defaultCwdUri();
+		if (folder) void this._cleanupLegacyShellOutputFiles(folder);
 	}
 
 	listShellIds(): string[] {
@@ -147,6 +144,10 @@ export class TerminalToolService extends Disposable implements ITerminalToolServ
 
 	shellExists(shellId: string): boolean {
 		return shellId in this.shellInstanceOfId;
+	}
+
+	shellBelongsToThread(shellId: string, threadId: string): boolean {
+		return this.shellInstanceOfId[shellId]?.threadId === threadId;
 	}
 
 	getShell(shellId: string): ShellInstance | undefined {
@@ -259,6 +260,7 @@ export class TerminalToolService extends Disposable implements ITerminalToolServ
 
 	createShell: ITerminalToolService['createShell'] = async ({ shellId, workingDirectory, threadId }) => {
 		await this.terminalService.whenConnected;
+		if (workingDirectory) void this._cleanupLegacyShellOutputFiles(URI.file(workingDirectory));
 		const config = { name: shellDisplayName(shellId), title: shellDisplayName(shellId) };
 		const terminal = await this._createTerminal({ cwd: workingDirectory, config });
 
@@ -299,7 +301,11 @@ export class TerminalToolService extends Disposable implements ITerminalToolServ
 	};
 
 	getOrCreateShellForThread: ITerminalToolService['getOrCreateShellForThread'] = async ({ threadId, proposedShellId, workingDirectory }) => {
-		const idleShell = this._listShellsForThread(threadId).find(shell => !shell.commandInFlight);
+		// A PTY's cwd cannot be changed safely from outside the shell. Reuse only a
+		// shell that was created in the requested directory; otherwise create a new
+		// PTY rooted there. This avoids synthesizing `cd <model path> && ...`.
+		const idleShell = this._listShellsForThread(threadId).find(shell =>
+			!shell.commandInFlight && shell.workingDirectory === workingDirectory);
 		if (idleShell) {
 			this._refreshShellPid(idleShell);
 			return { shellId: idleShell.id, pid: idleShell.pid, created: false };
@@ -339,7 +345,7 @@ export class TerminalToolService extends Disposable implements ITerminalToolServ
 		return this._capOutput(result, shell.workingDirectory);
 	};
 
-	private async _capOutput(result: string, workingDirectory?: string | null): Promise<string> {
+	private async _capOutput(result: string, _workingDirectory?: string | null): Promise<string> {
 		if (result.length <= MAX_TERMINAL_CHARS) return result;
 
 		const fullLen = result.length;
@@ -347,54 +353,26 @@ export class TerminalToolService extends Disposable implements ITerminalToolServ
 		const head = result.slice(0, half);
 		const tail = result.slice(result.length - half);
 
-		// Persist the full output to a workspace file so the agent can read the omitted middle
-		// (Cursor's "write long output to a file, let the agent tail/read it" pattern). Awaited
-		// so the path we hand back is guaranteed to be readable by the time we return it — a
-		// fire-and-forget write let the agent race the write and read a stale/empty file.
-		const relPath = await this._writeFullOutputFile(result, workingDirectory);
-		const note = relPath
-			? `\n\n[Output truncated: ${fullLen} chars total, showing first & last ${half}. Full output saved to ${relPath} — read that file for the omitted middle.]\n\n`
-			: `\n\n...[truncated ${fullLen - MAX_TERMINAL_CHARS} chars]...\n\n`;
+		// Never spill raw terminal output into the repository: commands frequently
+		// print credentials and environment values. Keep a bounded in-memory view;
+		// users can redirect deliberately when they need a durable full log.
+		const note = `\n\n...[truncated ${fullLen - MAX_TERMINAL_CHARS} chars; full output was not persisted for security]...\n\n`;
 		return head + note + tail;
 	}
 
-	/** Writes the full command output to a bounded ring of files under .orbit/history and
-	 * resolves once the write has landed, so the returned path is safe to read immediately. */
-	private async _writeFullOutputFile(fullOutput: string, workingDirectory?: string | null): Promise<string | undefined> {
-		try {
-			let folder: URI | undefined;
-			if (workingDirectory) {
-				try {
-					folder = URI.file(workingDirectory);
-				} catch {
-					folder = undefined;
-				}
-			}
-			folder ??= this._defaultCwdUri();
-			if (!folder) return undefined;
-			const seq = this._shellOutputFileSeq++ % 20; // ring buffer: cap clutter at 20 files
-			const relPath = `.orbit/history/shell-output-${seq}.log`;
-			const uri = URI.joinPath(folder, '.orbit', 'history', `shell-output-${seq}.log`);
-			await this.fileService.writeFile(uri, VSBuffer.fromString(fullOutput));
-			return relPath;
-		} catch {
-			return undefined;
-		}
-	}
-
-	/** Best-effort cleanup of all shell output overflow files from .orbit/history. */
-	private _cleanupShellOutputFiles(): void {
-		const folder = this._defaultCwdUri();
-		if (!folder) return;
+	/** Best-effort migration cleanup for plaintext files written by older builds. */
+	private async _cleanupLegacyShellOutputFiles(folder: URI): Promise<void> {
 		const historyDir = URI.joinPath(folder, '.orbit', 'history');
-		void this.fileService.resolve(historyDir).then(stat => {
-			if (!stat.children) return;
-			for (const child of stat.children) {
-				if (child.name && child.name.startsWith('shell-output-') && child.name.endsWith('.log')) {
-					void this.fileService.del(child.resource).catch(() => { /* best-effort */ });
+		try {
+			await assertNoWorkspaceSymlinkTraversal(historyDir, [folder], uri => this.fileService.stat(uri));
+			const stat = await this.fileService.resolve(historyDir);
+			for (const child of stat.children ?? []) {
+				if (/^shell-output-\d+\.log$/.test(child.name)) {
+					await assertNoWorkspaceSymlinkTraversal(child.resource, [folder], uri => this.fileService.stat(uri));
+					await this.fileService.del(child.resource).catch(() => { /* best-effort */ });
 				}
 			}
-		}).catch(() => { /* best-effort: dir may not exist */ });
+		} catch { /* directory is normally absent */ }
 	}
 
 	private _ensureDataListener(shell: ShellInstance): void {
@@ -414,7 +392,9 @@ export class TerminalToolService extends Disposable implements ITerminalToolServ
 	}
 
 	private _matchPatternInBuffer(text: string, regex: RegExp): RegExpMatchArray | null {
-		return text.match(regex);
+		// Validation admits only a bounded linear-time subset. Capping the searched
+		// suffix is an additional fixed upper bound for high-volume terminals.
+		return text.slice(-32_768).match(regex);
 	}
 
 	/** Returns the last non-empty line of `text` (trailing whitespace trimmed). */
@@ -559,6 +539,7 @@ export class TerminalToolService extends Disposable implements ITerminalToolServ
 			return Disposable.None;
 		}
 
+		validateShellRegexPattern('notify_on_output.pattern', w.pattern);
 		const watcher: NotifyWatcher = {
 			pattern: new RegExp(w.pattern, 'm'),
 			debounceMs: w.debounceMs,
@@ -611,17 +592,8 @@ export class TerminalToolService extends Disposable implements ITerminalToolServ
 
 		this._ensureDataListener(shell);
 		shell.lastCommand = command;
-		// The command may carry a leading `cd <dir> &&` (prepended by the caller
-		// when a working_directory is requested). We optimistically track the new
-		// cwd here so a still-running (timeout/background) command — whose `cd`
-		// ran first and succeeded — reports the right directory. If the command
-		// finishes with a non-zero exit, the `cd` may have failed (the `&&`
-		// short-circuited), so we restore this previous value below rather than
-		// trust a directory we never confirmed the shell entered.
-		const prevWorkingDirectory = shell.workingDirectory;
-		if (opts.workingDirectory !== undefined) {
-			shell.workingDirectory = opts.workingDirectory;
-		}
+		// Each shell is created directly in its immutable working directory, so the
+		// model command never needs a synthesized `cd` prefix.
 		shell.commandInFlight = true;
 		this._refreshShellPid(shell);
 		const startedAt = Date.now();
@@ -764,13 +736,6 @@ export class TerminalToolService extends Disposable implements ITerminalToolServ
 		const durationMs = Date.now() - startedAt;
 
 		if (resolveReason === 'done') {
-			// A non-zero exit means the command (which may begin with a `cd`) did
-			// not fully succeed. Restore the previously tracked cwd so the next
-			// same-dir command re-emits the `cd` instead of skipping it on the
-			// assumption we already changed directory.
-			if (exitCode !== 0 && opts.workingDirectory !== undefined) {
-				shell.workingDirectory = prevWorkingDirectory;
-			}
 			const result = removeAnsiEscapeCodes(cmdOutput ? cmdOutput : await readResult());
 			return { kind: 'done', result: await this._capOutput(result, shell.workingDirectory), exitCode, shellId, durationMs };
 		}
@@ -802,7 +767,7 @@ export class TerminalToolService extends Disposable implements ITerminalToolServ
 		};
 	};
 
-	awaitShell: ITerminalToolService['awaitShell'] = async (shellId, opts) => {
+	awaitShell: ITerminalToolService['awaitShell'] = async (shellId, threadId, opts) => {
 		const start = Date.now();
 
 		// Sleep-only mode when no shell_id (matches Cursor Await contract)
@@ -823,7 +788,7 @@ export class TerminalToolService extends Disposable implements ITerminalToolServ
 		}
 
 		const shell = this.shellInstanceOfId[shellId];
-		if (!shell) {
+		if (!shell || !threadId || shell.threadId !== threadId) {
 			return {
 				kind: 'notfound',
 				error: `Shell with id "${shellId}" does not exist.`,
@@ -851,6 +816,7 @@ export class TerminalToolService extends Disposable implements ITerminalToolServ
 		let regex: RegExp | undefined;
 		if (opts.pattern) {
 			try {
+				validateShellRegexPattern('pattern', opts.pattern);
 				regex = new RegExp(opts.pattern, 'm');
 			} catch (e) {
 				throw new Error(`AwaitShell: invalid pattern regular expression. ${e instanceof Error ? e.message : String(e)}`);
@@ -877,7 +843,6 @@ export class TerminalToolService extends Disposable implements ITerminalToolServ
 
 		const patternPromise = new Promise<void>((resolve) => {
 			if (!regex) {
-				resolve();
 				return;
 			}
 			const onData = shell.terminal.onData(() => {

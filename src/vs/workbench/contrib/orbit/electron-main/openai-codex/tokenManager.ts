@@ -5,6 +5,7 @@
 
 import { OPENAI_CODEX_OAUTH_CONFIG } from './oauthConfig.js'
 import type { IdTokenClaims, OAuthTokenResponse, OpenAiCodexCredentials } from './oauthTypes.js'
+import { fetchWithEndpointPolicy } from '../../common/networkSecurity.js'
 
 const EXPIRY_BUFFER_MS = 5 * 60 * 1000
 
@@ -93,14 +94,14 @@ export const exchangeCodeForTokens = async (params: { code: string; codeVerifier
 		redirect_uri: params.redirectUri,
 	})
 
-	const response = await fetch(OPENAI_CODEX_OAUTH_CONFIG.tokenEndpoint, {
+	const response = await fetchWithEndpointPolicy(OPENAI_CODEX_OAUTH_CONFIG.tokenEndpoint, {
 		method: 'POST',
 		headers: {
 			'Content-Type': 'application/x-www-form-urlencoded',
 		},
 		body,
 		signal: AbortSignal.timeout(30000), // 30 second timeout
-	})
+	}, 'OpenAI Codex token endpoint')
 
 	const payload = await parseJsonResponse(response)
 	if (!response.ok) {
@@ -118,14 +119,14 @@ export const refreshAccessToken = async (refreshToken: string): Promise<OpenAiCo
 		refresh_token: refreshToken,
 	})
 
-	const response = await fetch(OPENAI_CODEX_OAUTH_CONFIG.tokenEndpoint, {
+	const response = await fetchWithEndpointPolicy(OPENAI_CODEX_OAUTH_CONFIG.tokenEndpoint, {
 		method: 'POST',
 		headers: {
 			'Content-Type': 'application/x-www-form-urlencoded',
 		},
 		body,
 		signal: AbortSignal.timeout(30000), // 30 second timeout
-	})
+	}, 'OpenAI Codex token endpoint')
 
 	const payload = await parseJsonResponse(response)
 	if (!response.ok) {

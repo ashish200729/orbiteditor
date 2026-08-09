@@ -5,8 +5,19 @@
 
 import { promisify } from 'util'
 import { execFile as _execFile } from 'child_process'
-import { readFile } from 'fs/promises'
-import { resolve, relative, isAbsolute, sep } from 'path'
+import { readFile, realpath } from 'fs/promises'
+import { basename, dirname, resolve, relative, isAbsolute, sep } from 'path'
+import { Event } from '../../../../base/common/event.js'
+import { IServerChannel } from '../../../../base/parts/ipc/common/ipc.js'
+import { IWindowsMainService } from '../../../../platform/windows/electron-main/windows.js'
+import { IWorkspacesManagementMainService } from '../../../../platform/workspaces/electron-main/workspacesManagementMainService.js'
+import { isSingleFolderWorkspaceIdentifier, isWorkspaceIdentifier } from '../../../../platform/workspace/common/workspace.js'
+import { Schemas } from '../../../../base/common/network.js'
+import { IApplicationStorageMainService } from '../../../../platform/storage/electron-main/storageMainService.js'
+import { StorageScope } from '../../../../platform/storage/common/storage.js'
+import { URI } from '../../../../base/common/uri.js'
+import { AGENT_PROJECT_WORKSPACES_STORAGE_KEY } from '../common/storageKeys.js'
+import { parseAgentWorkspaceState } from '../common/agentWorkspaceHelpers.js'
 
 /**
  * Resolve `file` (arriving raw over IPC) against `root` and verify it stays inside `root`.
@@ -465,10 +476,19 @@ export class VoidSCMService implements IVoidSCMService {
 			const branch = options.branch || (await runGit(root, ['branch', '--show-current'])).stdout.trim()
 			if (!branch) { return { ok: false, stdout: '', error: 'Cannot set upstream from a detached HEAD — check out a branch first.' } }
 			const remote = options.remote || 'origin'
+			if (!isSafeRemoteName(remote) || !isSafeRefName(branch)) {
+				return { ok: false, stdout: '', error: 'Invalid remote or branch name.' }
+			}
 			args.push('-u', remote, branch)
 		} else {
-			if (options?.remote) { args.push(options.remote) }
-			if (options?.branch) { args.push(options.branch) }
+			if (options?.remote) {
+				if (!isSafeRemoteName(options.remote)) { return { ok: false, stdout: '', error: 'Invalid remote name.' } }
+				args.push(options.remote)
+			}
+			if (options?.branch) {
+				if (!isSafeRefName(options.branch)) { return { ok: false, stdout: '', error: 'Invalid branch name.' } }
+				args.push(options.branch)
+			}
 		}
 		return toResult(await runGit(root, args))
 	}
@@ -508,6 +528,10 @@ export class VoidSCMService implements IVoidSCMService {
 			// like ".../orbit-editor-orbit-branch" legitimately contain hyphens.
 			if (!path || path.includes('\0') || /^[\s-]/.test(path)) {
 				return { ok: false, stdout: '', error: 'Invalid worktree path.' }
+			}
+			const expectedPrefix = `${basename(resolve(root))}-orbit-`
+			if (dirname(resolve(path)) !== dirname(resolve(root)) || !basename(resolve(path)).startsWith(expectedPrefix)) {
+				return { ok: false, stdout: '', error: `Worktree path must be a sibling named ${expectedPrefix}…` }
 			}
 			return toResult(await runGit(root, ['worktree', 'add', '-B', localBranch, path, tracking]))
 		}
@@ -572,6 +596,123 @@ export class VoidSCMService implements IVoidSCMService {
 		if (remotes.includes(preferred)) { return preferred }
 		const first = remotes.find(name => isSafeRemoteName(name))
 		return first ?? null
+	}
+}
+
+const SCM_IPC_COMMANDS = new Set([
+	'gitStat', 'gitSampledDiffs', 'gitBranch', 'gitLog', 'getRepoRoot', 'getStatus',
+	'getDiff', 'getFileContent', 'getTotals', 'getBranches', 'getRemoteBranches',
+	'getRemoteBranchCommit', 'getHeadCommit', 'stage', 'unstage', 'stageAll',
+	'unstageAll', 'discard', 'applyPatch', 'commit', 'createBranch', 'checkoutBranch',
+	'push', 'fetch', 'checkoutRemoteBranch', 'getPullRequestUrl', 'getCompareUrl',
+	'getRemoteHttpsUrl', 'getRemoteUrl',
+])
+
+/**
+ * Renderer-facing SCM channel. The old generic proxy accepted any renderer-
+ * supplied cwd, turning the main process into a Git/file oracle for unrelated
+ * repositories. Resolve roots from the calling window and reject every command
+ * whose target is not that window's actual repository root.
+ */
+export class OrbitSCMChannel implements IServerChannel {
+	constructor(
+		private readonly service: IVoidSCMService,
+		private readonly windowsMainService: IWindowsMainService,
+		private readonly workspacesManagementMainService: IWorkspacesManagementMainService,
+		private readonly applicationStorageMainService: IApplicationStorageMainService,
+	) { }
+
+	listen<T>(): Event<T> {
+		throw new Error('SCM channel does not expose events.')
+	}
+
+	async call<T>(ctx: unknown, command: string, arg?: unknown): Promise<T> {
+		if (!SCM_IPC_COMMANDS.has(command)) {
+			throw new Error(`Unknown SCM command: ${command}`)
+		}
+		const args = Array.isArray(arg) ? arg : [arg]
+		const windowId = this.toWindowId(ctx)
+		const firstArgIsContext = typeof args[0] === 'number'
+		if (firstArgIsContext && args[0] !== windowId) {
+			throw new Error('SCM request window context does not match its IPC connection.')
+		}
+		const methodArgs = firstArgIsContext ? args.slice(1) : args
+		const target = String(methodArgs[0] ?? '')
+		if (command === 'getRepoRoot') {
+			await this.assertPathInsideWindowWorkspace(windowId, target)
+		} else {
+			await this.assertRepositoryRootForWindow(windowId, target)
+		}
+		const method = (this.service as unknown as Record<string, (...values: unknown[]) => unknown>)[command]
+		return await method.apply(this.service, methodArgs) as T
+	}
+
+	private toWindowId(ctx: unknown): number {
+		if (typeof ctx === 'string' && /^window:\d+$/.test(ctx)) return Number(ctx.slice('window:'.length))
+		throw new Error('SCM request has no valid window context.')
+	}
+
+	private async workspaceFolders(windowId: number): Promise<string[]> {
+		const window = this.windowsMainService.getWindowById(windowId)
+		if (!window) throw new Error('SCM request came from an unknown window.')
+		const result: string[] = []
+		const opened = window.remoteAuthority ? undefined : window.openedWorkspace
+		if (opened && isSingleFolderWorkspaceIdentifier(opened)) {
+			if (opened.uri.scheme !== Schemas.file) { throw new Error('SCM requires a local file workspace.') }
+			result.push(await realpath(opened.uri.fsPath))
+		}
+		if (opened && isWorkspaceIdentifier(opened)) {
+			const resolvedWorkspace = await this.workspacesManagementMainService.resolveLocalWorkspace(opened.configPath)
+			const folders = resolvedWorkspace?.folders.filter(folder => folder.uri.scheme === Schemas.file) ?? []
+			result.push(...await Promise.all(folders.map(folder => realpath(folder.uri.fsPath))))
+		}
+		// A window without an opened IDE workspace can be an Agents window. Scope
+		// it only to the currently active user-selected workspace, never every
+		// historical workspace saved in application storage.
+		if (result.length === 0) {
+			await this.applicationStorageMainService.whenReady
+			const saved = parseAgentWorkspaceState(this.applicationStorageMainService.get(
+				AGENT_PROJECT_WORKSPACES_STORAGE_KEY,
+				StorageScope.APPLICATION,
+			))
+			const active = saved.activeWorkspaceId ? saved.workspaces[saved.activeWorkspaceId] : undefined
+			for (const folder of active?.folders ?? []) {
+				try {
+					const uri = URI.parse(folder.uri)
+					if (uri.scheme === Schemas.file) result.push(await realpath(uri.fsPath))
+				} catch { /* stale saved folder */ }
+			}
+		}
+		const unique = [...new Set(result)]
+		if (unique.length === 0) throw new Error('SCM commands require an authorized local workspace folder.')
+		return unique
+	}
+
+	private isEqualOrInside(parent: string, candidate: string): boolean {
+		const rel = relative(parent, candidate)
+		return rel === '' || (!rel.startsWith(`..${sep}`) && rel !== '..' && !isAbsolute(rel))
+	}
+
+	private async assertPathInsideWindowWorkspace(windowId: number, candidate: string): Promise<void> {
+		if (!candidate || candidate.includes('\0')) { throw new Error('Invalid SCM path.') }
+		const actual = await realpath(candidate)
+		const folders = await this.workspaceFolders(windowId)
+		if (!folders.some(folder => this.isEqualOrInside(folder, actual))) {
+			throw new Error('SCM path is outside the calling window workspace.')
+		}
+	}
+
+	private async assertRepositoryRootForWindow(windowId: number, candidate: string): Promise<void> {
+		if (!candidate || candidate.includes('\0')) { throw new Error('Invalid SCM repository root.') }
+		const actualCandidate = await realpath(candidate)
+		const folders = await this.workspaceFolders(windowId)
+		if (!folders.some(folder => this.isEqualOrInside(folder, actualCandidate))) {
+			throw new Error('SCM repository is outside the calling window workspace.')
+		}
+		const discoveredRoot = await this.service.getRepoRoot(actualCandidate)
+		if (!discoveredRoot || await realpath(discoveredRoot) !== actualCandidate) {
+			throw new Error('SCM repository is not associated with the calling window workspace.')
+		}
 	}
 }
 

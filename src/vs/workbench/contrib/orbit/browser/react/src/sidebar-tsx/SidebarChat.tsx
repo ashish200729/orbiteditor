@@ -54,6 +54,7 @@ import { TodoProvider } from './contexts/TodoContext.js';
 import { ChatMessagesScrollArea } from './components/chat/ChatMessagesScrollArea.js';
 import { AgentWorkspaceHeader } from '../agent-window-tsx/AgentWorkspaceHeader.js';
 import { AgentChatRunHeader } from '../agent-window-tsx/AgentChatRunHeader.js';
+import { ImageMarkupEditor } from './ImageMarkupEditor.js';
 import {
 	VOID_MESSAGE_QUEUE,
 	VOID_MESSAGE_QUEUE_ACTION,
@@ -200,8 +201,13 @@ const SidebarChatLoaded = ({ isAgentWindow = false, currentThread }: { isAgentWi
 	// State for images. Each carries a stable id so React keys survive delete+add (index keys
 	// reuse the wrong DOM node, and identical data-URLs would collide if keyed by content).
 	const [images, setImages] = useState<StagedImage[]>([])
+	const [editingImageTarget, setEditingImageTarget] = useState<{ threadId: string; imageId: string } | null>(null)
 	// State for drag and drop visual feedback
 	const [isDragOver, setIsDragOver] = useState(false)
+	const editingImageId = editingImageTarget?.threadId === threadId ? editingImageTarget.imageId : null
+	useEffect(() => {
+		setEditingImageTarget(current => current?.threadId === threadId ? current : null)
+	}, [threadId])
 	const globalExecutionTarget = parseExecutionTargetId(settingsState.globalSettings.executionTarget)
 	const threadRunnerId = chatThreadsState.allThreads[threadId]?.runnerProfile?.lastRunnerId
 	const workspaceGit = useWorkspaceGitForRunner(isAgentWindow)
@@ -641,6 +647,7 @@ const SidebarChatLoaded = ({ isAgentWindow = false, currentThread }: { isAgentWi
 				}
 				setSelections([])
 				setImages([])
+				setEditingImageTarget(null)
 				textAreaFnsRef.current?.setValue('')
 				focusInConnectedWindow(textAreaRef.current)
 			} catch (e) {
@@ -673,6 +680,7 @@ const SidebarChatLoaded = ({ isAgentWindow = false, currentThread }: { isAgentWi
 
 		setSelections([]) // clear staging
 		setImages([]) // clear images
+		setEditingImageTarget(null)
 		textAreaFnsRef.current?.setValue('')
 		focusInConnectedWindow(textAreaRef.current) // focus input after submit (keeps Agents pop-out frontmost)
 
@@ -874,6 +882,15 @@ const SidebarChatLoaded = ({ isAgentWindow = false, currentThread }: { isAgentWi
 		setImages(prev => prev.filter(im => im.id !== id))
 	}, [])
 
+	const saveAnnotatedImage = useCallback((imageUrl: string) => {
+		if (!editingImageId) return
+		setImages(prev => prev.map(image => image.id === editingImageId ? { ...image, url: imageUrl } : image))
+		setEditingImageTarget(null)
+	}, [editingImageId])
+
+	const editingImageIndex = editingImageId ? images.findIndex(image => image.id === editingImageId) : -1
+	const editingImage = editingImageIndex >= 0 ? images[editingImageIndex] : undefined
+
 	// File input ref for image button
 	const fileInputRef = useRef<HTMLInputElement | null>(null)
 
@@ -897,7 +914,7 @@ const SidebarChatLoaded = ({ isAgentWindow = false, currentThread }: { isAgentWi
 		commandService.executeCommand('simpleBrowser.show', url)
 	}, [commandService, agentWindowService, inAgentWindow])
 
-	const inputChatArea = <VoidChatArea
+	const inputChatArea = <><VoidChatArea
 		featureName='Chat'
 		onSubmit={() => onSubmit()}
 		onAbort={onAbort}
@@ -971,20 +988,34 @@ className={`min-h-[40px] px-0.5 py-0.5 resize-none placeholder:text-void-fg-4`}
 					onDrop={dragHandlers.handleDrop}
 				>
 					{images.map((im, index) => (
-						<div key={im.id} className='relative'>
-							<img
-								src={im.url}
-								alt={`Upload ${index + 1}`}
-								className='w-12 h-12 object-cover rounded border border-void-border-3 shadow-sm'
-							/>
-					<button
-						type='button'
-						onClick={() => removeImage(im.id)}
-						aria-label={`Remove image ${index + 1}`}
-						className='absolute -top-1 -right-1 bg-void-bg-3 rounded-full p-0.5 hover:brightness-125 cursor-pointer shadow-sm'
-					>
-						<IconX size={12} className='stroke-[2]' aria-hidden />
-					</button>
+						<div key={im.id} className='@@orbit-image-attachment'>
+							<button
+								type='button'
+								onClick={(event) => {
+									event.stopPropagation()
+									setEditingImageTarget({ threadId, imageId: im.id })
+								}}
+								aria-label={`Annotate attached image ${index + 1}`}
+								title={`Annotate image ${index + 1}`}
+								className='@@orbit-image-attachment-button'
+							>
+								<img
+									src={im.url}
+									alt=''
+									className='@@orbit-image-attachment-preview'
+								/>
+							</button>
+							<button
+								type='button'
+								onClick={(event) => {
+									event.stopPropagation()
+									removeImage(im.id)
+								}}
+								aria-label={`Remove image ${index + 1}`}
+								className='@@orbit-image-attachment-remove'
+							>
+								<IconX size={12} className='stroke-[2]' aria-hidden />
+							</button>
 						</div>
 					))}
 				</div>
@@ -992,6 +1023,16 @@ className={`min-h-[40px] px-0.5 py-0.5 resize-none placeholder:text-void-fg-4`}
 		</div>
 
 	</VoidChatArea>
+
+	{editingImage && (
+		<ImageMarkupEditor
+			imageUrl={editingImage.url}
+			imageIndex={editingImageIndex}
+			onCancel={() => setEditingImageTarget(null)}
+				onSave={saveAnnotatedImage}
+		/>
+	)}
+	</>
 
 
 	const isLandingPage = previousMessages.length === 0

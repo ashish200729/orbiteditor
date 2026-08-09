@@ -182,7 +182,6 @@ To open a browser-downloaded DMG build anyway:
 
 - Right-click (or Control-click) `Orbit.app` → **Open** → **Open Anyway**, or
 - System Settings → Privacy & Security → scroll to the blocked-app notice → **Open Anyway**, or
-- One-time terminal bypass: `xattr -cr /Applications/Orbit.app`
 
 If you instead see the old **"is damaged and can't be opened. You should move it to the Bin."** message, the DMG was built before signing was wired in — rebuild it.
 
@@ -198,10 +197,10 @@ Requires an active [Apple Developer Program](https://developer.apple.com/program
 
 ```bash
 MACOS_CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID1234)" \
-./scripts/publish-release.sh 0.2.0 arm64
+./scripts/release-macos.sh 0.2.0
 ```
 
-Entitlements used for signing live in `build/entitlements/orbit-darwin.entitlements.plist` (standard Electron hardened-runtime entitlements — JIT, unsigned executable memory, etc.).
+Entitlements are scoped per Electron process under `build/azure-pipelines/darwin/`.
 
 Note: real Developer ID signing alone still isn't enough to fully clear Gatekeeper — Apple also requires notarization (`xcrun notarytool` + `xcrun stapler`) for a download to open with zero prompts. That's not wired in currently; ad-hoc signing is the fix in place today (see Troubleshooting above for what that means for end users).
 

@@ -32,6 +32,7 @@ import { clinePassProviderList } from './clinePassProviderList.js';
 import { orbitProviderList } from './orbitProviderList.js';
 import { schemaOfToolInfo } from './toolSchema.js';
 import { buildOpenAiCodexRequestHeaders } from './openAiCodexRequestHeaders.js';
+import { fetchWithEndpointPolicy, remoteHttpEndpointPolicyError } from '../../common/networkSecurity.js';
 
 const getGoogleApiKey = async () => {
 	// module‑level singleton
@@ -149,6 +150,19 @@ export type ListParams_Internal<ModelResponse> = ModelListParams<ModelResponse>
 
 const invalidApiKeyMessage = (providerName: ProviderName) => `Invalid ${displayInfoOfProviderName(providerName).title} API key.`
 
+const assertProviderEndpoint = (endpoint: string, providerName: ProviderName): string => {
+	const policyError = remoteHttpEndpointPolicyError(endpoint, `${displayInfoOfProviderName(providerName).title} endpoint`)
+	if (policyError) throw new Error(policyError)
+	return endpoint
+}
+
+const guardedProviderFetch = (providerName: ProviderName): NonNullable<ClientOptions['fetch']> => ((input: any, init: any) => {
+	const policyInput = typeof input === 'string' || input instanceof URL || input instanceof Request
+		? input
+		: typeof input?.url === 'string' ? input.url : String(input)
+	return fetchWithEndpointPolicy(policyInput, init, `${displayInfoOfProviderName(providerName).title} endpoint`)
+}) as unknown as NonNullable<ClientOptions['fetch']>
+
 // ------------ OPENAI-COMPATIBLE (HELPERS) ------------
 
 
@@ -166,6 +180,7 @@ const newOpenAICompatibleSDK = async ({ settingsOfProvider, providerName, includ
 	const commonPayloadOpts: ClientOptions = {
 		dangerouslyAllowBrowser: true,
 		...includeInPayload,
+		fetch: guardedProviderFetch(providerName),
 	}
 	if (providerName === 'openAI') {
 		const thisConfig = settingsOfProvider[providerName]
@@ -173,19 +188,19 @@ const newOpenAICompatibleSDK = async ({ settingsOfProvider, providerName, includ
 	}
 	else if (providerName === 'ollama') {
 		const thisConfig = settingsOfProvider[providerName]
-		return new OpenAI({ baseURL: `${thisConfig.endpoint}/v1`, apiKey: 'noop', ...commonPayloadOpts })
+		return new OpenAI({ baseURL: `${assertProviderEndpoint(thisConfig.endpoint, providerName)}/v1`, apiKey: 'noop', ...commonPayloadOpts })
 	}
 	else if (providerName === 'vLLM') {
 		const thisConfig = settingsOfProvider[providerName]
-		return new OpenAI({ baseURL: `${thisConfig.endpoint}/v1`, apiKey: 'noop', ...commonPayloadOpts })
+		return new OpenAI({ baseURL: `${assertProviderEndpoint(thisConfig.endpoint, providerName)}/v1`, apiKey: 'noop', ...commonPayloadOpts })
 	}
 	else if (providerName === 'liteLLM') {
 		const thisConfig = settingsOfProvider[providerName]
-		return new OpenAI({ baseURL: `${thisConfig.endpoint}/v1`, apiKey: 'noop', ...commonPayloadOpts })
+		return new OpenAI({ baseURL: `${assertProviderEndpoint(thisConfig.endpoint, providerName)}/v1`, apiKey: 'noop', ...commonPayloadOpts })
 	}
 	else if (providerName === 'lmStudio') {
 		const thisConfig = settingsOfProvider[providerName]
-		return new OpenAI({ baseURL: `${thisConfig.endpoint}/v1`, apiKey: 'noop', ...commonPayloadOpts })
+		return new OpenAI({ baseURL: `${assertProviderEndpoint(thisConfig.endpoint, providerName)}/v1`, apiKey: 'noop', ...commonPayloadOpts })
 	}
 	else if (providerName === 'openRouter') {
 		const thisConfig = settingsOfProvider[providerName]
@@ -230,6 +245,7 @@ const newOpenAICompatibleSDK = async ({ settingsOfProvider, providerName, includ
 		// ① use the user-supplied proxy if present
 		// ② otherwise default to local LiteLLM
 		let baseURL = endpoint || 'http://localhost:4000/v1'
+		assertProviderEndpoint(baseURL, providerName)
 
 		// Normalize: make sure we end with “/v1”
 		if (!baseURL.endsWith('/v1'))
@@ -246,7 +262,7 @@ const newOpenAICompatibleSDK = async ({ settingsOfProvider, providerName, includ
 	else if (providerName === 'openAICompatible') {
 		const thisConfig = settingsOfProvider[providerName]
 		const headers = parseHeadersJSON(thisConfig.headersJSON)
-		return new OpenAI({ baseURL: thisConfig.endpoint, apiKey: thisConfig.apiKey, defaultHeaders: headers, ...commonPayloadOpts })
+		return new OpenAI({ baseURL: assertProviderEndpoint(thisConfig.endpoint, providerName), apiKey: thisConfig.apiKey, defaultHeaders: headers, ...commonPayloadOpts })
 	}
 	else if (providerName === 'groq') {
 		const thisConfig = settingsOfProvider[providerName]
@@ -1564,7 +1580,10 @@ const sendMistralFIM = ({ messages, onFinalMessage, onError, settingsOfProvider,
 const newOllamaSDK = ({ endpoint }: { endpoint: string }) => {
 	// if endpoint is empty, normally ollama will send to 11434, but we want it to fail - the user should type it in
 	if (!endpoint) throw new Error(`Ollama Endpoint was empty (please enter ${defaultProviderSettings.ollama.endpoint} in Void if you want the default url).`)
-	const ollama = new Ollama({ host: endpoint })
+	const ollama = new Ollama({
+		host: assertProviderEndpoint(endpoint, 'ollama'),
+		fetch: (input, init) => fetchWithEndpointPolicy(input, init, 'Ollama endpoint'),
+	})
 	return ollama
 }
 

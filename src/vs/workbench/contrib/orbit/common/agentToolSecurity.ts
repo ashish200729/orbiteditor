@@ -27,6 +27,10 @@ export function getBuiltinToolPathUris(toolName: BuiltinToolName, params: unknow
 			return pick(p.path);
 		case 'Glob':
 			return pick(p.targetDirectory);
+		case 'Shell': {
+			const workingDirectory = (params as BuiltinToolCallParams['Shell']).workingDirectory;
+			return workingDirectory ? [URI.file(workingDirectory)] : [];
+		}
 		default:
 			return [];
 	}
@@ -43,7 +47,7 @@ export function getPathAccessApprovalReason(
 ): string | undefined {
 	for (const uri of getBuiltinToolPathUris(toolName, params)) {
 		if (uri.scheme !== 'file' && uri.scheme !== 'vscode-remote') {
-			continue;
+			return `access through unsupported URI scheme (${uri.scheme || 'unknown'})`;
 		}
 		const fsPath = uri.fsPath;
 		if (SENSITIVE_PATH_RE.test(fsPath)) {

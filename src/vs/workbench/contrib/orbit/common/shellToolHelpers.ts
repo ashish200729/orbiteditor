@@ -13,6 +13,7 @@ import {
 	MIN_SHELL_BLOCK_UNTIL_MS,
 } from './prompt/prompts.js';
 import type { BuiltinToolCallParams, BuiltinToolResultType } from './toolsServiceTypes.js';
+import { isAbsolute, normalize, resolve } from '../../../../base/common/path.js';
 
 const isFalsy = (u: unknown) => !u || u === 'null' || u === 'undefined';
 
@@ -55,19 +56,23 @@ export const parseOptionalBool = (raw: unknown, dflt: boolean): boolean => {
  * invalid regex surfaces as a clean tool error instead of throwing later.
  */
 export const validateShellRegexPattern = (argName: string, pattern: string): void => {
-	if (pattern.length > 1024) {
-		throw new Error(`Invalid ${argName}: pattern is too long (${pattern.length} chars, max 1024).`);
+	if (pattern.length > 256) {
+		throw new Error(`Invalid ${argName}: pattern is too long (${pattern.length} chars, max 256).`);
 	}
-	// Block nested quantifiers (e.g. "(a+)+", "(\w*)*") — a classic ReDoS pattern.
-	if (/\([^)]*[+*][^)]*\)[+*]/.test(pattern) || /\([^)]*[+*][^)]*\)\{/.test(pattern)) {
-		throw new Error(`Invalid ${argName}: nested quantifiers (e.g. "(a+)+") are not allowed (ReDoS risk).`);
+	// Keep the accepted grammar deliberately linear-time in JavaScript's
+	// backtracking engine. Backreferences/lookarounds, counted repetition, and
+	// quantified groups can turn small patterns into exponential work.
+	if (/\\[1-9]/.test(pattern) || /\(\?[=!<]/.test(pattern)) {
+		throw new Error(`Invalid ${argName}: backreferences and lookarounds are not supported (ReDoS risk).`);
 	}
-	// Block alternation-based catastrophic patterns: many alternatives inside a
-	// quantifier (e.g. "(a|b|c|d|e|f)+", "(a|aa)*") cause O(2^n) backtracking.
-	// A group with 3+ alternations followed by a quantifier is a strong heuristic
-	// for alternation-based ReDoS.
-	if (/\([^)]+\|[^)]+\|[^)]*\)[*+]/.test(pattern) || /\([^)]+\|[^)]+\|[^)]*\)\{/.test(pattern)) {
-		throw new Error(`Invalid ${argName}: alternation with 3+ branches inside a quantifier is not allowed (ReDoS risk).`);
+	if (/(^|[^\\])\{/.test(pattern) || /\)(?:[*+?]|\{)/.test(pattern)) {
+		throw new Error(`Invalid ${argName}: counted repetition and quantified groups are not supported (ReDoS risk).`);
+	}
+	const unescaped = pattern.replace(/\\./g, '');
+	const unboundedQuantifiers = (unescaped.match(/[*+]/g) ?? []).length;
+	const optionalQuantifiers = (unescaped.match(/\?/g) ?? []).length;
+	if (unboundedQuantifiers > 1 || optionalQuantifiers > 8) {
+		throw new Error(`Invalid ${argName}: the pattern contains too many repetition operators (ReDoS risk).`);
 	}
 	try {
 		// Matches the flags the terminal service uses to run the pattern.
@@ -76,6 +81,15 @@ export const validateShellRegexPattern = (argName: string, pattern: string): voi
 		throw new Error(`Invalid ${argName}: not a valid regular expression. ${e instanceof Error ? e.message : String(e)}`);
 	}
 };
+
+/** Resolve a model-supplied cwd without ever interpolating it into shell text. */
+export function resolveShellWorkingDirectory(raw: string | null, defaultRoot: string | undefined): string | null {
+	if (!raw) return defaultRoot ? normalize(defaultRoot) : null;
+	if (raw.includes('\0')) throw new Error('Invalid working_directory: NUL bytes are not allowed.');
+	if (isAbsolute(raw)) return normalize(raw);
+	if (!defaultRoot) throw new Error('A relative working_directory requires an active workspace folder.');
+	return resolve(defaultRoot, raw);
+}
 
 export type NotifyOnOutput = { pattern: string; debounceMs: number; reason: string };
 
@@ -127,23 +141,6 @@ export const validateAwaitShellParams = (params: RawToolParamsObj): BuiltinToolC
 		validateShellRegexPattern('pattern', pattern);
 	}
 	return { shellId, blockUntilMs, pattern };
-};
-
-/** Escape a path for use inside a double-quoted shell string. */
-export const escapeShellPath = (path: string): string => {
-	if (/^[A-Za-z0-9_./@-]+$/.test(path)) {
-		return path;
-	}
-	return `"${path.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
-};
-
-/** Prefix cd when the requested cwd differs from the shell's current cwd. */
-export const buildShellCommandWithCwd = (command: string, workingDirectory: string | null, currentWorkingDirectory: string | null): { command: string; workingDirectory: string | null } => {
-	if (!workingDirectory || workingDirectory === currentWorkingDirectory) {
-		return { command, workingDirectory: currentWorkingDirectory };
-	}
-	const cdTarget = escapeShellPath(workingDirectory);
-	return { command: `cd ${cdTarget} && ${command}`, workingDirectory };
 };
 
 const isShellStructuredResult = (value: unknown): value is BuiltinToolResultType['Shell'] =>

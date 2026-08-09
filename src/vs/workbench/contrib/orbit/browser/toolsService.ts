@@ -56,7 +56,7 @@ import {
 	validateShellParams,
 	stringOfAwaitShellResult,
 	stringOfShellResult,
-	buildShellCommandWithCwd,
+	resolveShellWorkingDirectory,
 } from '../common/shellToolHelpers.js'
 import { Emitter } from '../../../../base/common/event.js'
 import { IDisposable } from '../../../../base/common/lifecycle.js'
@@ -79,6 +79,7 @@ import {
 	validateGrepToolParams,
 } from '../common/grepToolHelpers.js'
 import { validateTodoWriteItems } from '../common/todoToolHelpers.js'
+import { assertNoWorkspaceSymlinkTraversal } from '../common/agentPathSecurity.js'
 import { ISemanticRetrievalService } from './semanticRetrievalService.js'
 import {
 	ASK_QUESTION_MAX_TITLE_LENGTH,
@@ -305,6 +306,8 @@ export class ToolsService implements IToolsService {
 			}
 			return workspaceContextService.getWorkspace().folders.map(f => f.uri);
 		};
+		const assertAgentPathSafe = (uri: URI, allowMissingLeaf = false) =>
+			assertNoWorkspaceSymlinkTraversal(uri, getEffectiveWorkspaceFolders(), candidate => fileService.stat(candidate), allowMissingLeaf);
 
 		this.validateParams = {
 			Read: (params: RawToolParamsObj) => {
@@ -377,7 +380,7 @@ export class ToolsService implements IToolsService {
 			AwaitShell: (params: RawToolParamsObj) => validateAwaitShellParams(params),
 
 			AskQuestion: (params: RawToolParamsObj): BuiltinToolCallParams['AskQuestion'] => {
-				if (params.title != null && typeof params.title !== 'string') {
+				if (params.title !== null && params.title !== undefined && typeof params.title !== 'string') {
 					throw new Error('title must be a string');
 				}
 				const title = params.title ? params.title.trim() || null : null;
@@ -522,6 +525,7 @@ export class ToolsService implements IToolsService {
 
 		this.callTool = {
 			Read: async ({ uri, offset, limit }) => {
+				await assertAgentPathSafe(uri)
 				const ext = fileExtensionFromUri(uri)
 
 				if (READ_IMAGE_EXTENSIONS.has(ext)) {
@@ -585,12 +589,14 @@ export class ToolsService implements IToolsService {
 				if (searchFolders.length === 0) {
 					throw new Error('Glob requires either a workspace folder or an explicit target_directory. Select a workspace in the Agents window, or open a folder in the IDE.')
 				}
+				for (const folder of searchFolders) await assertAgentPathSafe(folder)
 
 				const normalizedPattern = normalizeGlobPattern(globPattern)
 
 				// Push the glob to ripgrep via includePattern so matching happens at the engine level (fast).
 				const query = queryBuilder.file(searchFolders, {
 					includePattern: normalizedPattern,
+					ignoreSymlinks: true,
 				})
 				const data = await searchService.fileSearch(query, CancellationToken.None)
 
@@ -608,6 +614,7 @@ export class ToolsService implements IToolsService {
 					let exactFilePath: string | null = null
 
 					if (path) {
+						await assertAgentPathSafe(path)
 						try {
 							const stat = await fileService.stat(path)
 							if (stat.isDirectory) {
@@ -647,6 +654,7 @@ export class ToolsService implements IToolsService {
 					}, searchFolders, {
 						includePattern: includePatterns?.length ? includePatterns.map(normalizeGrepGlob).filter(Boolean) : undefined,
 						maxResults: searchMaxResults,
+						ignoreSymlinks: true,
 					})
 
 					const data = await searchService.textSearch(query, tokenSource.token)
@@ -772,6 +780,7 @@ export class ToolsService implements IToolsService {
 			CodebaseSearch: async ({ query, path, topK }) => {
 				const controller = new AbortController()
 				const folderRoots = getEffectiveWorkspaceFolders()
+				if (path) await assertAgentPathSafe(path)
 				return {
 					result: this.semanticRetrievalService.search(query, {
 						path,
@@ -787,6 +796,7 @@ export class ToolsService implements IToolsService {
 			},
 
 			read_lint_errors: async ({ uri }) => {
+				await assertAgentPathSafe(uri)
 				await this._waitForLintSettle(uri, 1000)
 				const { lintErrors } = this._getLintErrors(uri)
 				return { result: { lintErrors } }
@@ -807,6 +817,7 @@ export class ToolsService implements IToolsService {
 				this._releaseMutatingLock();
 			};
 			try {
+				await assertAgentPathSafe(path)
 				// Plan-mode guard MUST run whenever plan mode is active — gating on
 				// `threadId` left a hole: if no thread was current (e.g. a race or a
 				// sub-agent context), the entire block was skipped and the agent could
@@ -886,6 +897,7 @@ export class ToolsService implements IToolsService {
 				this._releaseMutatingLock();
 			};
 			try {
+				await assertAgentPathSafe(path, true)
 				// Plan-mode guard MUST run whenever plan mode is active — see StrReplace
 				// for the rationale. Gating on `threadId` left a hole where a missing
 				// current thread let arbitrary file writes through.
@@ -988,12 +1000,11 @@ export class ToolsService implements IToolsService {
 				}
 
 					const thread = this.chatThreadService.state.allThreads[threadId];
-					let shellWorkingDirectory = params.workingDirectory;
+					const folders = getEffectiveWorkspaceFolders();
+					const shellWorkingDirectory = resolveShellWorkingDirectory(params.workingDirectory, folders[0]?.fsPath);
+					if (shellWorkingDirectory) await assertAgentPathSafe(URI.file(shellWorkingDirectory))
 					if (!shellWorkingDirectory) {
-						const folders = getEffectiveWorkspaceFolders();
-						if (folders.length > 0) {
-							shellWorkingDirectory = folders[0].fsPath;
-						} else if (thread && thread.agentWorkspaceId !== undefined) {
+						if (thread && thread.agentWorkspaceId !== undefined) {
 							releaseLockOnce();
 							throw new Error('Select a workspace to run shell commands. Use the workspace picker in the Agents window.');
 						}
@@ -1004,13 +1015,6 @@ export class ToolsService implements IToolsService {
 						proposedShellId: params.shellId,
 						workingDirectory: shellWorkingDirectory,
 					});
-
-					const shell = this.terminalToolService.getShell(shellId);
-					const { command, workingDirectory } = buildShellCommandWithCwd(
-						params.command,
-						shellWorkingDirectory,
-						shell?.workingDirectory ?? null,
-					);
 
 					const notifyDisposables: IDisposable[] = [];
 					if (params.notifyOnOutput) {
@@ -1029,7 +1033,7 @@ export class ToolsService implements IToolsService {
 					const interrupt = () => { this.terminalToolService.interruptShell(shellId); };
 
 					if (params.blockUntilMs === 0) {
-						const resPromise = this.terminalToolService.runShell(shellId, command, { blockUntilMs: 0, workingDirectory, onDispatched: releaseLockOnce })
+						const resPromise = this.terminalToolService.runShell(shellId, params.command, { blockUntilMs: 0, onDispatched: releaseLockOnce })
 							.then(() => {
 								releaseLockOnce();
 							})
@@ -1044,7 +1048,7 @@ export class ToolsService implements IToolsService {
 						};
 					}
 
-					const resPromise = this.terminalToolService.runShell(shellId, command, { blockUntilMs: params.blockUntilMs, workingDirectory, onDispatched: releaseLockOnce })
+					const resPromise = this.terminalToolService.runShell(shellId, params.command, { blockUntilMs: params.blockUntilMs, onDispatched: releaseLockOnce })
 						.then((runRes) => {
 							notifyDisposables.forEach(d => d.dispose());
 							const durationMs = Date.now() - startedAt;
@@ -1102,7 +1106,8 @@ export class ToolsService implements IToolsService {
 					releaseLockOnce();
 					throw new Error('Plan mode does not allow awaiting shell commands. Switch to Agent mode to execute.');
 				}
-				if (params.shellId && !this.terminalToolService.shellExists(params.shellId)) {
+				const threadId = this.currentShellThreadId;
+				if (params.shellId && (!threadId || !this.terminalToolService.shellBelongsToThread(params.shellId, threadId))) {
 					releaseLockOnce();
 					return { result: { kind: 'notfound' as const, error: `Shell with id "${params.shellId}" does not exist.`, runningForMs: 0 } };
 				}
@@ -1110,7 +1115,7 @@ export class ToolsService implements IToolsService {
 					// AwaitShell only observes an existing shell; it never mutates. Release
 					// the lock before the wait so file edits aren't blocked meanwhile.
 					releaseLockOnce();
-					const resPromise = this.terminalToolService.awaitShell(params.shellId, {
+					const resPromise = this.terminalToolService.awaitShell(params.shellId, threadId, {
 						blockUntilMs: params.blockUntilMs,
 						pattern: params.pattern,
 					}).then((awaitRes) => {

@@ -5,6 +5,7 @@
 
 import { XAI_GROK_OAUTH_CONFIG, XAI_GROK_REDIRECT_URI } from './oauthConfig.js'
 import type { XAiDeviceCodeResponse, XAiGrokCredentials, XAiTokenResponse } from './oauthTypes.js'
+import { fetchWithEndpointPolicy } from '../../common/networkSecurity.js'
 
 const EXPIRY_BUFFER_MS = 2 * 60 * 1000
 const REQUEST_TIMEOUT_MS = 30_000
@@ -76,12 +77,12 @@ const toCredentials = (payload: XAiTokenResponse, existingRefreshToken?: string)
 const postToken = async (body: URLSearchParams, signal?: AbortSignal) => {
 	const timeoutSignal = AbortSignal.timeout(REQUEST_TIMEOUT_MS)
 	const combinedSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal
-	const response = await fetch(XAI_GROK_OAUTH_CONFIG.tokenEndpoint, {
+	const response = await fetchWithEndpointPolicy(XAI_GROK_OAUTH_CONFIG.tokenEndpoint, {
 		method: 'POST',
 		headers: authHeaders(),
 		body,
 		signal: combinedSignal,
-	})
+	}, 'xAI token endpoint')
 	const payload = await parsePayload<XAiTokenResponse>(response)
 	if (!response.ok) {
 		throw new XAiGrokOAuthTokenError(
@@ -113,12 +114,12 @@ export const refreshAccessToken = async (refreshToken: string) => {
 }
 
 export const requestDeviceCode = async (): Promise<Required<Pick<XAiDeviceCodeResponse, 'device_code' | 'user_code' | 'verification_uri'>> & XAiDeviceCodeResponse> => {
-	const response = await fetch(XAI_GROK_OAUTH_CONFIG.deviceAuthorizationEndpoint, {
+	const response = await fetchWithEndpointPolicy(XAI_GROK_OAUTH_CONFIG.deviceAuthorizationEndpoint, {
 		method: 'POST',
 		headers: authHeaders(),
 		body: new URLSearchParams({ client_id: XAI_GROK_OAUTH_CONFIG.clientId, scope: XAI_GROK_OAUTH_CONFIG.scopes }),
 		signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-	})
+	}, 'xAI device authorization endpoint')
 	const payload = await parsePayload<XAiDeviceCodeResponse & XAiTokenResponse>(response)
 	if (!response.ok) {
 		throw new XAiGrokOAuthTokenError(payload.error_description || `xAI device authorization failed (${response.status}).`, payload.error)

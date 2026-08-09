@@ -18,7 +18,7 @@ import { toolApprovalTheme } from '../toolApprovalTheme.js';
  * Reuses the existing `shellToolCardHelpers` (same command-line extractor,
  * meta-tag builder, and syntax highlighter) so the approval preview matches
  * the post-approval `ShellToolCard` exactly. The command renders in a
- * monospace terminal block with a `$` prefix; meta tags (cd, timeout, notify…)
+ * monospace terminal block with a `$` prefix; meta tags (cwd, background, notify…)
  * appear as a compact pill row beneath it.
  */
 export const ShellApprovalPreview = ({
@@ -30,9 +30,22 @@ export const ShellApprovalPreview = ({
 }) => {
 	const commandLine = getShellCardCommandLine(toolName, params);
 	const metaTags = getShellCardMetaTags(toolName, params);
+	const workingDirectory = toolName === 'Shell'
+		? (params as BuiltinToolCallParams['Shell']).workingDirectory
+		: null;
 
 	return (
 		<div className="px-3 py-2.5 flex flex-col gap-2">
+			{workingDirectory && (
+				<div
+					className="flex items-start gap-2 rounded-md px-2.5 py-1.5 text-[11px]"
+					style={{ color: toolApprovalTheme.descFg, border: `1px solid ${toolApprovalTheme.terminalBorder}` }}
+					title={workingDirectory}
+				>
+					<span className="font-medium flex-shrink-0">cwd</span>
+					<code className="min-w-0 break-all" style={{ color: toolApprovalTheme.fg }}>{workingDirectory}</code>
+				</div>
+			)}
 			{commandLine ? (
 				<div
 					className="rounded-md px-2.5 py-2 overflow-x-auto void-custom-scrollable"

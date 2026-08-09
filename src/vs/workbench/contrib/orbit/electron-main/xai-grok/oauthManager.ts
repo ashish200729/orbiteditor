@@ -117,6 +117,7 @@ export class XAiGrokOAuthManager {
 			server,
 			host: XAI_GROK_OAUTH_CONFIG.callbackHost,
 			port: XAI_GROK_OAUTH_CONFIG.callbackPort,
+			callbackConsumed: false,
 			resolve: resolvePending,
 			reject: rejectPending,
 			promise,
@@ -207,28 +208,39 @@ export class XAiGrokOAuthManager {
 			res.end('Method not allowed')
 			return
 		}
-		const url = new URL(req.url || '/', this.pendingBrowser?.redirectUri ?? XAI_GROK_REDIRECT_URI)
-		if (url.pathname !== XAI_GROK_OAUTH_CONFIG.callbackPath) {
-			res.writeHead(404, { 'Content-Type': 'text/plain' })
-			res.end('Not found')
-			return
-		}
 		const pending = this.pendingBrowser
 		if (!pending) {
 			this.respondWithHtml(res, false, 'No xAI sign-in is currently in progress.')
 			return
 		}
+		if (req.headers.host !== `${pending.host}:${pending.port}`) {
+			res.writeHead(400, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' })
+			res.end('Invalid callback request')
+			return
+		}
+		const url = new URL(req.url || '/', pending.redirectUri)
+		if (url.pathname !== XAI_GROK_OAUTH_CONFIG.callbackPath) {
+			res.writeHead(404, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' })
+			res.end('Not found')
+			return
+		}
+		if (url.searchParams.get('state') !== pending.state) {
+			res.writeHead(400, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' })
+			res.end('Invalid or expired OAuth state')
+			return
+		}
+		if (pending.callbackConsumed) {
+			res.writeHead(400, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' })
+			res.end('OAuth callback already consumed')
+			return
+		}
+		pending.callbackConsumed = true
 		const error = url.searchParams.get('error')
 		if (error) {
 			const description = url.searchParams.get('error_description')
 			const message = error === 'access_denied' ? 'xAI sign-in was cancelled.' : (description || 'xAI sign-in failed.')
 			this.respondWithHtml(res, false, message)
 			this.rejectBrowser(new XAiGrokOAuthError(message, error))
-			return
-		}
-		if (url.searchParams.get('state') !== pending.state) {
-			this.respondWithHtml(res, false, 'State verification failed. Please try again.')
-			this.rejectBrowser(new XAiGrokOAuthError('xAI sign-in state mismatch.', 'state_mismatch'))
 			return
 		}
 		const code = url.searchParams.get('code')
@@ -399,6 +411,7 @@ export class XAiGrokOAuthManager {
 		res.writeHead(success ? 200 : 400, {
 			'Content-Type': 'text/html; charset=utf-8',
 			'X-Content-Type-Options': 'nosniff',
+			'Cache-Control': 'no-store',
 			'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'",
 		})
 		res.end(html)

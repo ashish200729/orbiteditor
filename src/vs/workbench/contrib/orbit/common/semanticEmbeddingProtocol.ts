@@ -1,3 +1,5 @@
+import { remoteHttpEndpointPolicyError } from './networkSecurity.js';
+
 export const SEMANTIC_EMBEDDING_CHANNEL = 'void-channel-semantic-embedding';
 
 export type SemanticEmbeddingProvider = 'ollama' | 'openAICompatible';
@@ -23,10 +25,8 @@ export function validateSemanticEmbeddingRequest(value: unknown): SemanticEmbedd
 	const request = value as Partial<SemanticEmbeddingRequest>;
 	if (request.provider !== 'ollama' && request.provider !== 'openAICompatible') throw new Error('Unsupported embedding provider.');
 	if (typeof request.endpoint !== 'string' || !request.endpoint.trim() || request.endpoint.length > 2_048) throw new Error('A valid embedding endpoint is required.');
-	let url: URL;
-	try { url = new URL(request.endpoint); } catch { throw new Error('Embedding endpoint must be a valid URL.'); }
-	if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error('Embedding endpoint must use HTTP or HTTPS.');
-	if (url.username || url.password) throw new Error('Embedding endpoint must not contain credentials.');
+	const endpointPolicyError = remoteHttpEndpointPolicyError(request.endpoint, 'Embedding endpoint');
+	if (endpointPolicyError) throw new Error(endpointPolicyError);
 	if (typeof request.model !== 'string' || !request.model.trim() || request.model.length > 256) throw new Error('An embedding model is required.');
 	if (!Array.isArray(request.inputs) || request.inputs.length < 1 || request.inputs.length > MAX_BATCH_SIZE) throw new Error(`Embedding requests must contain 1-${MAX_BATCH_SIZE} inputs.`);
 	if (request.inputs.some(input => typeof input !== 'string' || !input.trim() || input.length > MAX_INPUT_CHARS)) throw new Error(`Each embedding input must contain 1-${MAX_INPUT_CHARS} characters.`);

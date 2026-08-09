@@ -13,10 +13,51 @@ import type { IAXNode } from './browserAutomation.js';
 export type MutableAXNode = IAXNode & { depth: number; children?: string[] };
 
 /**
- * CDP method prefixes that are explicitly denied to the model. Match Cursor's
- * `browser_cdp` contract: the model must use the dedicated interaction tools
- * instead of `Input.*`, and cannot exfiltrate cookies/storage/permissions,
- * trigger downloads, manage targets, or navigate via CDP (use `browser_navigate`).
+ * Exact CDP methods exposed through the model-facing `browser_cdp` surface.
+ * This is intentionally an allowlist: new Chromium domains and methods remain
+ * unavailable until they have been reviewed for credential, storage, network,
+ * filesystem, navigation, or code-execution side effects.
+ */
+export const ALLOWED_MODEL_CDP_METHODS: ReadonlySet<string> = new Set([
+	'Accessibility.getFullAXTree',
+	'CSS.disable',
+	'CSS.enable',
+	'CSS.getComputedStyleForNode',
+	'CSS.getMatchedStylesForNode',
+	'CSS.getPlatformFontsForNode',
+	'DOM.describeNode',
+	'DOM.disable',
+	'DOM.enable',
+	'DOM.getAttributes',
+	'DOM.getBoxModel',
+	'DOM.getDocument',
+	'DOM.getNodeForLocation',
+	'DOM.querySelector',
+	'DOM.querySelectorAll',
+	'Log.disable',
+	'Log.enable',
+	'Log.startViolationsReport',
+	'Log.stopViolationsReport',
+	'Page.disable',
+	'Page.enable',
+	'Page.getLayoutMetrics',
+	'Performance.disable',
+	'Performance.enable',
+	'Performance.getMetrics',
+	'Profiler.disable',
+	'Profiler.enable',
+	'Profiler.start',
+	'Profiler.stop',
+	'Runtime.getHeapUsage',
+]);
+
+export function isModelCdpMethodAllowed(method: string): boolean {
+	return ALLOWED_MODEL_CDP_METHODS.has(method.trim());
+}
+
+/**
+ * Defense in depth for callers that bypass the model-facing allowlist.
+ * Dedicated interaction primitives use an internal CDP path.
  */
 export const DENIED_CDP_PREFIXES: readonly string[] = [
 	'Input.',                              // use clickByRef / typeByRef / pressKey

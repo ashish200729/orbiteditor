@@ -9,6 +9,7 @@ import { ILogService } from '../../../../../platform/log/common/log.js';
 import { BrowserAutomationMainService } from '../../../../../platform/browserView/electron-main/browserAutomationMainService.js';
 import { BrowserViewMainService } from '../../../../../platform/browserView/electron-main/browserViewMainService.js';
 import { BROWSER_AUTOMATION_IPC_CHANNELS, makeBrowserAutomationReplyChannel } from '../../../../../platform/browserView/common/browserView.js';
+import { isModelCdpMethodAllowed } from '../../../../../platform/browserView/common/browserAutomationPure.js';
 import { IWindowsMainService } from '../../../../../platform/windows/electron-main/windows.js';
 import { IAuxiliaryWindowsMainService } from '../../../../../platform/auxiliaryWindow/electron-main/auxiliaryWindows.js';
 import { CancellationToken } from '../../../../../base/common/cancellation.js';
@@ -42,7 +43,7 @@ export type BrowserAutomationEnabledProvider = () => boolean;
 /** True if an IP address is in a cloud-metadata / link-local range we must never let the agent reach.
  * We intentionally do NOT block general private/localhost ranges — driving the app under
  * development at http://localhost / 127.0.0.1 / 192.168.x is the primary use case. */
-function isBlockedIp(ipRaw: string): boolean {
+export function isBlockedIp(ipRaw: string): boolean {
 	const ip = ipRaw.split('%')[0]; // strip IPv6 zone id
 	// IPv6-mapped IPv4 (e.g. ::ffff:169.254.169.254) — unwrap and re-check.
 	const mapped = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i.exec(ip);
@@ -61,11 +62,30 @@ function isBlockedIp(ipRaw: string): boolean {
 	return false;
 }
 
+/** Private/loopback destinations may use HTTP for local development. Public
+ * destinations must use HTTPS so DNS rebinding cannot turn a cleartext request
+ * into a same-network probe after validation. */
+export function isPrivateOrLoopbackIp(ipRaw: string): boolean {
+	const ip = ipRaw.split('%')[0];
+	const mapped = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i.exec(ip);
+	if (mapped) { return isPrivateOrLoopbackIp(mapped[1]); }
+	const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(ip);
+	if (v4) {
+		const a = Number(v4[1]);
+		const b = Number(v4[2]);
+		return a === 10
+			|| a === 127
+			|| (a === 172 && b >= 16 && b <= 31)
+			|| (a === 192 && b === 168);
+	}
+	return ip.toLowerCase() === '::1';
+}
+
 function isIpLiteral(host: string): boolean {
 	return /^\d{1,3}(?:\.\d{1,3}){3}$/.test(host) || host.includes(':');
 }
 
-async function isAgentNavigableUrl(url: string): Promise<boolean> {
+export async function isAgentNavigableUrl(url: string): Promise<boolean> {
 	if (url === 'about:blank') { return true; }
 	let parsed: URL;
 	try {
@@ -74,20 +94,27 @@ async function isAgentNavigableUrl(url: string): Promise<boolean> {
 		return false;
 	}
 	if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') { return false; }
+	if (parsed.username || parsed.password) { return false; }
 	let host = parsed.hostname;
 	if (host.startsWith('[') && host.endsWith(']')) { host = host.slice(1, -1); } // IPv6 literal
 	if (host === 'metadata.google.internal') { return false; }
-	// IP literal (incl. decimal/hex forms new URL keeps verbatim): check directly.
-	if (isIpLiteral(host)) { return !isBlockedIp(host); }
+	// IP literal (including numeric forms normalized by URL): check directly.
+	if (isIpLiteral(host)) {
+		return !isBlockedIp(host) && (parsed.protocol === 'https:' || isPrivateOrLoopbackIp(host));
+	}
 	// DNS name: resolve and reject if ANY resolved address is a blocked range (defeats
 	// rebinding / a benign-looking name that points at the metadata endpoint).
 	try {
 		const { lookup } = await import('dns/promises');
 		const results = await lookup(host, { all: true });
-		for (const r of results) { if (isBlockedIp(r.address)) { return false; } }
+		if (results.length === 0) { return false; }
+		for (const r of results) {
+			if (isBlockedIp(r.address)) { return false; }
+			if (parsed.protocol === 'http:' && !isPrivateOrLoopbackIp(r.address)) { return false; }
+		}
 		return true;
 	} catch {
-		return true; // resolution failed — let the navigation itself fail naturally
+		return false;
 	}
 }
 
@@ -199,7 +226,12 @@ export class OrbitIdeBrowserMcpServer extends Disposable implements IOrbitBuilti
 			// batches (snapshot + screenshot) cannot corrupt the shared ref map.
 			// Tools that create a new tab (navigate/tabs new without a viewId) skip
 			// the queue until a viewId is known.
-			const run = () => this.dispatchTool(toolName, viewId, params);
+			const run = async () => {
+				if (viewId && toolName !== 'browser_navigate') {
+					await this.assertViewCurrentUrlAllowed(viewId);
+				}
+				return this.dispatchTool(toolName, viewId, params);
+			};
 			const result = viewId
 				? await this.browserAutomationService.runExclusive(viewId, run)
 				: await run();
@@ -307,7 +339,7 @@ export class OrbitIdeBrowserMcpServer extends Disposable implements IOrbitBuilti
 
 		// Reuse an existing tab if one exists and newTab is not requested.
 		if (!newTab && existingViewId) {
-			await this.browserViewMainService.navigate(this.windowIdForView(existingViewId), existingViewId, url);
+			await this.navigateWithAgentPolicy(existingViewId, url);
 			this._lastInteractedViewId = existingViewId;
 		} else if (!newTab && !existingViewId) {
 			// Reuse the last-interacted tab, or open one if none exist.
@@ -316,7 +348,7 @@ export class OrbitIdeBrowserMcpServer extends Disposable implements IOrbitBuilti
 				? this._lastInteractedViewId
 				: tabs[0]?.id;
 			if (target) {
-				await this.browserViewMainService.navigate(this.windowIdForView(target), target, url);
+				await this.navigateWithAgentPolicy(target, url);
 				this._lastInteractedViewId = target;
 			} else {
 				// No tabs open — ask the renderer to open a visible tab.
@@ -336,6 +368,7 @@ export class OrbitIdeBrowserMcpServer extends Disposable implements IOrbitBuilti
 		// Wait for the main frame to settle so a subsequent snapshot/type sees
 		// the destination page instead of an intermediate about:blank/spinner.
 		await this.waitForNavigationSettle(viewId);
+		await this.assertViewCurrentUrlAllowed(viewId);
 
 		const nav = this.browserAutomationService.getNavigationState(viewId);
 		const header = `Navigated to ${nav.url}\nTitle: ${nav.title}\nviewId: ${viewId}`;
@@ -386,7 +419,9 @@ export class OrbitIdeBrowserMcpServer extends Disposable implements IOrbitBuilti
 		};
 		switch (action) {
 			case 'list': {
-				const lines = tabs.map((t, i) => `${i}: id=${t.id} url=${t.url} title=${t.title} loading=${t.isLoading}`);
+				const lines = await Promise.all(tabs.map(async (t, i) => await isAgentNavigableUrl(t.url)
+					? `${i}: id=${t.id} url=${t.url} title=${t.title} loading=${t.isLoading}`
+					: `${i}: id=${t.id} url=[restricted] title=[restricted] loading=${t.isLoading}`));
 				return this.text(`Open browser tabs (${tabs.length}):\n${lines.join('\n') || '(none)'}`);
 			}
 			case 'new': {
@@ -675,6 +710,9 @@ export class OrbitIdeBrowserMcpServer extends Disposable implements IOrbitBuilti
 		if (!method) {
 			return this.error('browser_cdp requires a `method` parameter.');
 		}
+		if (!isModelCdpMethodAllowed(method)) {
+			return this.error(`browser_cdp: CDP method '${method}' is not in the reviewed inspection/profiling allowlist.`);
+		}
 		const cdpParams = (params.params && typeof params.params === 'object' ? params.params : {}) as Record<string, unknown>;
 		const result = await this.browserAutomationService.sendCdpCommand(viewId, method, cdpParams);
 		this._lastInteractedViewId = viewId;
@@ -808,7 +846,12 @@ export class OrbitIdeBrowserMcpServer extends Disposable implements IOrbitBuilti
 			throw new Error('No Orbit window available to open a browser tab.');
 		}
 		if (this.isAuxiliaryCodeWindow(codeWindow)) {
-			return this.openAgentWindowBrowserTab(codeWindow, url);
+			const id = await this.openAgentWindowBrowserTab(codeWindow, 'about:blank');
+			await this.waitForViewReady(id);
+			if (url !== 'about:blank') {
+				await this.navigateWithAgentPolicy(id, url);
+			}
+			return id;
 		}
 		const replyChannel = makeBrowserAutomationReplyChannel(BROWSER_AUTOMATION_IPC_CHANNELS.openTab, `${Date.now()}.${Math.random().toString(36).slice(2)}`);
 		const result = new Promise<string>((resolve, reject) => {
@@ -849,12 +892,74 @@ export class OrbitIdeBrowserMcpServer extends Disposable implements IOrbitBuilti
 		});
 		const background = !position;
 		codeWindow.sendWhenReady(BROWSER_AUTOMATION_IPC_CHANNELS.openTab, CancellationToken.None, {
-			url,
+			url: 'about:blank',
 			position,
 			background,
 			replyChannel,
 		});
-		return result;
+		const id = await result;
+		await this.waitForViewReady(id);
+		if (url !== 'about:blank') {
+			await this.navigateWithAgentPolicy(id, url);
+		}
+		return id;
+	}
+
+	/**
+	 * Navigate while synchronously stopping each server redirect, validating its
+	 * destination, and then resuming it as a fresh guarded navigation. This keeps
+	 * the DNS and scheme policy in force for the entire redirect chain.
+	 */
+	private async navigateWithAgentPolicy(viewId: string, url: string, redirectDepth = 0): Promise<void> {
+		if (redirectDepth > 10) {
+			throw new Error('Browser navigation exceeded the maximum redirect depth.');
+		}
+		if (!await isAgentNavigableUrl(url)) {
+			throw new Error(`Browser navigation target is not allowed: ${url}`);
+		}
+		const webContents = this.browserViewMainService.getWebContentsForAutomation(viewId);
+		if (!webContents) {
+			throw new Error(`Browser view not found: ${viewId}`);
+		}
+		let redirectUrl: string | undefined;
+		const onWillRedirect = (event: Electron.Event, targetUrl: string, _isInPlace: boolean, isMainFrame: boolean) => {
+			if (!isMainFrame || redirectUrl) {
+				return;
+			}
+			event.preventDefault();
+			redirectUrl = targetUrl;
+		};
+		webContents.on('will-redirect', onWillRedirect);
+		try {
+			await this.browserViewMainService.navigate(this.windowIdForView(viewId), viewId, url);
+		} catch (error) {
+			if (!redirectUrl) {
+				throw error;
+			}
+		} finally {
+			webContents.removeListener('will-redirect', onWillRedirect);
+		}
+		if (redirectUrl) {
+			await this.navigateWithAgentPolicy(viewId, redirectUrl, redirectDepth + 1);
+			return;
+		}
+		const committedUrl = webContents.getURL();
+		if (committedUrl && committedUrl !== 'about:blank' && !await isAgentNavigableUrl(committedUrl)) {
+			await this.browserViewMainService.navigate(this.windowIdForView(viewId), viewId, 'about:blank');
+			throw new Error('Browser navigation committed a disallowed target and was reset.');
+		}
+	}
+
+	/** Re-check immediately before every agent operation. Pages can initiate a
+	 * delayed client-side navigation after the guarded server redirect chain has
+	 * settled; such a page must never become a snapshot or raw CDP target. */
+	private async assertViewCurrentUrlAllowed(viewId: string): Promise<void> {
+		const webContents = this.browserViewMainService.getWebContentsForAutomation(viewId);
+		if (!webContents) throw new Error(`Browser view not found: ${viewId}`);
+		const currentUrl = webContents.getURL() || 'about:blank';
+		if (await isAgentNavigableUrl(currentUrl)) return;
+		await this.browserViewMainService.navigate(this.windowIdForView(viewId), viewId, 'about:blank');
+		throw new Error('Browser tab moved to a disallowed target and was reset.');
 	}
 
 	private async awaitRendererBool(viewId: string, channel: typeof BROWSER_AUTOMATION_IPC_CHANNELS.selectTab | typeof BROWSER_AUTOMATION_IPC_CHANNELS.closeTab, id: string): Promise<void> {

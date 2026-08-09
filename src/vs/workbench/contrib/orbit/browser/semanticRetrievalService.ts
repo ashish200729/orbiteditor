@@ -38,6 +38,8 @@ import {
 import { SemanticChunk, SemanticIndexStatus, SemanticSearchResult } from '../common/semanticRetrievalTypes.js';
 import { SemanticVectorIndex } from '../common/semanticVectorIndex.js';
 import { IAgentProjectWorkspaceService } from './agentProjectWorkspaceService.js';
+import { assertNoWorkspaceSymlinkTraversal } from '../common/agentPathSecurity.js';
+import { remoteHttpEndpointPolicyError } from '../common/networkSecurity.js';
 
 interface IndexedChunk extends SemanticChunk { vector: number[] }
 interface PersistedIndex {
@@ -127,6 +129,18 @@ export class SemanticRetrievalService extends Disposable implements ISemanticRet
 			this.fullRebuildScheduled = true;
 			this.changeScheduler.schedule(0);
 		}));
+		const handleTrustChange = () => {
+			this.generation++;
+			this.abortController?.abort();
+			this.chunks = [];
+			this.vectorIndex.rebuild([]);
+			this.indexedFiles = 0;
+			this.indexedRootKeys.clear();
+			this.fullRebuildScheduled = true;
+			this.changeScheduler.schedule(0);
+		};
+		this._register(this.workspaceTrustService.onDidChangeTrust(handleTrustChange));
+		this._register(this.workspaceTrustService.onDidChangeTrustedFolders(handleTrustChange));
 		this._register(this.settingsService.onDidChangeState(() => this.handleSettingsChange()));
 		for (const model of this.modelService.getModels()) this.subscribeModel(model);
 		this._register(this.modelService.onModelAdded(model => this.subscribeModel(model)));
@@ -254,7 +268,12 @@ export class SemanticRetrievalService extends Disposable implements ISemanticRet
 				this.logService.debug('[semantic-index] Persisted index skipped: schema/provider/model changed. Rebuilding from source.');
 				return;
 			}
-			this.chunks = parsed.chunks.map(chunk => ({ ...chunk, uri: URI.parse(chunk.uri), vector: this.decodeVector(chunk.vector) }));
+			const configuredRoots = this.indexRoots();
+			const trustResults = await Promise.all(configuredRoots.map(async root => ({ root, trusted: (await this.workspaceTrustService.getUriTrustInfo(root)).trusted })));
+			const trustedRoots = trustResults.filter(item => item.trusted).map(item => item.root);
+			this.chunks = parsed.chunks
+				.map(chunk => ({ ...chunk, uri: URI.parse(chunk.uri), vector: this.decodeVector(chunk.vector) }))
+				.filter(chunk => trustedRoots.some(root => relativePath(root, chunk.uri) !== undefined));
 			this.vectorIndex.rebuild(this.chunks.map(chunk => chunk.vector));
 			this.indexedFiles = new Set(this.chunks.map(chunk => chunk.uri.toString())).size;
 			this.indexedRootKeys = new Set(this.indexRoots()
@@ -357,7 +376,9 @@ export class SemanticRetrievalService extends Disposable implements ISemanticRet
 
 	private async isIgnoredByOrbitFile(uri: URI, root: URI): Promise<boolean> {
 		try {
-			const patterns = parseSemanticIgnore((await this.fileService.readFile(URI.joinPath(root, '.orbitignore'))).value.toString());
+			const ignoreFile = URI.joinPath(root, '.orbitignore');
+			await assertNoWorkspaceSymlinkTraversal(ignoreFile, [root], candidate => this.fileService.stat(candidate));
+			const patterns = parseSemanticIgnore((await this.fileService.readFile(ignoreFile)).value.toString());
 			return matchesSemanticIgnore(relativePath(root, uri) ?? '', patterns);
 		} catch { return false; }
 	}
@@ -389,6 +410,9 @@ export class SemanticRetrievalService extends Disposable implements ISemanticRet
 				}
 				let fileChunks: SemanticChunk[] = [];
 				try {
+					const trust = await this.workspaceTrustService.getUriTrustInfo(root);
+					if (!trust.trusted) throw new Error('Source folder is not trusted.');
+					await assertNoWorkspaceSymlinkTraversal(uri, [root], candidate => this.fileService.stat(candidate));
 					const stat = await this.fileService.stat(uri);
 					if (stat.isDirectory) {
 						// A directory in the change set means we can't reason about which
@@ -448,11 +472,18 @@ export class SemanticRetrievalService extends Disposable implements ISemanticRet
 			this.setStatus({ state: 'error', indexedFiles: this.indexedFiles, indexedChunks: this.chunks.length, error: 'Enter an embedding endpoint before indexing.' });
 			return;
 		}
+		const endpointError = remoteHttpEndpointPolicyError(settings.semanticEmbeddingEndpoint.trim(), 'Semantic embedding endpoint');
+		if (endpointError) {
+			this.setStatus({ state: 'error', indexedFiles: this.indexedFiles, indexedChunks: this.chunks.length, error: endpointError });
+			return;
+		}
 		if (!settings.semanticEmbeddingModel.trim()) {
 			this.setStatus({ state: 'error', indexedFiles: this.indexedFiles, indexedChunks: this.chunks.length, error: 'Enter an embedding model before indexing.' });
 			return;
 		}
-		const workspaceFolders = this.indexRoots();
+		const configuredRoots = this.indexRoots();
+		const trustResults = await Promise.all(configuredRoots.map(async folder => ({ folder, trusted: (await this.workspaceTrustService.getUriTrustInfo(folder)).trusted })));
+		const workspaceFolders = trustResults.filter(result => result.trusted).map(result => result.folder);
 		if (!workspaceFolders.length) {
 			this.setStatus({ state: 'error', indexedFiles: 0, indexedChunks: 0, error: 'Open a folder or workspace to build a semantic index.' });
 			return;
@@ -467,12 +498,14 @@ export class SemanticRetrievalService extends Disposable implements ISemanticRet
 		const previousLastIndexedAt = this.status.lastIndexedAt;
 		this.setStatus({ state: 'indexing', phase: 'scanning', operation: 'full', indexedFiles: this.indexedFiles, indexedChunks: this.chunks.length, startedAt, lastIndexedAt: previousLastIndexedAt });
 		try {
-			const query = this.queryBuilder.file(workspaceFolders, { includePattern: '**/*', maxResults: SEMANTIC_MAX_FILES });
+			const query = this.queryBuilder.file(workspaceFolders, { includePattern: '**/*', maxResults: SEMANTIC_MAX_FILES, ignoreSymlinks: true });
 			const result = await this.searchService.fileSearch(query, CancellationToken.None);
 			const ignoreByFolder = new Map<string, string[]>();
 			for (const folder of workspaceFolders) {
 				try {
-					ignoreByFolder.set(folder.toString(), parseSemanticIgnore((await this.fileService.readFile(URI.joinPath(folder, '.orbitignore'))).value.toString()));
+					const ignoreFile = URI.joinPath(folder, '.orbitignore');
+					await assertNoWorkspaceSymlinkTraversal(ignoreFile, [folder], candidate => this.fileService.stat(candidate));
+					ignoreByFolder.set(folder.toString(), parseSemanticIgnore((await this.fileService.readFile(ignoreFile)).value.toString()));
 				} catch { ignoreByFolder.set(folder.toString(), []); }
 			}
 			const uris = result.results.map(item => item.resource).filter(uri => {
@@ -505,6 +538,7 @@ export class SemanticRetrievalService extends Disposable implements ISemanticRet
 				this.reportProgress({ state: 'indexing', phase: 'embedding', operation: 'full', progress: uris.length ? processedFiles / uris.length * 100 : 100, processedFiles, totalFiles: uris.length, currentFile: displayPath, recentFiles: [...recentFiles], indexedFiles, indexedChunks: next.length + pending.length, startedAt, lastIndexedAt: previousLastIndexedAt }, processedFiles === 0);
 				let fileChunks: SemanticChunk[] = [];
 				try {
+					await assertNoWorkspaceSymlinkTraversal(uri, workspaceFolders, candidate => this.fileService.stat(candidate));
 					const stat = await this.fileService.stat(uri);
 					if (typeof stat.size === 'number' && stat.size > SEMANTIC_MAX_FILE_BYTES) throw new Error('File exceeds semantic indexing size limit.');
 					const openModel = this.modelService.getModel(uri);
@@ -581,6 +615,17 @@ export class SemanticRetrievalService extends Disposable implements ISemanticRet
 		if (this.status.state !== 'ready' || !this.chunks.length) {
 			return { ...this.status, matches: [], message: this.status.error ?? 'Semantic index is not ready. Continue with Grep, Glob, and Read.' };
 		}
+		// No Repo is an explicit empty scope. Return before embedding so even the
+		// search query is not sent to the configured provider.
+		if (opts?.folderRoots !== undefined && opts.folderRoots.length === 0) {
+			return { state: 'ready', matches: [], indexedFiles: this.indexedFiles, indexedChunks: this.chunks.length, message: 'No workspace folder is available to search.' };
+		}
+		const requestedRoots = opts?.folderRoots ?? this.indexRoots();
+		const trustResults = await Promise.all(requestedRoots.map(async root => ({ root, trusted: (await this.workspaceTrustService.getUriTrustInfo(root)).trusted })));
+		const trustedRootPrefixes = trustResults.filter(item => item.trusted).map(item => item.root.toString());
+		if (requestedRoots.length > 0 && trustedRootPrefixes.length === 0) {
+			return { state: 'ready', matches: [], indexedFiles: this.indexedFiles, indexedChunks: this.chunks.length, message: 'The selected workspace is not trusted for semantic search.' };
+		}
 		let queryVector: number[];
 		try {
 			[queryVector] = await this.embed([trimmed], opts?.signal ?? new AbortController().signal);
@@ -593,18 +638,9 @@ export class SemanticRetrievalService extends Disposable implements ISemanticRet
 			return { state: 'ready', matches: [], indexedFiles: this.indexedFiles, indexedChunks: this.chunks.length, message: `Semantic search is temporarily unavailable (${message}). Use Grep, Glob, and Read instead.` };
 		}
 		const pathPrefix = opts?.path?.toString();
-		// Distinguish "not provided" (unconstrained) from "explicitly empty"
-		// (No Repo threads — fail closed, match nothing; an unconstrained search
-		// would leak the IDE workspace's semantic index into the thread).
-		if (opts?.folderRoots !== undefined && opts.folderRoots.length === 0) {
-			return { state: 'ready', matches: [], indexedFiles: this.indexedFiles, indexedChunks: this.chunks.length, message: 'No workspace folder is available to search.' };
-		}
-		const folderPrefixes = (opts?.folderRoots ?? []).map(u => u.toString());
+		const folderPrefixes = trustedRootPrefixes;
 		const topK = Math.max(1, Math.min(SEMANTIC_MAX_RESULTS, opts?.topK ?? 8));
 		const inFolderRoots = (uriStr: string): boolean => {
-			if (opts?.folderRoots === undefined) {
-				return true;
-			}
 			return folderPrefixes.some(prefix => uriStr === prefix || uriStr.startsWith(`${prefix}/`));
 		};
 		const candidateChunks = pathPrefix

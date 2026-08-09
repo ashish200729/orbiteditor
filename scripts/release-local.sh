@@ -21,6 +21,10 @@ npm run buildreact
 
 release_darwin() {
 	local arch="$1" app_dir="../Orbit-darwin-$1" dmg="Orbit-$VERSION-darwin-$1.dmg"
+	if [[ "${ALLOW_LEGACY_SINGLE_ARCH_RELEASE:-0}" != 1 ]]; then
+		echo "Single-architecture macOS releases are disabled. Use ./scripts/release-macos.sh." >&2
+		exit 1
+	fi
 	./scripts/build-macos-lowmem.sh "$arch"
 	[[ -d "$app_dir" ]] || { echo "Expected app bundle at $app_dir" >&2; exit 1; }
 	./scripts/make-dmg.sh "$app_dir" "$dmg"

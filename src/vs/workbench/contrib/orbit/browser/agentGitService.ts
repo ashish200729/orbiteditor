@@ -15,6 +15,7 @@ import { ISCMService, ISCMRepository } from '../../scm/common/scm.js';
 import { IVoidSettingsService } from '../common/orbitSettingsService.js';
 import { IConvertToLLMMessageService } from './convertToLLMMessageService.js';
 import { ILLMMessageService } from '../common/sendLLMMessageService.js';
+import { INativeHostService } from '../../../../platform/native/common/native.js';
 import { gitCommitMessage_systemMessage, gitCommitMessage_userMessage } from '../common/prompt/prompts.js';
 import { CancellationError } from '../../../../base/common/errors.js';
 import {
@@ -110,9 +111,10 @@ class AgentGitService extends Disposable implements IAgentGitService {
 		@IVoidSettingsService private readonly voidSettingsService: IVoidSettingsService,
 		@IConvertToLLMMessageService private readonly convertToLLMMessageService: IConvertToLLMMessageService,
 		@ILLMMessageService private readonly llmMessageService: ILLMMessageService,
+		@INativeHostService nativeHostService: INativeHostService,
 	) {
 		super();
-		this.channel = ProxyChannel.toService<IVoidSCMService>(mainProcessService.getChannel('void-channel-scm'));
+		this.channel = ProxyChannel.toService<IVoidSCMService>(mainProcessService.getChannel('void-channel-scm'), { context: nativeHostService.windowId });
 
 		this.debouncer = this._register(new RunOnceScheduler(() => this._onDidChange.fire(), 250));
 

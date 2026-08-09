@@ -57,7 +57,7 @@ export const BUNDLED_MARKETPLACE_CATALOG: MarketplaceItem[] = [
 		description: 'Read and manage GitHub repositories, issues, and pull requests.',
 		tags: ['git', 'vcs'], homepage: 'https://github.com/github/github-mcp-server',
 		auth: 'apikey',
-		mcp: { command: 'npx', args: ['-y', '@modelcontextprotocol/server-github'], env: { GITHUB_PERSONAL_ACCESS_TOKEN: '' } },
+		mcp: { command: 'npx', args: ['-y', '@modelcontextprotocol/server-github@2025.4.8'], env: { GITHUB_PERSONAL_ACCESS_TOKEN: '' } },
 		requiredEnv: [{ key: 'GITHUB_PERSONAL_ACCESS_TOKEN', label: 'Personal Access Token', description: 'A GitHub PAT with the scopes you need (e.g. repo).', secret: true }],
 	},
 
@@ -90,7 +90,7 @@ export const BUNDLED_MARKETPLACE_CATALOG: MarketplaceItem[] = [
 		brandColor: '#2ead33', iconText: 'PW',
 		description: 'Drive a real browser: navigate, click, fill forms, and capture pages for testing and scraping.',
 		tags: ['browser', 'testing'], homepage: 'https://github.com/microsoft/playwright-mcp',
-		auth: 'none', mcp: { command: 'npx', args: ['-y', '@playwright/mcp@latest'] },
+		auth: 'none', mcp: { command: 'npx', args: ['-y', '@playwright/mcp@0.0.79'] },
 	},
 
 	// ─── Community ─────────────────────────────────────────────────────────────────
@@ -144,7 +144,7 @@ export const BUNDLED_MARKETPLACE_CATALOG: MarketplaceItem[] = [
 		description: 'Web and local search via the Brave Search API.',
 		tags: ['search', 'web'], homepage: 'https://github.com/modelcontextprotocol/servers',
 		auth: 'apikey',
-		mcp: { command: 'npx', args: ['-y', '@modelcontextprotocol/server-brave-search'], env: { BRAVE_API_KEY: '' } },
+		mcp: { command: 'npx', args: ['-y', '@modelcontextprotocol/server-brave-search@0.6.2'], env: { BRAVE_API_KEY: '' } },
 		requiredEnv: [{ key: 'BRAVE_API_KEY', label: 'Brave API key', description: 'Get one at brave.com/search/api.', secret: true }],
 	},
 	{
@@ -153,7 +153,7 @@ export const BUNDLED_MARKETPLACE_CATALOG: MarketplaceItem[] = [
 		description: 'Read and post Slack messages, list channels, and search history.',
 		tags: ['chat', 'team'], homepage: 'https://github.com/modelcontextprotocol/servers',
 		auth: 'apikey',
-		mcp: { command: 'npx', args: ['-y', '@modelcontextprotocol/server-slack'], env: { SLACK_BOT_TOKEN: '', SLACK_TEAM_ID: '' } },
+		mcp: { command: 'npx', args: ['-y', '@modelcontextprotocol/server-slack@2025.4.25'], env: { SLACK_BOT_TOKEN: '', SLACK_TEAM_ID: '' } },
 		requiredEnv: [
 			{ key: 'SLACK_BOT_TOKEN', label: 'Bot token', description: 'A Slack bot token (xoxb-…).', secret: true },
 			{ key: 'SLACK_TEAM_ID', label: 'Team ID', description: 'Your Slack workspace/team ID (T…).' },
@@ -164,21 +164,21 @@ export const BUNDLED_MARKETPLACE_CATALOG: MarketplaceItem[] = [
 		brandColor: '#40b5a4', iconText: 'P',
 		description: 'Headless Chrome automation for navigation, screenshots, and DOM interaction.',
 		tags: ['browser', 'automation'], homepage: 'https://github.com/modelcontextprotocol/servers',
-		auth: 'none', mcp: { command: 'npx', args: ['-y', '@modelcontextprotocol/server-puppeteer'] },
+		auth: 'none', mcp: { command: 'npx', args: ['-y', '@modelcontextprotocol/server-puppeteer@2025.5.12'] },
 	},
 	{
 		id: 'mcp-sequential-thinking', kind: 'mcp', name: 'Sequential Thinking', category: 'Community',
 		brandColor: '#7c3aed', iconText: 'ST',
 		description: 'A structured, step-by-step reasoning tool for breaking down complex problems.',
 		tags: ['reasoning'], homepage: 'https://github.com/modelcontextprotocol/servers',
-		auth: 'none', mcp: { command: 'npx', args: ['-y', '@modelcontextprotocol/server-sequential-thinking'] },
+		auth: 'none', mcp: { command: 'npx', args: ['-y', '@modelcontextprotocol/server-sequential-thinking@2026.7.4'] },
 	},
 	{
 		id: 'mcp-memory', kind: 'mcp', name: 'Memory', category: 'Community',
 		brandColor: '#0891b2', iconText: 'M',
 		description: 'A persistent knowledge-graph memory the agent can read and write across sessions.',
 		tags: ['memory', 'knowledge'], homepage: 'https://github.com/modelcontextprotocol/servers',
-		auth: 'none', mcp: { command: 'npx', args: ['-y', '@modelcontextprotocol/server-memory'] },
+		auth: 'none', mcp: { command: 'npx', args: ['-y', '@modelcontextprotocol/server-memory@2026.7.4'] },
 	},
 
 	// ─── Skills ──────────────────────────────────────────────────────────────────

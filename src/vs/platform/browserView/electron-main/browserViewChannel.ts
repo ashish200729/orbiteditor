@@ -8,17 +8,14 @@ import { Event } from '../../../base/common/event.js';
 import { IServerChannel } from '../../../base/parts/ipc/common/ipc.js';
 import { BrowserViewMainService } from './browserViewMainService.js';
 import { BrowserAutomationMainService } from './browserAutomationMainService.js';
+import { isModelCdpMethodAllowed } from '../common/browserAutomationPure.js';
 
 /**
  * IPC channel that exposes `BrowserViewMainService` to the renderer process.
  *
- * The renderer-side proxy is created with `context: nativeHostService.windowId`. IMPORTANT:
- * `ProxyChannel.toService` only injects that context for `call` (method invocations) — for
- * `listen` (event subscriptions) it calls `channel.listen(eventName)` with NO context arg
- * (see `propertyIsEvent` branch in `ProxyChannel.toService`). So `ctx` here is `undefined`
- * for every event subscription. We therefore return the UNFILTERED service event; per-window
- * filtering is unnecessary because every renderer consumer already filters by `e.id`, and a
- * single VS Code window only ever owns views it created.
+ * The renderer-side proxy is created with `context: nativeHostService.windowId`. Calls verify
+ * that untrusted method arguments match the authenticated IPC connection context, and events
+ * are filtered to views owned by that connection's window.
  *
  * Automation commands (attachDebugger, sendCdpCommand, listViews, getNavigationState) are
  * routed to `BrowserAutomationMainService`, which owns the CDP sessions and ref maps. The
@@ -31,36 +28,59 @@ export class BrowserViewChannel implements IServerChannel {
 		private readonly automationService: BrowserAutomationMainService,
 	) { }
 
-	listen<T>(_ctx: unknown, event: string, _arg?: any): Event<T> {
+	listen<T>(ctx: unknown, event: string, _arg?: any): Event<T> {
+		const windowId = this.toWindowId(ctx);
+		let source: Event<unknown>;
 		switch (event) {
 			case 'onDidNavigate':
-				return this.service.onDidNavigate as unknown as Event<T>;
+				source = this.service.onDidNavigate;
+				break;
 			case 'onDidTitleChange':
-				return this.service.onDidTitleChange as unknown as Event<T>;
+				source = this.service.onDidTitleChange;
+				break;
 			case 'onDidFaviconChange':
-				return this.service.onDidFaviconChange as unknown as Event<T>;
+				source = this.service.onDidFaviconChange;
+				break;
 			case 'onDidLoadingStateChange':
-				return this.service.onDidLoadingStateChange as unknown as Event<T>;
+				source = this.service.onDidLoadingStateChange;
+				break;
 			case 'onDidClose':
-				return this.service.onDidClose as unknown as Event<T>;
+				source = this.service.onDidClose;
+				break;
 			case 'onDidFocusView':
-				return this.service.onDidFocusView as unknown as Event<T>;
+				source = this.service.onDidFocusView;
+				break;
 			case 'onDidBrowserShortcut':
-				return this.service.onDidBrowserShortcut as unknown as Event<T>;
+				source = this.service.onDidBrowserShortcut;
+				break;
 			case 'onDidAutomationLockChange':
-				return this.automationService.onDidAutomationLockChange as unknown as Event<T>;
+				source = this.automationService.onDidAutomationLockChange;
+				break;
 			default:
 				throw new Error(`Event not found: ${event}`);
 		}
+		return Event.filter(source, value => {
+			const id = typeof value === 'string' ? value : (value as { id?: unknown } | null)?.id;
+			return typeof id === 'string' && this.service.getWindowIdForView(id) === windowId;
+		}) as Event<T>;
 	}
 
 	async call(ctx: unknown, command: string, arg?: any): Promise<any> {
 		// ProxyChannel.toService sends `arg = [context, ...methodArgs]` when a context is
 		// configured. We normalize both array and single-value shapes.
 		const args: any[] = Array.isArray(arg) ? arg : [arg];
-		const windowId = this.toWindowId(args[0] ?? ctx);
+		const windowId = this.toWindowId(ctx);
+		if (typeof args[0] !== 'number' || args[0] !== windowId) {
+			throw new Error('BrowserView request window context does not match its IPC connection.');
+		}
 		// `a(0)` returns the first *method* arg (skipping the context at args[0]).
 		const a = (i: number) => args[i + 1];
+		if (command === 'open') {
+			const owner = this.service.getWindowIdForView(String(a(0) ?? ''));
+			if (owner !== undefined && owner !== windowId) throw new Error('Browser view belongs to another window.');
+		} else if (command !== 'listViews') {
+			this.assertViewOwnedByWindow(windowId, String(a(0) ?? ''));
+		}
 		switch (command) {
 			case 'open': {
 				const id = a(0) as string;
@@ -99,17 +119,24 @@ export class BrowserViewChannel implements IServerChannel {
 				return this.service.setIgnoreMenuShortcuts(windowId, a(0), a(1));
 			case 'bringToFront':
 				return this.service.bringToFront(windowId, a(0));
-			case 'executeJavaScript':
-				return this.service.executeJavaScript(windowId, a(0), a(1));
+			case 'executeJavaScript': {
+				// Renderer consumers only use this legacy method to synchronize the
+				// page color-scheme hint. Never forward arbitrary renderer-authored JS
+				// into a cross-origin authenticated browser tab.
+				const match = /document\.documentElement\.style\.colorScheme\s*=\s*["'](dark|light)["']/.exec(String(a(1) ?? ''));
+				if (!match) throw new Error('Arbitrary browser JavaScript is not available through renderer IPC.');
+				const safeScript = `(() => { try { document.documentElement.style.colorScheme = ${JSON.stringify(match[1])}; } catch {} return true; })()`;
+				return this.service.executeJavaScript(windowId, a(0), safeScript);
+			}
 			case 'screenshot':
 				return this.service.screenshot(windowId, a(0));
 			case 'runPicker':
 				return this.service.runPicker(windowId, a(0));
 			case 'teardownPicker':
 				return this.service.teardownPicker(windowId, a(0));
-			// --- Automation passthroughs (windowId is irrelevant; these are global) ---
+			// --- Automation passthroughs, still restricted to this window's views ---
 			case 'listViews':
-				return this.automationService.listViews();
+				return this.automationService.listViews().filter(view => view.windowId === windowId);
 			case 'getNavigationState':
 				return this.automationService.getNavigationState(a(0));
 			case 'attachDebugger':
@@ -117,6 +144,9 @@ export class BrowserViewChannel implements IServerChannel {
 			case 'detachDebugger':
 				return this.automationService.detachDebugger(a(0));
 			case 'sendCdpCommand':
+				if (!isModelCdpMethodAllowed(String(a(1) ?? ''))) {
+					throw new Error(`CDP method '${String(a(1) ?? '')}' is not available through renderer IPC.`);
+				}
 				return this.automationService.sendCdpCommand(a(0), a(1), a(2));
 			case 'setAutomationLocked':
 				return this.automationService.setAutomationLocked(a(0), a(1) === true);
@@ -128,13 +158,16 @@ export class BrowserViewChannel implements IServerChannel {
 	}
 
 	private toWindowId(ctx: unknown): number {
-		if (typeof ctx === 'number') {
-			return ctx;
-		}
-		if (ctx && typeof (ctx as any).windowId === 'number') {
-			return (ctx as any).windowId;
+		if (typeof ctx === 'string' && /^window:\d+$/.test(ctx)) {
+			return Number(ctx.slice('window:'.length));
 		}
 		throw new Error('BrowserViewChannel requires a numeric windowId context');
+	}
+
+	private assertViewOwnedByWindow(windowId: number, id: string): void {
+		if (!id || this.service.getWindowIdForView(id) !== windowId) {
+			throw new Error('Browser view does not belong to the calling window.');
+		}
 	}
 
 	dispose(): void {

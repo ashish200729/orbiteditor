@@ -101,13 +101,33 @@ export class ClinePassOAuthManager {
 		}
 
 		const state = generateUuid()
+		let callbackConsumed = false
 		const server = http.createServer(async (req, res) => {
+			const expectedHost = `${CLINE_PASS_OAUTH_CONFIG.callbackHost}:${CLINE_PASS_OAUTH_CONFIG.callbackPort}`
+			if (req.method !== 'GET' || req.headers.host !== expectedHost) {
+				res.writeHead(400, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' })
+				res.end('Invalid callback request')
+				return
+			}
 			const reqUrl = req.url ? new URL(req.url, `http://${CLINE_PASS_OAUTH_CONFIG.callbackHost}`) : null
 			if (!reqUrl || reqUrl.pathname !== CLINE_PASS_OAUTH_CONFIG.callbackPath) {
 				res.writeHead(404, { 'Content-Type': 'text/plain' })
 				res.end('Not found')
 				return
 			}
+
+			const returnedState = reqUrl.searchParams.get('state')
+			if (!returnedState || returnedState !== state) {
+				res.writeHead(400, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' })
+				res.end('Invalid or expired OAuth state')
+				return
+			}
+			if (callbackConsumed) {
+				res.writeHead(400, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' })
+				res.end('OAuth callback already consumed')
+				return
+			}
+			callbackConsumed = true
 
 			const error = reqUrl.searchParams.get('error')
 			if (error) {
@@ -120,17 +140,8 @@ export class ClinePassOAuthManager {
 				return
 			}
 
-			const returnedState = reqUrl.searchParams.get('state')
-			if (!returnedState || returnedState !== state) {
-				this.respondWithHtml(res, 'Sign-in failed', 'State mismatch detected. Please try again.')
-				this.rejectPending(new ClinePassOAuthError('State mismatch detected.', 'state_mismatch'))
-				return
-			}
-
-			// Cline may return code, refreshToken, or idToken on the callback URL.
+			// Long-lived refresh/id tokens must never travel in a browser URL.
 			const code = reqUrl.searchParams.get('code')
-				?? reqUrl.searchParams.get('refreshToken')
-				?? reqUrl.searchParams.get('idToken')
 			const provider = reqUrl.searchParams.get('provider') || CLINE_PASS_OAUTH_CONFIG.provider
 			if (!code) {
 				this.respondWithHtml(res, 'Sign-in failed', 'Authorization code missing. Please try again.')
@@ -218,6 +229,13 @@ export class ClinePassOAuthManager {
 		authUrl.searchParams.set('state', state)
 
 		try {
+			const safeRedirect = (raw: string) => {
+				const target = new URL(raw, authUrl)
+				if (target.protocol !== 'https:' || target.username || target.password) {
+					throw new ClinePassOAuthError('Cline auth returned an unsafe authorization redirect.', 'unsafe_redirect')
+				}
+				return target.toString()
+			}
 			const response = await fetch(authUrl.toString(), {
 				method: 'GET',
 				redirect: 'manual',
@@ -231,7 +249,7 @@ export class ClinePassOAuthManager {
 			if (response.status >= 300 && response.status < 400) {
 				const location = response.headers.get('Location')
 				if (location) {
-					return location
+					return safeRedirect(location)
 				}
 			}
 
@@ -239,7 +257,7 @@ export class ClinePassOAuthManager {
 			try {
 				const json = await response.json() as { redirect_url?: string }
 				if (json.redirect_url) {
-					return json.redirect_url
+					return safeRedirect(json.redirect_url)
 				}
 			} catch {
 				// fall through
@@ -437,6 +455,7 @@ export class ClinePassOAuthManager {
 		res.writeHead(200, {
 			'Content-Type': 'text/html; charset=utf-8',
 			'X-Content-Type-Options': 'nosniff',
+			'Cache-Control': 'no-store',
 			'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'",
 		})
 		res.end(html)

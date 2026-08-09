@@ -13,12 +13,13 @@ import {
 	remoteAwaitShellResultFromOutput,
 	validateAwaitShellParams,
 	validateShellParams,
-	buildShellCommandWithCwd,
+	resolveShellWorkingDirectory,
 } from '../../common/shellToolHelpers.js';
-import { availableTools } from '../../common/prompt/prompts.js';
-import { DEFAULT_SHELL_BLOCK_UNTIL_MS, MAX_SHELL_BLOCK_UNTIL_MS } from '../../common/prompt/prompts.js';
+import { availableTools, DEFAULT_SHELL_BLOCK_UNTIL_MS, MAX_SHELL_BLOCK_UNTIL_MS } from '../../common/prompt/prompts.js';
+import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 
 suite('ShellTool', () => {
+	ensureNoDisposablesAreLeakedInTestSuite();
 	suite('validateShellParams', () => {
 		test('happy path', () => {
 			const params = validateShellParams({
@@ -69,16 +70,15 @@ suite('ShellTool', () => {
 		});
 	});
 
-	suite('buildShellCommandWithCwd', () => {
-		test('prefixes cd when cwd changes', () => {
-			const { command, workingDirectory } = buildShellCommandWithCwd('npm test', './src', null);
-			assert.strictEqual(command, 'cd ./src && npm test');
-			assert.strictEqual(workingDirectory, './src');
+	suite('resolveShellWorkingDirectory', () => {
+		test('resolves relative paths without generating shell syntax', () => {
+			assert.strictEqual(resolveShellWorkingDirectory('./src', '/workspace'), '/workspace/src');
+			assert.strictEqual(resolveShellWorkingDirectory('/tmp/$(touch pwned)', '/workspace'), '/tmp/$(touch pwned)');
 		});
 
-		test('leaves command unchanged when cwd matches', () => {
-			const { command } = buildShellCommandWithCwd('npm test', './src', './src');
-			assert.strictEqual(command, 'npm test');
+		test('requires a root for relative paths and rejects NUL', () => {
+			assert.throws(() => resolveShellWorkingDirectory('./src', undefined), /requires an active workspace/);
+			assert.throws(() => resolveShellWorkingDirectory('/tmp/\0bad', '/workspace'), /NUL/);
 		});
 	});
 
@@ -93,20 +93,30 @@ suite('ShellTool', () => {
 			// single-threaded regex engine. Reject them outright.
 			assert.throws(
 				() => parseNotifyOnOutput('{"pattern": "(a+)+", "reason": "r"}'),
-				/nested quantifiers/,
+				/ReDoS risk/,
 			);
 			assert.throws(
 				() => parseNotifyOnOutput('{"pattern": "(a+){2,}", "reason": "r"}'),
-				/nested quantifiers/,
+				/ReDoS risk/,
 			);
 		});
 
-		test('H17: rejects patterns longer than 1024 chars', () => {
-			const long = 'a'.repeat(1025);
+		test('H17: rejects patterns longer than 256 chars', () => {
+			const long = 'a'.repeat(257);
 			assert.throws(
 				() => parseNotifyOnOutput(`{"pattern": "${long}", "reason": "r"}`),
 				/too long/,
 			);
+		});
+
+		test('rejects ambiguous and counted repetition missed by the old heuristic', () => {
+			for (const pattern of ['(a|aa)+$', '(a{1,3})+$', 'a+a+$', '(?=secret)secret', '(a)\\1']) {
+				assert.throws(
+					() => parseNotifyOnOutput(JSON.stringify({ pattern, reason: 'r' })),
+					/ReDoS risk/,
+					pattern,
+				);
+			}
 		});
 	});
 

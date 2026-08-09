@@ -38,6 +38,7 @@ export type PendingBrowserAuth = {
 	server: Server
 	host: string
 	port: number
+	callbackConsumed: boolean
 	resolve: (credentials: XAiGrokCredentials) => void
 	reject: (error: Error) => void
 	promise: Promise<XAiGrokCredentials>

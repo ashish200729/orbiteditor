@@ -14,7 +14,7 @@ import { ILLMMessageService } from '../common/sendLLMMessageService.js';
 import { chat_userMessageContent, isABuiltinToolName, isLLMHiddenBuiltinToolName, llmVisibleBuiltinToolNames, readOnlyToolNames, resolveBuiltinToolName, resolveBuiltinToolNameLoose, InternalToolInfo } from '../common/prompt/prompts.js';
 import { parseSlashTokenNames } from '../common/slashCommands/slashTokens.js';
 import { AnthropicReasoning, getErrorMessage, LLMUsage, RawToolCallObj, RawToolParamsObj } from '../common/sendLLMMessageTypes.js';
-import { generateUuid } from '../../../../base/common/uuid.js';
+import { generateUuid, isUUID } from '../../../../base/common/uuid.js';
 import { FeatureName, ModelSelection, ModelSelectionOptions } from '../common/orbitSettingsTypes.js';
 import { getModelCapabilities } from '../common/modelCapabilities.js';
 import { selectCompactionBoundary } from '../common/compactionHelpers.js';
@@ -44,7 +44,6 @@ import { deepClone } from '../../../../base/common/objects.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IDirectoryStrService } from '../common/directoryStrService.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
-import { VSBuffer } from '../../../../base/common/buffer.js';
 import { IMCPService } from '../common/mcpService.js';
 import { RawMCPToolCall } from '../common/mcpServiceTypes.js';
 import { FileAccess } from '../../../../base/common/network.js';
@@ -62,6 +61,8 @@ import { getActiveWindow } from '../../../../base/browser/dom.js';
 import { findThreadComposerInWindow, focusInConnectedWindow } from './connectedWindowDom.js';
 import { getPathAccessApprovalReason } from '../common/agentToolSecurity.js';
 import { cloneStagingSelection, queuedUserMessagesEqual, type QueuedUserMessage } from '../common/messageQueueHelpers.js';
+import { resolveShellWorkingDirectory } from '../common/shellToolHelpers.js';
+import { assertNoWorkspaceSymlinkTraversal } from '../common/agentPathSecurity.js';
 
 export type { QueuedUserMessage } from '../common/messageQueueHelpers.js';
 
@@ -708,6 +709,7 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 		for (const threadId of Object.keys(allThreads)) {
 			this._turnSequenceOfThread[threadId] = 0
 		}
+		void this._cleanupLegacyRepositoryHistory()
 
 		// Q4: rehydrate any persisted message queues (as PAUSED — never auto-fire into a cold thread on
 		// startup), and persist (debounced) whenever the queue changes.
@@ -1207,10 +1209,7 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 		if (firstUserIdx < 0 || c.throughMessageIdx <= firstUserIdx) return messages
 
 		const head = messages.slice(0, firstUserIdx + 1) // preamble + original task
-		const historyNote = c.historyPath
-			? `\n\nThe full detail of the earlier conversation is saved at \`${c.historyPath}\`. If you need specifics not captured in this summary, read that file.`
-			: ''
-		const summaryMsg: ChatMessage = { role: 'assistant', displayContent: COMPACTION_SUMMARY_PREFIX + c.summaryText + historyNote, reasoning: '', anthropicReasoning: null }
+		const summaryMsg: ChatMessage = { role: 'assistant', displayContent: COMPACTION_SUMMARY_PREFIX + c.summaryText, reasoning: '', anthropicReasoning: null }
 		const tail = messages.slice(c.throughMessageIdx) // starts at a user message (safe boundary)
 		return [...head, summaryMsg, ...tail]
 	}
@@ -1322,39 +1321,59 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 		const latest = this.state.allThreads[threadId]?.messages
 		if (!latest || latest.length < boundary || latest[boundary]?.role !== 'user') return
 
-		// Persist the full pre-compaction detail to a workspace file so the agent can re-read it.
-		const historyPath = await this._appendCompactionHistory(threadId, toSummarize, existing?.historyPath)
+		// Older versions persisted raw transcripts under the repository. Remove
+		// that app-generated legacy artifact; the full conversation already lives
+		// in the thread store and must not be duplicated as plaintext source data.
+		await this._removeLegacyCompactionHistory(threadId)
 
 		this._setThreadCompaction(threadId, {
 			summaryText: summary,
 			throughMessageIdx: boundary,
 			summarizedMessageCount: boundary,
-			historyPath,
+			historyPath: undefined,
 		})
 	}
 
-	/** Append the given (about-to-be-summarized) messages to the thread's history file under
-	 * `.orbit/history/` and return its workspace-relative path. Best-effort: returns the existing
-	 * path (or undefined) on any failure so compaction still proceeds. */
-	private async _appendCompactionHistory(threadId: string, messages: ChatMessage[], existingPath: string | undefined): Promise<string | undefined> {
+	/** Remove the plaintext repository transcript created by older Orbit builds. */
+	private async _removeLegacyCompactionHistory(threadId: string): Promise<void> {
 		try {
+			if (!isUUID(threadId)) return
 			const folder = this._getFolderUrisForThread(threadId)[0]
-			if (!folder) return existingPath
-			const relPath = `.orbit/history/thread-${threadId}.md`
+			if (!folder) return
 			const fileUri = URI.joinPath(folder, '.orbit', 'history', `thread-${threadId}.md`)
-			const header = `\n\n---\n## Compacted ${new Date().toISOString()}\n\n`
-			const body = this._transcriptForSummarization(messages)
-			let prior = ''
-			try {
-				const existing = await this._fileService.readFile(fileUri)
-				prior = existing.value.toString()
-			} catch { /* file doesn't exist yet */ }
-			await this._fileService.writeFile(fileUri, VSBuffer.fromString(prior + header + body))
-			return relPath
-		} catch (e) {
-			console.error('[chatThreadService] Failed to write compaction history file:', getErrorMessage(e))
-			return existingPath
+			await assertNoWorkspaceSymlinkTraversal(fileUri, [folder], uri => this._fileService.stat(uri))
+			await this._fileService.del(fileUri).catch(() => { /* absent is fine */ })
+		} catch { /* best-effort legacy cleanup */ }
+	}
+
+	/** Remove app-owned plaintext transcript/output artifacts from every folder
+	 * the user has authorized in the IDE or Agents window. */
+	private async _cleanupLegacyRepositoryHistory(): Promise<void> {
+		const folders = new Map<string, URI>()
+		for (const folder of this._workspaceContextService.getWorkspace().folders) {
+			folders.set(folder.uri.toString(), folder.uri)
 		}
+		for (const workspace of Object.values(this._agentProjectWorkspaceService.getState().workspaces)) {
+			for (const folder of workspace.folders) {
+				try {
+					const uri = URI.parse(folder.uri)
+					folders.set(uri.toString(), uri)
+				} catch { /* stale saved URI */ }
+			}
+		}
+		await Promise.all([...folders.values()].map(async folder => {
+			const historyDir = URI.joinPath(folder, '.orbit', 'history')
+			try {
+				await assertNoWorkspaceSymlinkTraversal(historyDir, [folder], uri => this._fileService.stat(uri))
+				const stat = await this._fileService.resolve(historyDir)
+				for (const child of stat.children ?? []) {
+					if (/^(?:thread-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.md|shell-output-\d+\.log)$/i.test(child.name)) {
+						await assertNoWorkspaceSymlinkTraversal(child.resource, [folder], uri => this._fileService.stat(uri))
+						await this._fileService.del(child.resource).catch(() => { /* best-effort */ })
+					}
+				}
+			} catch { /* history directory normally does not exist */ }
+		}))
 	}
 
 	/** Persist compaction state onto the thread (or clear it). Mirrors the other per-thread setters. */
@@ -2051,7 +2070,15 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 			try {
 				if (builtinToolName) {
 					const params = this._toolsService.validateParams[builtinToolName](opts.unvalidatedToolParams)
-					toolParams = params
+					toolParams = builtinToolName === 'Shell'
+						? {
+							...params as BuiltinToolCallParams['Shell'],
+							workingDirectory: resolveShellWorkingDirectory(
+								(params as BuiltinToolCallParams['Shell']).workingDirectory,
+								this._getFolderUrisForThread(threadId)[0]?.fsPath,
+							),
+						}
+						: params
 				}
 				else {
 					toolParams = opts.unvalidatedToolParams
@@ -2086,7 +2113,7 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 				return { awaitingUserApproval: true }
 			}
 
-		// 1b. Workspace-confinement guard: any path tool (incl. Read/Grep/Glob, which have no
+			// 1b. Workspace-confinement guard: any path tool (incl. Read/Grep/Glob, which have no
 			// approval type) that targets a location outside the workspace or a credential-like path
 			// requires explicit approval — even if auto-approve is on. Prevents silent exfiltration of
 			// secrets (e.g. ~/.ssh/id_rsa) to the model.
@@ -2099,17 +2126,21 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 			}
 
 			// 2. if tool requires approval, break from the loop, awaiting approval
-		const approvalType = builtinToolName ? approvalTypeOfBuiltinToolName[builtinToolName] : 'MCP tools'
-		// The built-in browser MCP server (`orbit-ide-browser`) never prompts for
-		// approval: opening and driving the integrated browser is a first-class product
-		// action, and when no tab is open the server auto-opens one itself (see
-		// orbitIdeBrowserMcpServer.callTool). Whether these tools exist at all is gated
-		// by the Browser Automation master switch in Settings.
-		const isOrbitBrowserTool = !builtinToolName && effectiveMcpServerName === 'orbit-ide-browser'
-			if (approvalType && !isOrbitBrowserTool) {
+			const approvalType = builtinToolName ? approvalTypeOfBuiltinToolName[builtinToolName] : 'MCP tools'
+			// Dedicated browser interactions are gated by the Browser Automation switch.
+			// Raw CDP remains an MCP operation that requires explicit per-call approval,
+			// even when MCP auto-approval is enabled.
+			const isOrbitBrowserCdp = !builtinToolName
+				&& effectiveMcpServerName === 'orbit-ide-browser'
+				&& effectiveToolName === 'browser_cdp'
+			const isApprovalExemptOrbitBrowserTool = !builtinToolName
+				&& effectiveMcpServerName === 'orbit-ide-browser'
+				&& !isOrbitBrowserCdp
+			if (approvalType && !isApprovalExemptOrbitBrowserTool) {
 				const autoApprove = this._settingsService.state.globalSettings.autoApprove[approvalType]
-				const forceApproval = (builtinToolName === 'Shell'
+				const forceApproval = ((builtinToolName === 'Shell'
 					&& (toolParams as BuiltinToolCallParams['Shell']).requestSmartModeApproval === true)
+					|| isOrbitBrowserCdp)
 				// Use _updateLatestTool (not _addMessageToThread) so that any existing
 				// `running_now` placeholder for this tool id (added by the parallel
 				// execution batch) is swapped in-place instead of duplicated. Two tool
@@ -3957,11 +3988,7 @@ We only need to do it for files that were edited since `from`, ie files between 
 		this._clearQueuedUserMessages(threadId); // Q6: clear memory and the persisted queue entry
 
 		// Clean up the compaction history file for this thread
-		const folder = this._getFolderUrisForThread(threadId)[0];
-		if (folder) {
-			const historyFile = URI.joinPath(folder, '.orbit', 'history', `thread-${threadId}.md`);
-			void this._fileService.del(historyFile).catch(() => { /* best-effort */ });
-		}
+		void this._removeLegacyCompactionHistory(threadId)
 
 		// delete the thread
 		const newThreads = { ...currentThreads };

@@ -5,6 +5,7 @@
 
 import { XAiGrokUsage } from '../../common/xAiGrokAuthService.js'
 import { XAI_GROK_OAUTH_CONFIG } from './oauthConfig.js'
+import { fetchWithEndpointPolicy } from '../../common/networkSecurity.js'
 
 const finiteNumber = (value: unknown) => typeof value === 'number' && Number.isFinite(value) ? value : undefined
 
@@ -47,14 +48,14 @@ const billingRequest = async (accessToken: string, query = '') => {
 	const controller = new AbortController()
 	const timeout = setTimeout(() => controller.abort(), 15_000)
 	try {
-		const response = await fetch(`${XAI_GROK_OAUTH_CONFIG.cliApiBaseUrl}/billing${query}`, {
+		const response = await fetchWithEndpointPolicy(`${XAI_GROK_OAUTH_CONFIG.cliApiBaseUrl}/billing${query}`, {
 			headers: {
 				Authorization: `Bearer ${accessToken}`,
 				Accept: 'application/json',
 				'x-xai-token-auth': 'xai-grok-cli',
 			},
 			signal: controller.signal,
-		})
+		}, 'xAI billing endpoint')
 		if (!response.ok) throw new Error(`xAI subscription usage is unavailable for this account (${response.status}).`)
 		return response.json()
 	} catch (error) {

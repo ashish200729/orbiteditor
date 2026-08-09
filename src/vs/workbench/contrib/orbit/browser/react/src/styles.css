@@ -63,12 +63,13 @@
 	--void-composer-secondary-hover-bg: var(--vscode-button-secondaryHoverBackground, color-mix(in srgb, var(--void-fg-1) 18%, var(--void-bg-1) 82%));
 	--void-composer-disabled-bg: color-mix(in srgb, var(--void-composer-primary-bg) 32%, var(--void-bg-1) 68%);
 
-	/* Dropdown / menu selection surfaces.
-	   Opaque (color-mix of two opaque colors), theme-adaptive, and hue-neutral
-	   (foreground tinted into the darkest bg tier) so they stay in the "black"
-	   family of the Orbit dark theme instead of introducing an accent/blue tint.
-	   The fixed foreground percentages guarantee a visible, ordered hierarchy
-	   (hover < active) regardless of the active theme's exact token values. */
+	/* Dropdown / menu surfaces and selection states. Popup chrome uses VS Code's
+	   dedicated menu tokens instead of the input background: input backgrounds may
+	   intentionally be transparent, which makes unselected options disappear over
+	   the editor beneath them. */
+	--void-dropdown-surface-bg: var(--vscode-menu-background, var(--vscode-dropdown-background, var(--vscode-editorWidget-background, var(--void-bg-3))));
+	--void-dropdown-surface-fg: var(--vscode-menu-foreground, var(--vscode-dropdown-foreground, var(--void-fg-1)));
+	--void-dropdown-surface-border: var(--vscode-menu-border, var(--vscode-dropdown-border, var(--void-border-2)));
 	--void-dropdown-hover-bg: color-mix(in srgb, var(--void-fg-1) 6%, var(--void-bg-1) 94%);
 	--void-dropdown-active-bg: color-mix(in srgb, var(--void-fg-1) 14%, var(--void-bg-1) 86%);
 
@@ -176,6 +177,580 @@
 	border: none !important;
 	-webkit-appearance: none;
 	appearance: none;
+}
+
+/* Staged-image controls keep attachment actions compact without competing with Send. */
+.orbit-image-attachment {
+	position: relative;
+	width: 48px;
+	height: 48px;
+	flex: none;
+}
+
+.orbit-image-attachment-button {
+	position: relative;
+	display: block;
+	width: 48px;
+	height: 48px;
+	overflow: hidden;
+	padding: 0;
+	background: var(--void-bg-3);
+	border: 1px solid var(--void-border-3);
+	border-radius: 6px;
+	box-shadow: 0 2px 8px color-mix(in srgb, black 18%, transparent);
+	cursor: pointer;
+}
+
+.orbit-image-attachment-button:hover {
+	border-color: var(--void-border-1);
+}
+
+.orbit-image-attachment-preview {
+	display: block;
+	width: 100%;
+	height: 100%;
+	object-fit: cover;
+}
+
+.orbit-image-attachment-remove {
+	position: absolute;
+	inset-block-start: -5px;
+	inset-inline-end: -5px;
+	z-index: 1;
+	display: inline-flex;
+	width: 22px;
+	height: 22px;
+	align-items: center;
+	justify-content: center;
+	padding: 0;
+	color: var(--void-fg-2);
+	background: var(--vscode-editorWidget-background, var(--void-bg-3));
+	border: 1px solid var(--void-border-2);
+	border-radius: 50%;
+	box-shadow: 0 1px 5px color-mix(in srgb, black 24%, transparent);
+	cursor: pointer;
+}
+
+.orbit-image-attachment-remove:hover {
+	color: var(--vscode-errorForeground, var(--void-fg-1));
+	background: var(--void-toolbar-hover-bg, var(--void-dropdown-hover-bg));
+}
+
+/* Attached-image markup editor. The editor is portaled into the connected IDE or
+   Agents window, so every surface and control must carry its own theme-aware shell. */
+.orbit-image-editor-backdrop {
+	position: fixed;
+	inset: 0;
+	z-index: 100000;
+	background: color-mix(in srgb, black 42%, transparent);
+	backdrop-filter: blur(3px);
+}
+
+.orbit-image-editor-dialog {
+	/* Define these on the dialog rather than the portal root. The React CSS build
+	   scopes selectors as `.void-scope .orbit-*`; the root owns both classes and is
+	   therefore not its own descendant, while the dialog is. Theme menu, input, and
+	   widget colors may contain alpha, so layer them over an opaque editor base. */
+	--orbit-image-editor-base-bg: var(--vscode-editor-background, var(--void-bg-3, Canvas));
+	--orbit-image-editor-shell-overlay: var(--vscode-editorWidget-background, transparent);
+	--orbit-image-editor-chrome-overlay: var(--vscode-menu-background, var(--vscode-dropdown-background, var(--vscode-editorWidget-background, transparent)));
+	--orbit-image-editor-control-overlay: var(--vscode-button-secondaryBackground, var(--vscode-input-background, transparent));
+	--orbit-image-editor-control-hover-overlay: var(--vscode-toolbar-hoverBackground, var(--void-dropdown-hover-bg));
+	--orbit-image-editor-control-active-overlay: var(--vscode-toolbar-activeBackground, var(--void-dropdown-active-bg));
+	/* Controls sit on menu chrome, so their contrast must come from the matching
+	   menu foreground. editor.foreground can belong to the opposite color scheme
+	   in connected windows while their theme transition is settling. */
+	--orbit-image-editor-control-fg: var(--vscode-menu-foreground, var(--vscode-dropdown-foreground, var(--vscode-descriptionForeground, CanvasText)));
+	--orbit-image-editor-control-border: color-mix(in srgb, var(--orbit-image-editor-control-fg) 50%, transparent);
+
+	position: fixed;
+	left: 50%;
+	top: 50%;
+	z-index: 100001;
+	display: flex;
+	width: min(1440px, calc(100vw - 48px));
+	height: min(900px, calc(100vh - 48px));
+	min-width: 0;
+	min-height: min(320px, calc(100vh - 48px));
+	transform: translate(-50%, -50%);
+	flex-direction: column;
+	overflow: hidden;
+	color: var(--void-fg-1);
+	background-color: var(--orbit-image-editor-base-bg);
+	background-image: linear-gradient(var(--orbit-image-editor-shell-overlay), var(--orbit-image-editor-shell-overlay));
+	border: 1px solid var(--void-border-2);
+	border-radius: 12px;
+	box-shadow: 0 24px 72px color-mix(in srgb, black 46%, transparent);
+	isolation: isolate;
+	font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, "Segoe WPC", "Segoe UI", sans-serif);
+	font-size: 13px;
+}
+
+.orbit-image-editor-header {
+	display: grid;
+	grid-template-columns: minmax(144px, 1fr) auto minmax(260px, 1fr);
+	align-items: center;
+	gap: 16px;
+	min-height: 52px;
+	padding: 8px 12px 8px 16px;
+	background-color: var(--orbit-image-editor-base-bg);
+	background-image: linear-gradient(var(--orbit-image-editor-chrome-overlay), var(--orbit-image-editor-chrome-overlay));
+	border-bottom: 1px solid var(--void-border-3);
+}
+
+.orbit-image-editor-title-group,
+.orbit-image-editor-tools,
+.orbit-image-editor-tool-group,
+.orbit-image-editor-actions,
+.orbit-image-editor-colors,
+.orbit-image-editor-sizes {
+	display: flex;
+	align-items: center;
+}
+
+.orbit-image-editor-title-group {
+	min-width: 0;
+	gap: 8px;
+	color: var(--void-fg-2);
+}
+
+.orbit-image-editor-title-group h2 {
+	min-width: 0;
+	overflow: hidden;
+	margin: 0;
+	font-size: 13px;
+	font-weight: 500;
+	line-height: 20px;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.orbit-image-editor-tools {
+	gap: 8px;
+	justify-content: center;
+}
+
+.orbit-image-editor-tool-group {
+	gap: 5px;
+	padding: 3px 4px;
+	background-color: var(--orbit-image-editor-base-bg);
+	background-image: linear-gradient(var(--orbit-image-editor-control-overlay), var(--orbit-image-editor-control-overlay));
+	border: 1px solid var(--orbit-image-editor-control-border);
+	border-radius: 8px;
+}
+
+.orbit-image-editor-tool-label {
+	color: var(--orbit-image-editor-control-fg);
+	font-size: 11px;
+	line-height: 16px;
+}
+
+.orbit-image-editor-colors,
+.orbit-image-editor-sizes {
+	gap: 3px;
+}
+
+.orbit-image-editor-color,
+.orbit-image-editor-size {
+	position: relative;
+	display: inline-flex;
+	width: 28px;
+	height: 28px;
+	align-items: center;
+	justify-content: center;
+	padding: 0;
+	color: var(--orbit-image-editor-control-fg);
+	background-color: var(--orbit-image-editor-base-bg);
+	background-image: linear-gradient(var(--orbit-image-editor-shell-overlay), var(--orbit-image-editor-shell-overlay));
+	border: 1px solid var(--orbit-image-editor-control-border);
+	border-radius: 6px;
+	cursor: pointer;
+	transition: background-color 120ms ease-out, border-color 120ms ease-out;
+}
+
+.orbit-image-editor-color:hover,
+.orbit-image-editor-size:hover {
+	background-color: var(--orbit-image-editor-base-bg);
+	background-image: linear-gradient(var(--orbit-image-editor-control-hover-overlay), var(--orbit-image-editor-control-hover-overlay));
+}
+
+.orbit-image-editor-color[aria-pressed='true'],
+.orbit-image-editor-size[aria-pressed='true'] {
+	background-color: var(--orbit-image-editor-base-bg);
+	background-image: linear-gradient(var(--orbit-image-editor-control-active-overlay), var(--orbit-image-editor-control-active-overlay));
+	border-color: var(--vscode-focusBorder, var(--void-border-1));
+	box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--orbit-image-editor-control-fg) 18%, transparent);
+}
+
+.orbit-image-editor-color > span {
+	width: 14px;
+	height: 14px;
+	border: 1px solid color-mix(in srgb, var(--orbit-image-editor-control-fg) 62%, transparent);
+	border-radius: 50%;
+}
+
+.orbit-image-editor-color > svg {
+	position: absolute;
+	filter: drop-shadow(0 1px 1px color-mix(in srgb, black 72%, transparent));
+}
+
+.orbit-image-editor-size > span {
+	display: block;
+	flex: none;
+	background: currentColor;
+	border-radius: 50%;
+	box-shadow: 0 0 0 1px color-mix(in srgb, var(--orbit-image-editor-base-bg) 55%, transparent);
+}
+
+.orbit-image-editor-divider {
+	width: 1px;
+	height: 20px;
+	flex: none;
+	background: var(--void-border-3);
+}
+
+.orbit-image-editor-actions {
+	justify-content: flex-end;
+	gap: 4px;
+}
+
+.orbit-image-editor-action {
+	display: inline-flex;
+	min-height: 28px;
+	align-items: center;
+	justify-content: center;
+	gap: 5px;
+	padding: 4px 8px;
+	color: var(--orbit-image-editor-control-fg);
+	background-color: var(--orbit-image-editor-base-bg);
+	background-image: linear-gradient(var(--orbit-image-editor-control-overlay), var(--orbit-image-editor-control-overlay));
+	border: 1px solid var(--orbit-image-editor-control-border);
+	border-radius: 5px;
+	cursor: pointer;
+	font: inherit;
+	line-height: 18px;
+	transition: background-color 120ms ease-out, color 120ms ease-out;
+}
+
+.orbit-image-editor-action:hover:not(:disabled) {
+	color: var(--void-fg-1);
+	background-color: var(--orbit-image-editor-base-bg);
+	background-image: linear-gradient(var(--orbit-image-editor-control-hover-overlay), var(--orbit-image-editor-control-hover-overlay));
+}
+
+.orbit-image-editor-action:disabled {
+	color: var(--vscode-disabledForeground, var(--void-fg-3));
+	cursor: default;
+}
+
+.orbit-image-editor-save {
+	min-width: 52px;
+	color: var(--void-composer-primary-fg);
+	background: var(--void-composer-primary-bg);
+	background-image: none;
+}
+
+.orbit-image-editor-save:hover:not(:disabled) {
+	color: var(--void-composer-primary-fg);
+	background: var(--void-composer-primary-hover-bg);
+}
+
+.orbit-image-editor-save:disabled {
+	color: var(--vscode-disabledForeground, var(--void-fg-3));
+	background: var(--void-composer-disabled-bg);
+}
+
+.orbit-image-editor-stage {
+	position: relative;
+	display: flex;
+	min-width: 0;
+	min-height: 0;
+	flex: 1;
+	align-items: center;
+	justify-content: center;
+	overflow: hidden;
+	padding: 24px;
+	background: var(--orbit-image-editor-base-bg);
+}
+
+.orbit-image-editor-canvas {
+	display: block;
+	width: auto;
+	height: auto;
+	max-width: 100%;
+	max-height: 100%;
+	background-color: var(--void-bg-3);
+	background-image:
+		linear-gradient(45deg, color-mix(in srgb, var(--void-fg-1) 8%, transparent) 25%, transparent 25%),
+		linear-gradient(-45deg, color-mix(in srgb, var(--void-fg-1) 8%, transparent) 25%, transparent 25%),
+		linear-gradient(45deg, transparent 75%, color-mix(in srgb, var(--void-fg-1) 8%, transparent) 75%),
+		linear-gradient(-45deg, transparent 75%, color-mix(in srgb, var(--void-fg-1) 8%, transparent) 75%);
+	background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+	background-size: 16px 16px;
+	box-shadow: 0 8px 28px color-mix(in srgb, black 30%, transparent);
+	cursor: crosshair;
+	touch-action: none;
+	user-select: none;
+}
+
+.orbit-image-editor-canvas--hidden {
+	visibility: hidden;
+	position: absolute;
+}
+
+.orbit-image-editor-status,
+.orbit-image-editor-error {
+	position: absolute;
+	max-width: 420px;
+	padding: 10px 12px;
+	text-align: center;
+	line-height: 1.45;
+}
+
+.orbit-image-editor-status {
+	color: var(--vscode-descriptionForeground, var(--void-fg-3));
+}
+
+.orbit-image-editor-error,
+.orbit-image-editor-save-error {
+	color: var(--vscode-errorForeground, #f14c4c);
+}
+
+.orbit-image-editor-footer {
+	position: relative;
+	display: flex;
+	min-height: 34px;
+	align-items: center;
+	justify-content: space-between;
+	gap: 16px;
+	padding: 6px 14px;
+	color: var(--vscode-descriptionForeground, var(--void-fg-3));
+	background-color: var(--orbit-image-editor-base-bg);
+	background-image: linear-gradient(var(--orbit-image-editor-chrome-overlay), var(--orbit-image-editor-chrome-overlay));
+	border-top: 1px solid var(--void-border-3);
+	font-size: 11px;
+	line-height: 18px;
+}
+
+.orbit-image-editor-footer p {
+	margin: 0;
+}
+
+.orbit-image-editor-save-error {
+	position: absolute;
+	inset-inline-end: 14px;
+	bottom: calc(100% + 8px);
+	max-width: min(420px, calc(100vw - 48px));
+	padding: 8px 10px;
+	background-color: var(--orbit-image-editor-base-bg);
+	background-image: linear-gradient(var(--orbit-image-editor-shell-overlay), var(--orbit-image-editor-shell-overlay));
+	border: 1px solid var(--vscode-inputValidation-errorBorder, var(--void-border-2));
+	border-radius: 6px;
+	box-shadow: 0 8px 24px color-mix(in srgb, black 30%, transparent);
+}
+
+@media (max-width: 980px) {
+	.orbit-image-editor-header {
+		grid-template-columns: minmax(0, 1fr) auto;
+		gap: 8px;
+	}
+
+	.orbit-image-editor-tools {
+		grid-column: 1 / -1;
+		grid-row: 2;
+		flex-wrap: wrap;
+		padding-top: 4px;
+		border-top: 1px solid var(--void-border-3);
+	}
+
+	.orbit-image-editor-actions {
+		grid-column: 2;
+		grid-row: 1;
+		min-width: 0;
+	}
+}
+
+@media (max-width: 860px) {
+	.orbit-image-editor-history-action span {
+		display: none;
+	}
+}
+
+@media (max-width: 560px) {
+	.orbit-image-editor-dialog {
+		width: 100vw;
+		height: 100vh;
+		min-height: 0;
+		border: 0;
+		border-radius: 0;
+	}
+
+	.orbit-image-editor-header {
+		grid-template-columns: minmax(0, 1fr) auto;
+		padding: 8px;
+	}
+
+	.orbit-image-editor-color,
+	.orbit-image-editor-size {
+		width: 40px;
+		height: 40px;
+	}
+
+	.orbit-image-editor-action {
+		min-height: 40px;
+		padding-inline: 8px;
+	}
+
+	.orbit-image-editor-stage {
+		padding: 10px;
+	}
+
+	.orbit-image-editor-tools {
+		max-width: 100%;
+		row-gap: 6px;
+	}
+
+	.orbit-image-editor-tools-divider {
+		display: none;
+	}
+
+	.orbit-image-editor-footer {
+		padding-inline: 10px;
+	}
+
+	.orbit-image-editor-footer p {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+}
+
+@media (max-width: 420px) {
+	.orbit-image-editor-actions {
+		gap: 2px;
+	}
+
+	.orbit-image-editor-history-action,
+	.orbit-image-editor-cancel {
+		width: 36px;
+		padding-inline: 0;
+	}
+
+	.orbit-image-editor-cancel span {
+		display: none;
+	}
+
+	.orbit-image-editor-save {
+		min-width: 48px;
+		padding-inline: 6px;
+	}
+}
+
+@media (max-width: 360px) {
+	.orbit-image-editor-color,
+	.orbit-image-editor-size {
+		width: 36px;
+		height: 36px;
+	}
+
+	.orbit-image-editor-stage {
+		padding: 6px;
+	}
+}
+
+@media (max-height: 420px) {
+	.orbit-image-editor-dialog {
+		min-height: 0;
+	}
+
+	.orbit-image-editor-stage {
+		padding-block: 8px;
+	}
+
+	.orbit-image-editor-footer {
+		min-height: 28px;
+		padding-block: 4px;
+	}
+}
+
+/* Shared model, mode, and branch dropdowns need a self-contained popup surface.
+   The input token used previously can be translucent in custom themes, leaving
+   every unselected row visually merged with the editor behind the menu. */
+.void-dropdown-surface {
+	isolation: isolate;
+	color: var(--void-dropdown-surface-fg);
+	background: var(--void-dropdown-surface-bg);
+	border-color: var(--void-dropdown-surface-border);
+}
+
+@media (forced-colors: active) {
+	.orbit-image-attachment-button,
+	.orbit-image-attachment-remove,
+	.orbit-image-editor-dialog,
+	.orbit-image-editor-tool-group,
+	.orbit-image-editor-canvas {
+		border: 1px solid CanvasText;
+		box-shadow: none;
+	}
+
+	.orbit-image-editor-backdrop {
+		background: Canvas;
+		opacity: 0.65;
+		backdrop-filter: none;
+	}
+
+	.orbit-image-editor-color,
+	.orbit-image-editor-size,
+	.orbit-image-editor-action {
+		border-color: ButtonText;
+	}
+
+	.orbit-image-editor-color[aria-pressed='true'],
+	.orbit-image-editor-size[aria-pressed='true'] {
+		color: HighlightText;
+		background: Highlight;
+		border-color: Highlight;
+	}
+
+	.orbit-image-editor-color > span,
+	.orbit-image-editor-color > svg {
+		forced-color-adjust: none;
+	}
+
+	.orbit-image-editor-color > span {
+		border-color: CanvasText;
+	}
+
+	.orbit-image-editor-size > span {
+		forced-color-adjust: none;
+		background: ButtonText;
+		box-shadow: none;
+	}
+
+	.orbit-image-editor-size[aria-pressed='true'] > span {
+		background: HighlightText;
+	}
+
+	.orbit-image-editor-action:disabled {
+		color: GrayText;
+		border-color: GrayText;
+		opacity: 1;
+	}
+
+	.void-dropdown-surface {
+		color: CanvasText;
+		background: Canvas;
+		border-color: CanvasText;
+		box-shadow: none;
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.orbit-image-editor-color,
+	.orbit-image-editor-size,
+	.orbit-image-editor-action {
+		transition: none;
+	}
 }
 
 /* Chat History search input: no focus ring/border (native inputs match :focus-visible on mouse click too) */

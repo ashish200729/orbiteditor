@@ -45,4 +45,4 @@ if [[ "$MAKE_DMG" == true ]]; then
 	./scripts/make-dmg.sh "$APP_DIR" "Orbit-${VERSION}-darwin-${ARCH}.dmg"
 fi
 
-echo "Done. To publish: ./scripts/publish-release.sh ${VERSION} ${ARCH}"
+echo "Done. To build and verify both release architectures: ./scripts/release-macos.sh ${VERSION}"

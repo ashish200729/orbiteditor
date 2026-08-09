@@ -62,6 +62,30 @@ export function normalizeOrbitVersion(version: string): string {
 	return version.replace(/^v/i, '').trim();
 }
 
+export function isValidOrbitVersion(version: string): boolean {
+	return /^\d+\.\d+\.\d+$/.test(normalizeOrbitVersion(version));
+}
+
+export function isTrustedOrbitUpdateAssetUrl(url: string, version: string): boolean {
+	if (!isValidOrbitVersion(version)) {
+		return false;
+	}
+	try {
+		const parsed = new URL(url);
+		const expectedPrefix = `/${ORBIT_UPDATE_REPO}/releases/download/v${normalizeOrbitVersion(version)}/`;
+		return parsed.protocol === 'https:'
+			&& parsed.hostname === 'github.com'
+			&& !parsed.username
+			&& !parsed.password
+			&& !parsed.search
+			&& !parsed.hash
+			&& parsed.pathname.startsWith(expectedPrefix)
+			&& parsed.pathname.length > expectedPrefix.length;
+	} catch {
+		return false;
+	}
+}
+
 export function getOrbitPlatformAssetKey(linuxPackageType: OrbitLinuxPackageType = 'appimage', architecture: string = process.arch): string {
 	const arch = architecture === 'arm64' ? 'arm64' : 'x64';
 	if (isWindows) {

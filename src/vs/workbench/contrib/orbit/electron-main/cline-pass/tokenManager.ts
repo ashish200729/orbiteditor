@@ -5,6 +5,7 @@
 
 import { CLINE_PASS_OAUTH_CONFIG } from './oauthConfig.js'
 import type { ClinePassCredentials, ClinePassTokenApiResponse, ClinePassTokenResponseData } from './oauthTypes.js'
+import { fetchWithEndpointPolicy } from '../../common/networkSecurity.js'
 
 const EXPIRY_BUFFER_MS = 5 * 60 * 1000
 const DEFAULT_EXPIRES_IN_MS = 60 * 60 * 1000
@@ -75,7 +76,7 @@ export const exchangeCodeForTokens = async (params: {
 	redirectUri: string
 	provider?: string
 }): Promise<ClinePassCredentials> => {
-	const response = await fetch(tokenUrl(CLINE_PASS_OAUTH_CONFIG.tokenExchangePath), {
+	const response = await fetchWithEndpointPolicy(tokenUrl(CLINE_PASS_OAUTH_CONFIG.tokenExchangePath), {
 		method: 'POST',
 		headers: {
 			'Content-Type': 'application/json',
@@ -89,7 +90,7 @@ export const exchangeCodeForTokens = async (params: {
 			provider: params.provider || CLINE_PASS_OAUTH_CONFIG.provider,
 		}),
 		signal: AbortSignal.timeout(30_000),
-	})
+	}, 'Cline token endpoint')
 
 	const payload = await parseJsonResponse(response)
 	if (!response.ok || !payload.data?.accessToken) {
@@ -108,7 +109,7 @@ export const refreshAccessToken = async (
 	refreshToken: string,
 	existing?: Pick<ClinePassCredentials, 'email' | 'userId' | 'displayName'>,
 ): Promise<ClinePassCredentials> => {
-	const response = await fetch(tokenUrl(CLINE_PASS_OAUTH_CONFIG.tokenRefreshPath), {
+	const response = await fetchWithEndpointPolicy(tokenUrl(CLINE_PASS_OAUTH_CONFIG.tokenRefreshPath), {
 		method: 'POST',
 		headers: {
 			'Content-Type': 'application/json',
@@ -119,7 +120,7 @@ export const refreshAccessToken = async (
 			refreshToken,
 		}),
 		signal: AbortSignal.timeout(30_000),
-	})
+	}, 'Cline token endpoint')
 
 	const payload = await parseJsonResponse(response)
 	if (!response.ok || !payload.data?.accessToken) {

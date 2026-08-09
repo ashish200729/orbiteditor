@@ -35,26 +35,24 @@ This repo contains the full source code for Orbit Editor's desktop app. If you'r
 
 Orbit Editor is currently in **beta** and available for **macOS** (Apple Silicon and Intel). Windows and Linux support is coming soon.
 
-**Recommended — one-line install (no Gatekeeper warning):**
+**Recommended — verified one-line install:**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ashish200729/orbiteditor/main/install.sh | bash
 ```
 
-This downloads and installs Orbit into `/Applications` via `curl`, which never
-tags the app with macOS's `com.apple.quarantine` flag — so it launches with **no
-Gatekeeper prompt**, on any Mac, with no Apple Developer account required.
+This verifies the signed update manifest, DMG checksum, and app code signature
+before installing Orbit into `/Applications`.
 
 **Alternative — download the `.dmg`** from
 [Releases](https://github.com/ashish200729/orbiteditor/releases) or
 [orbiteditorai.com](https://orbiteditorai.com), then drag Orbit to Applications.
 Because Orbit is not (yet) notarized by Apple, a DMG downloaded through a browser
 is quarantined and macOS shows *"Apple could not verify Orbit is free of
-malware."* Bypass it once, any of:
+malware."* You can approve it once using either supported macOS flow:
 
 - Right-click `Orbit.app` → **Open** → **Open Anyway**, or
-- System Settings → Privacy & Security → **Open Anyway**, or
-- Terminal: `xattr -cr /Applications/Orbit.app`
+- System Settings → Privacy & Security → **Open Anyway**
 
 ## Demo
 
@@ -98,3 +96,9 @@ See [LICENSE.txt](./LICENSE.txt), [LICENSE-VS-Code.txt](./LICENSE-VS-Code.txt), 
 You can reach us via [GitHub issues](https://github.com/ashish200729/orbiteditor/issues), join our [Discord server](https://discord.gg/ZPYkjPCDj8) for community support and discussions, or email us at [ashishp.292007@gmail.com](mailto:ashishp.292007@gmail.com).
 
 To report a security vulnerability, see [SECURITY.md](./SECURITY.md).
+
+## Sample Notes
+
+Orbit around ideas.
+Explore new possibilities.
+Create with confidence.

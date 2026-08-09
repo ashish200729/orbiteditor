@@ -20,6 +20,12 @@
 # manifest, and the app refuses to auto-install from one.
 set -euo pipefail
 
+if [[ "${ALLOW_LEGACY_SINGLE_ARCH_RELEASE:-0}" != 1 ]]; then
+	echo "This single-architecture publisher is disabled because it can expose a partial macOS release." >&2
+	echo "Use ./scripts/release-macos.sh so arm64 and x64 are built and verified before publication." >&2
+	exit 1
+fi
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 

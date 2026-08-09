@@ -1,16 +1,12 @@
 #!/usr/bin/env bash
-# Install Orbit on macOS via curl/script instead of a browser-downloaded DMG.
-#
-# Why: macOS only tags a file with the com.apple.quarantine xattr when it is
-# downloaded through a browser (Safari/Chrome/etc). Gatekeeper's "Apple could
-# not verify this app is free of malware" prompt fires off that tag. A file
-# fetched with curl never gets tagged, so installing this way skips the
-# prompt entirely — no Apple Developer ID / notarization required.
+# Install Orbit on macOS from the signed update manifest or a local DMG.
 #
 # Usage:
 #   ./scripts/install-macos.sh                  # fetch latest release per update/latest.json
 #   LOCAL_DMG=./Orbit-0.1.0-darwin-arm64.dmg ./scripts/install-macos.sh   # test with a local DMG, no download
 set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 ARCH="$(uname -m)"
 case "$ARCH" in
@@ -21,7 +17,14 @@ esac
 
 MANIFEST_URL="${MANIFEST_URL:-https://raw.githubusercontent.com/ashish200729/orbiteditor/main/update/latest.json}"
 WORKDIR="$(mktemp -d)"
-trap 'rm -rf "$WORKDIR"' EXIT
+MOUNT_POINT=""
+cleanup() {
+	if [[ -n "$MOUNT_POINT" ]]; then
+		hdiutil detach "$MOUNT_POINT" -quiet 2>/dev/null || true
+	fi
+	rm -rf "$WORKDIR"
+}
+trap cleanup EXIT
 
 if [[ -n "${LOCAL_DMG:-}" ]]; then
 	echo "Using local DMG (no network fetch, no quarantine involved): ${LOCAL_DMG}"
@@ -32,7 +35,8 @@ if [[ -n "${LOCAL_DMG:-}" ]]; then
 	fi
 else
 	echo "Fetching manifest: ${MANIFEST_URL}"
-	curl -fsSL "$MANIFEST_URL" -o "${WORKDIR}/latest.json"
+	curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 "$MANIFEST_URL" -o "${WORKDIR}/latest.json"
+	node "$ROOT/scripts/verify-update-manifest.js" "${WORKDIR}/latest.json" "$PLATFORM_KEY"
 
 	URL="$(node -p "require('${WORKDIR}/latest.json').assets['${PLATFORM_KEY}'].url")"
 	SHA256_EXPECTED="$(node -p "require('${WORKDIR}/latest.json').assets['${PLATFORM_KEY}'].sha256")"
@@ -45,7 +49,7 @@ else
 
 	DMG_PATH="${WORKDIR}/orbit.dmg"
 	echo "Downloading Orbit ${VERSION} (${PLATFORM_KEY}) via curl..."
-	curl -fsSL "$URL" -o "$DMG_PATH"
+	curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 "$URL" -o "$DMG_PATH"
 
 	echo "Verifying checksum..."
 	SHA256_ACTUAL="$(shasum -a 256 "$DMG_PATH" | awk '{print $1}')"
@@ -59,29 +63,42 @@ fi
 echo "Mounting DMG..."
 MOUNT_POINT="${WORKDIR}/mnt"
 mkdir -p "$MOUNT_POINT"
-hdiutil attach "$DMG_PATH" -mountpoint "$MOUNT_POINT" -nobrowse -quiet
+hdiutil attach "$DMG_PATH" -mountpoint "$MOUNT_POINT" -nobrowse -readonly -quiet
 
 APP_SRC="${MOUNT_POINT}/Orbit.app"
-if [[ ! -d "$APP_SRC" ]]; then
+if [[ ! -d "$APP_SRC" || -L "$APP_SRC" ]]; then
 	hdiutil detach "$MOUNT_POINT" -quiet || true
 	echo "install-macos.sh: Orbit.app not found inside DMG" >&2
 	exit 1
 fi
 
-echo "Installing to /Applications..."
-rm -rf "/Applications/Orbit.app"
-cp -R "$APP_SRC" "/Applications/Orbit.app"
+echo "Verifying app signature..."
+codesign --verify --deep --strict --verbose=2 "$APP_SRC"
+
+TARGET="/Applications/Orbit.app"
+INSTALL_DIR="$(mktemp -d /Applications/.Orbit.app.install.XXXXXX)"
+STAGE="$INSTALL_DIR/Orbit.app"
+BACKUP="$INSTALL_DIR/previous.app"
+
+echo "Copying verified app to staging..."
+ditto "$APP_SRC" "$STAGE"
+codesign --verify --deep --strict --verbose=2 "$STAGE"
 
 hdiutil detach "$MOUNT_POINT" -quiet
+MOUNT_POINT=""
 
-# Belt-and-suspenders: strip quarantine in case it snuck in anyway.
-xattr -cr "/Applications/Orbit.app"
-
-echo "Verifying no quarantine flag..."
-if xattr -p com.apple.quarantine "/Applications/Orbit.app" >/dev/null 2>&1; then
-	echo "WARNING: quarantine flag still present — Gatekeeper prompt may still appear." >&2
-else
-	echo "No quarantine flag — should launch with no Gatekeeper prompt."
+echo "Installing to /Applications..."
+if [[ -e "$TARGET" ]]; then
+	mv -- "$TARGET" "$BACKUP"
 fi
+if ! mv -- "$STAGE" "$TARGET"; then
+	echo "install-macos.sh: install failed; restoring the previous app" >&2
+	if [[ -d "$BACKUP" ]]; then
+		mv -- "$BACKUP" "$TARGET"
+	fi
+	rm -rf -- "$INSTALL_DIR"
+	exit 1
+fi
+rm -rf -- "$BACKUP" "$INSTALL_DIR"
 
 echo "Done. Launch: open /Applications/Orbit.app"

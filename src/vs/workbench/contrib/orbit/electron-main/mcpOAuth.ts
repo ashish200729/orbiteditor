@@ -29,6 +29,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 import { OAuthClientProvider, UnauthorizedError } from '@modelcontextprotocol/sdk/client/auth.js';
 import type { OAuthClientMetadata, OAuthClientInformation, OAuthClientInformationFull, OAuthTokens } from '@modelcontextprotocol/sdk/shared/auth.js';
+import { fetchWithEndpointPolicy } from '../common/networkSecurity.js';
 
 type PersistedOAuth = {
 	clientInformation?: OAuthClientInformationFull;
@@ -39,55 +40,93 @@ const AUTH_TIMEOUT_MS = 5 * 60_000;
 
 function storeDir(): string {
 	const dir = path.join(app.getPath('userData'), 'orbit-mcp-oauth');
-	try { fs.mkdirSync(dir, { recursive: true }); } catch { /* ignore */ }
+	fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+	const stat = fs.lstatSync(dir);
+	if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('MCP OAuth storage path is not a safe directory.');
+	if (typeof process.getuid === 'function' && stat.uid !== process.getuid()) throw new Error('MCP OAuth storage directory is not owned by the current user.');
+	if (process.platform !== 'win32') fs.chmodSync(dir, 0o700);
+	// Pre-hardening builds used a 32-hex name and could fall back to plaintext.
+	// Those files cannot be safely migrated or rebound to an exact resource URL.
+	for (const name of fs.readdirSync(dir)) {
+		if (/^[0-9a-f]{32}\.json$/i.test(name)) {
+			try { fs.rmSync(path.join(dir, name), { force: true }); } catch { /* best-effort migration cleanup */ }
+		}
+	}
 	return dir;
 }
 
-function storeFileFor(serverName: string): string {
-	const safe = crypto.createHash('sha256').update(serverName).digest('hex').slice(0, 32);
+function canonicalResource(resourceUrl: URL): string {
+	const normalized = new URL(resourceUrl.toString());
+	normalized.username = '';
+	normalized.password = '';
+	normalized.hash = '';
+	return normalized.toString();
+}
+
+function storageIdentity(serverName: string, resourceUrl: URL): string {
+	return `${serverName}\n${canonicalResource(resourceUrl)}`;
+}
+
+function storeFileFor(serverName: string, resourceUrl: URL): string {
+	const safe = crypto.createHash('sha256').update(storageIdentity(serverName, resourceUrl)).digest('hex');
 	return path.join(storeDir(), `${safe}.json`);
 }
 
-function readPersisted(serverName: string): PersistedOAuth {
+function secureStorageAvailable(): boolean {
+	if (!safeStorage.isEncryptionAvailable()) return false;
+	return !(process.platform === 'linux' && safeStorage.getSelectedStorageBackend() === 'basic_text');
+}
+
+function readPersisted(serverName: string, resourceUrl: URL): PersistedOAuth {
 	try {
-		const file = storeFileFor(serverName);
+		if (!secureStorageAvailable()) return {};
+		const file = storeFileFor(serverName, resourceUrl);
 		if (!fs.existsSync(file)) return {};
-		const raw = fs.readFileSync(file);
-		let json: string;
-		if (safeStorage.isEncryptionAvailable()) {
-			json = safeStorage.decryptString(raw);
-		} else {
-			json = raw.toString('utf8');
-		}
-		return JSON.parse(json) as PersistedOAuth;
+		const flags = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0);
+		const fd = fs.openSync(file, flags);
+		try {
+			const stat = fs.fstatSync(fd);
+			if (!stat.isFile() || (typeof process.getuid === 'function' && stat.uid !== process.getuid())) return {};
+			return JSON.parse(safeStorage.decryptString(fs.readFileSync(fd))) as PersistedOAuth;
+		} finally { fs.closeSync(fd); }
 	} catch {
 		return {};
 	}
 }
 
-function writePersisted(serverName: string, data: PersistedOAuth): void {
+function writePersisted(serverName: string, resourceUrl: URL, data: PersistedOAuth): void {
+	let temp: string | undefined;
 	try {
-		const file = storeFileFor(serverName);
-		const json = JSON.stringify(data);
-		if (safeStorage.isEncryptionAvailable()) {
-			fs.writeFileSync(file, safeStorage.encryptString(json));
-		} else {
-			fs.writeFileSync(file, json, 'utf8');
-		}
+		// Never downgrade tokens to plaintext. They remain session-only when the
+		// OS keychain/secret service is unavailable or Electron selected basic_text.
+		if (!secureStorageAvailable()) return;
+		const file = storeFileFor(serverName, resourceUrl);
+		temp = `${file}.${process.pid}.${crypto.randomBytes(8).toString('hex')}.tmp`;
+		const fd = fs.openSync(temp, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY, 0o600);
+		try {
+			fs.writeFileSync(fd, safeStorage.encryptString(JSON.stringify(data)));
+			fs.fsyncSync(fd);
+		} finally { fs.closeSync(fd); }
+		// POSIX rename replaces atomically. Windows rejects replacement, so remove
+		// the old user-owned file immediately before installing the complete temp.
+		if (process.platform === 'win32' && fs.existsSync(file)) fs.rmSync(file, { force: true });
+		fs.renameSync(temp, file);
+		if (process.platform !== 'win32') fs.chmodSync(file, 0o600);
 	} catch (err) {
+		if (temp) try { fs.rmSync(temp, { force: true }); } catch { /* best-effort */ }
 		console.error(`[mcpOAuth] Failed to persist tokens for ${serverName}:`, err);
 	}
 }
 
 /** True if this server has previously completed an OAuth login (tokens on disk). */
-export function hasStoredMcpTokens(serverName: string): boolean {
-	return !!readPersisted(serverName).tokens?.access_token;
+export function hasStoredMcpTokens(serverName: string, resourceUrl: URL): boolean {
+	return !!readPersisted(serverName, resourceUrl).tokens?.access_token;
 }
 
 /** Delete stored OAuth state for a server (used on remove / re-auth). */
-export function clearStoredMcpTokens(serverName: string): void {
+export function clearStoredMcpTokens(serverName: string, resourceUrl: URL): void {
 	try {
-		const file = storeFileFor(serverName);
+		const file = storeFileFor(serverName, resourceUrl);
 		if (fs.existsSync(file)) fs.rmSync(file);
 	} catch { /* ignore */ }
 }
@@ -95,14 +134,16 @@ export function clearStoredMcpTokens(serverName: string): void {
 class OrbitMcpOAuthProvider implements OAuthClientProvider {
 	private _codeVerifier: string | undefined;
 	private _persisted: PersistedOAuth;
+	private readonly _state = crypto.randomBytes(32).toString('base64url');
 
 	constructor(
 		private readonly serverName: string,
+		private readonly resourceUrl: URL,
 		private _redirectUrl: string,
 		/** When false, redirectToAuthorization is a no-op — used to probe auth state without opening a browser. */
 		private readonly interactive: boolean,
 	) {
-		this._persisted = readPersisted(serverName);
+		this._persisted = readPersisted(serverName, resourceUrl);
 	}
 
 	setRedirectUrl(url: string) { this._redirectUrl = url; }
@@ -125,7 +166,7 @@ class OrbitMcpOAuthProvider implements OAuthClientProvider {
 
 	saveClientInformation(clientInformation: OAuthClientInformationFull): void {
 		this._persisted = { ...this._persisted, clientInformation };
-		writePersisted(this.serverName, this._persisted);
+		writePersisted(this.serverName, this.resourceUrl, this._persisted);
 	}
 
 	tokens(): OAuthTokens | undefined {
@@ -134,7 +175,7 @@ class OrbitMcpOAuthProvider implements OAuthClientProvider {
 
 	saveTokens(tokens: OAuthTokens): void {
 		this._persisted = { ...this._persisted, tokens };
-		writePersisted(this.serverName, this._persisted);
+		writePersisted(this.serverName, this.resourceUrl, this._persisted);
 	}
 
 	redirectToAuthorization(authorizationUrl: URL): void {
@@ -149,6 +190,8 @@ class OrbitMcpOAuthProvider implements OAuthClientProvider {
 		if (!this._codeVerifier) throw new Error('No code verifier saved');
 		return this._codeVerifier;
 	}
+
+	state(): string { return this._state; }
 }
 
 /** Result of attempting a connection that may require OAuth. */
@@ -161,10 +204,10 @@ export type OAuthProbeResult =
  * Build an OAuthClientProvider for a server. Attaches to HTTP/SSE transports so
  * the SDK auto-refreshes and (in interactive flows) drives the login.
  */
-export function makeOAuthProvider(serverName: string, interactive: boolean): OrbitMcpOAuthProvider {
+export function makeOAuthProvider(serverName: string, resourceUrl: URL, interactive: boolean): OrbitMcpOAuthProvider {
 	// redirectUrl is finalized once the loopback server binds; use a placeholder
 	// for the passive (non-interactive) provider where no redirect happens.
-	return new OrbitMcpOAuthProvider(serverName, 'http://127.0.0.1:0/callback', interactive);
+	return new OrbitMcpOAuthProvider(serverName, resourceUrl, 'http://127.0.0.1:0/callback', interactive);
 }
 
 const SUCCESS_HTML = (title: string, message: string) => {
@@ -185,24 +228,34 @@ h1{font-size:20px;margin:0 0 8px}p{color:#9aa2b1;font-size:14px;margin:0}</style
 export async function runMcpOAuthFlow(serverName: string, serverUrl: URL, isSSE: boolean): Promise<void> {
 	// Fresh registration/tokens each explicit login attempt keeps the flow robust
 	// against a stale/rejected dynamic client registration.
-	const provider = new OrbitMcpOAuthProvider(serverName, 'http://127.0.0.1:0/callback', true);
+	const provider = new OrbitMcpOAuthProvider(serverName, serverUrl, 'http://127.0.0.1:0/callback', true);
 
 	let resolveCode!: (code: string) => void;
 	let rejectCode!: (err: Error) => void;
 	const codePromise = new Promise<string>((res, rej) => { resolveCode = res; rejectCode = rej; });
 	codePromise.catch(() => { /* observed below */ });
 
+	let expectedHost = '';
+	let callbackConsumed = false;
 	const server = http.createServer((req, res) => {
+		if (req.method !== 'GET' || req.headers.host !== expectedHost) {
+			res.writeHead(400, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' }); res.end('Invalid callback request'); return;
+		}
 		const reqUrl = req.url ? new URL(req.url, 'http://127.0.0.1') : null;
 		if (!reqUrl || reqUrl.pathname !== '/callback') {
 			res.writeHead(404, { 'Content-Type': 'text/plain' }); res.end('Not found'); return;
 		}
-		const error = reqUrl.searchParams.get('error');
-		const code = reqUrl.searchParams.get('code');
+		const returnedState = reqUrl.searchParams.get('state');
 		const respond = (title: string, message: string) => {
-			res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'X-Content-Type-Options': 'nosniff' });
+			res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'no-store', 'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'" });
 			res.end(SUCCESS_HTML(title, message));
 		};
+		if (callbackConsumed || returnedState !== provider.state()) {
+			res.writeHead(400, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' }); res.end('Invalid or expired OAuth state'); return;
+		}
+		callbackConsumed = true;
+		const error = reqUrl.searchParams.get('error');
+		const code = reqUrl.searchParams.get('code');
 		if (error) {
 			respond('Sign-in failed', reqUrl.searchParams.get('error_description') ?? error);
 			rejectCode(new Error(`OAuth error: ${error}`));
@@ -226,11 +279,13 @@ export async function runMcpOAuthFlow(serverName: string, serverUrl: URL, isSSE:
 			resolve(typeof addr === 'object' && addr ? addr.port : 0);
 		});
 	});
+	expectedHost = `127.0.0.1:${port}`;
 	provider.setRedirectUrl(`http://127.0.0.1:${port}/callback`);
 
+	const guardedFetch = (input: string | URL, init?: RequestInit) => fetchWithEndpointPolicy(input, init, `MCP server "${serverName}"`);
 	const makeTransport = () => isSSE
-		? new SSEClientTransport(serverUrl, { authProvider: provider })
-		: new StreamableHTTPClientTransport(serverUrl, { authProvider: provider });
+		? new SSEClientTransport(serverUrl, { authProvider: provider, fetch: guardedFetch })
+		: new StreamableHTTPClientTransport(serverUrl, { authProvider: provider, fetch: guardedFetch });
 
 	const timeout = setTimeout(() => rejectCode(new Error('Authorization timed out')), AUTH_TIMEOUT_MS);
 

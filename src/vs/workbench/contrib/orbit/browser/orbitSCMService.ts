@@ -24,6 +24,7 @@ import { registerSingleton, InstantiationType } from '../../../../platform/insta
 import { createDecorator, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js'
 import { Disposable } from '../../../../base/common/lifecycle.js'
 import { INotificationService } from '../../../../platform/notification/common/notification.js'
+import { INativeHostService } from '../../../../platform/native/common/native.js'
 
 interface ModelOptions {
 	modelSelection: ModelSelection | null
@@ -56,11 +57,12 @@ class GenerateCommitMessageService extends Disposable implements IGenerateCommit
 		@IConvertToLLMMessageService private readonly convertToLLMMessageService: IConvertToLLMMessageService,
 		@ILLMMessageService private readonly llmMessageService: ILLMMessageService,
 		@IContextKeyService private readonly contextKeyService: IContextKeyService,
-		@INotificationService private readonly notificationService: INotificationService
+		@INotificationService private readonly notificationService: INotificationService,
+		@INativeHostService nativeHostService: INativeHostService,
 	) {
 		super()
 		this.loadingContextKey = this.contextKeyService.createKey(loadingContextKey, false)
-		this.voidSCM = ProxyChannel.toService<IVoidSCMService>(mainProcessService.getChannel('void-channel-scm'))
+		this.voidSCM = ProxyChannel.toService<IVoidSCMService>(mainProcessService.getChannel('void-channel-scm'), { context: nativeHostService.windowId })
 	}
 
 	override dispose() {

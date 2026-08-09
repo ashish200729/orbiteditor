@@ -91,8 +91,15 @@ export class OpenAiCodexOAuthManager {
 		const codeVerifier = generateCodeVerifier()
 		const codeChallenge = generateCodeChallenge(codeVerifier)
 		const state = generateState()
+		let callbackConsumed = false
 
 		const server = http.createServer(async (req, res) => {
+			const expectedHost = `${OPENAI_CODEX_OAUTH_CONFIG.callbackHost}:${OPENAI_CODEX_OAUTH_CONFIG.callbackPort}`
+			if (req.method !== 'GET' || req.headers.host !== expectedHost) {
+				res.writeHead(400, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' })
+				res.end('Invalid callback request')
+				return
+			}
 			const reqUrl = req.url ? new URL(req.url, `http://${OPENAI_CODEX_OAUTH_CONFIG.callbackHost}`) : null
 			if (!reqUrl || reqUrl.pathname !== OPENAI_CODEX_OAUTH_CONFIG.callbackPath) {
 				res.writeHead(404, { 'Content-Type': 'text/plain' })
@@ -100,6 +107,18 @@ export class OpenAiCodexOAuthManager {
 				return
 			}
 
+			const returnedState = reqUrl.searchParams.get('state')
+			if (!returnedState || returnedState !== state) {
+				res.writeHead(400, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' })
+				res.end('Invalid or expired OAuth state')
+				return
+			}
+			if (callbackConsumed) {
+				res.writeHead(400, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' })
+				res.end('OAuth callback already consumed')
+				return
+			}
+			callbackConsumed = true
 			const error = reqUrl.searchParams.get('error')
 			if (error) {
 				const errorDescription = reqUrl.searchParams.get('error_description')
@@ -110,14 +129,7 @@ export class OpenAiCodexOAuthManager {
 				this.rejectPending(new OpenAiCodexOAuthError(message, error === 'access_denied' ? 'cancelled' : error))
 				return
 			}
-
-			const returnedState = reqUrl.searchParams.get('state')
 			const code = reqUrl.searchParams.get('code')
-			if (!returnedState || returnedState !== state) {
-				this.respondWithHtml(res, 'Sign-in failed', 'State mismatch detected. Please try again.')
-				this.rejectPending(new OpenAiCodexOAuthError('State mismatch detected.', 'state_mismatch'))
-				return
-			}
 			if (!code) {
 				this.respondWithHtml(res, 'Sign-in failed', 'Authorization code missing. Please try again.')
 				this.rejectPending(new OpenAiCodexOAuthError('Authorization code missing.', 'missing_code'))
@@ -464,6 +476,7 @@ export class OpenAiCodexOAuthManager {
 		res.writeHead(200, {
 			'Content-Type': 'text/html; charset=utf-8',
 			'X-Content-Type-Options': 'nosniff',
+			'Cache-Control': 'no-store',
 			'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; script-src 'unsafe-inline'",
 		})
 		res.end(html)

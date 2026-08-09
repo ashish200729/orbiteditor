@@ -72,6 +72,7 @@ suite('Semantic retrieval helpers', () => {
 		const request = validateSemanticEmbeddingRequest({ provider: 'ollama', endpoint: 'http://localhost:11434', model: 'nomic-embed-text', inputs: ['hello'] });
 		assert.strictEqual(request.inputs.length, 1);
 		assert.throws(() => validateSemanticEmbeddingRequest({ provider: 'ollama', endpoint: 'file:///tmp/socket', model: 'model', inputs: ['hello'] }));
+		assert.throws(() => validateSemanticEmbeddingRequest({ provider: 'openAICompatible', endpoint: 'http://example.com/v1', apiKey: 'secret', model: 'model', inputs: ['hello'] }), /must use HTTPS/);
 		assert.throws(() => validateSemanticEmbeddingRequest({ provider: 'ollama', endpoint: 'http://localhost', model: 'model', inputs: [] }));
 	});
 

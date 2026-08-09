@@ -158,6 +158,16 @@ function main() {
 	const opts = parseArgs(process.argv);
 	const root = process.cwd();
 	const manifestPath = path.join(root, 'update', 'latest.json');
+	const versionPattern = /^\d+\.\d+\.\d+$/;
+	if (!versionPattern.test(opts.version)) {
+		throw new Error(`Invalid release version "${opts.version}" (expected x.y.z)`);
+	}
+	if (opts.tag !== `v${opts.version}`) {
+		throw new Error(`Release tag must be exactly v${opts.version}`);
+	}
+	if (opts.commit && !/^[0-9a-f]{7,40}$/i.test(opts.commit)) {
+		throw new Error('Release commit must be a 7-40 character hexadecimal Git commit ID');
+	}
 
 	const existing = opts.merge ? loadExistingManifest(manifestPath) : { assets: {} };
 	// Never carry packages from an older release into a new version. Doing so
@@ -170,8 +180,12 @@ function main() {
 		}
 
 		const resolved = path.resolve(root, filePath);
-		if (!fs.existsSync(resolved)) {
+		if (!fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) {
 			throw new Error(`Asset file not found for ${platformKey}: ${resolved}`);
+		}
+		const expectedName = ARTIFACT_NAMES[platformKey](opts.version);
+		if (path.basename(resolved) !== expectedName) {
+			throw new Error(`Asset for ${platformKey} must be named ${expectedName}`);
 		}
 
 		assets[platformKey] = {

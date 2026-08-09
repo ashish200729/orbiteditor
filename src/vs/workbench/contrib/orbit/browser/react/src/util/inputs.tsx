@@ -1632,7 +1632,7 @@ export const VoidCustomDropdownBox = <T extends NonNullable<any>>({
 			{isOpen && (
 				<div
 					ref={refs.setFloating}
-					className="z-[100] rounded-lg border border-void-border-2 bg-void-bg-1 shadow-lg overflow-hidden"
+					className="@@void-dropdown-surface z-[100] rounded-lg border shadow-lg overflow-hidden"
 					style={{
 						position: strategy,
 						top: y ?? 0,
@@ -1718,7 +1718,7 @@ export const VoidCustomDropdownBox = <T extends NonNullable<any>>({
 			{hoveredOption && isOpen && getOptionDropdownDetail && (
 				<div
 					ref={hoverPanelFloating.refs.setFloating}
-					className="z-[101] rounded border border-void-border-2 bg-void-bg-1 shadow-lg p-3 w-max max-w-[280px]"
+					className="@@void-dropdown-surface z-[101] rounded border shadow-lg p-3 w-max max-w-[280px]"
 					style={{
 						position: hoverPanelFloating.strategy,
 						top: hoverPanelFloating.y ?? 0,

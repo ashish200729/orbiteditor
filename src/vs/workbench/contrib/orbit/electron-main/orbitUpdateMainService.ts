@@ -19,7 +19,7 @@ import { ILifecycleMainService } from '../../../../platform/lifecycle/electron-m
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IProductService } from '../../../../platform/product/common/productService.js';
 import { asJson, IRequestService } from '../../../../platform/request/common/request.js';
-import { compareOrbitVersions, getCurrentOrbitVersion, getOrbitPlatformAssetKey, getOrbitUpdateManifestUrl, IOrbitUpdateManifest, normalizeOrbitVersion, ORBIT_UPDATE_REPO } from '../common/orbitUpdateManifest.js';
+import { compareOrbitVersions, getCurrentOrbitVersion, getOrbitPlatformAssetKey, getOrbitUpdateManifestUrl, IOrbitUpdateManifest, isTrustedOrbitUpdateAssetUrl, isValidOrbitVersion, normalizeOrbitVersion, ORBIT_UPDATE_REPO } from '../common/orbitUpdateManifest.js';
 import { IVoidUpdateService } from '../common/orbitUpdateService.js';
 import { VoidCheckUpdateRespose } from '../common/orbitUpdateServiceTypes.js';
 import { preflightMacInstall, resolveMacAppBundlePath, resolveMacInstallTarget, spawnMacDmgInstaller } from './orbitUpdateInstall.darwin.js';
@@ -61,7 +61,7 @@ export class VoidMainUpdateService extends Disposable implements IVoidUpdateServ
 	async check(explicit: boolean): Promise<VoidCheckUpdateRespose> {
 		if (!this._envMainService.isBuilt) {
 			return explicit
-				? { message: 'Orbit updates are available in release builds only. Install a built .app from GitHub Releases or run ./scripts/publish-release.sh to create one.' }
+				? { message: 'Orbit updates are available in release builds only. Install a built .app from GitHub Releases or run ./scripts/release-macos.sh to create one.' }
 				: { message: null };
 		}
 
@@ -78,6 +78,10 @@ export class VoidMainUpdateService extends Disposable implements IVoidUpdateServ
 			if (!asset.sha256) {
 				this._logService.warn(`[Orbit Update] Asset for platform ${platformKey} has no sha256 checksum; refusing to auto-install it`);
 				return this._manifestErrorResponse(explicit, `The update for ${platformKey} can't be verified. Please download it manually from the releases page.`);
+			}
+			if (!/^[0-9a-f]{64}$/i.test(asset.sha256) || !isTrustedOrbitUpdateAssetUrl(asset.url, manifest.version)) {
+				this._logService.warn(`[Orbit Update] Asset metadata for platform ${platformKey} is invalid`);
+				return this._manifestErrorResponse(explicit, `The update for ${platformKey} has invalid security metadata. Please download it manually from the releases page.`);
 			}
 
 			const currentVersion = getCurrentOrbitVersion(this._productService.version, this._productService.orbitVersion);
@@ -206,7 +210,7 @@ export class VoidMainUpdateService extends Disposable implements IVoidUpdateServ
 			}
 
 			const manifest = await asJson<IOrbitUpdateManifest>(response);
-			if (!manifest?.version || !manifest.assets) {
+			if (!manifest?.version || !manifest.assets || !isValidOrbitVersion(manifest.version)) {
 				throw new Error('Manifest is missing version or assets');
 			}
 			// The sha256 check alone only proves the binary matches what the

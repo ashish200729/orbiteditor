@@ -144,7 +144,7 @@ import { GitHubAuthMainService } from '../../workbench/contrib/orbit/electron-ma
 import { OrbitProviderAuthMainService } from '../../workbench/contrib/orbit/electron-main/orbitProvider/orbitProviderAuthMainService.js';
 import { initOrbitLlmMainServices } from '../../workbench/contrib/orbit/electron-main/llmMessage/orbitLlmMainServices.js';
 import { LLMMessageChannel } from '../../workbench/contrib/orbit/electron-main/sendLLMMessageChannel.js';
-import { VoidSCMService } from '../../workbench/contrib/orbit/electron-main/orbitSCMMainService.js';
+import { OrbitSCMChannel, VoidSCMService } from '../../workbench/contrib/orbit/electron-main/orbitSCMMainService.js';
 import { IVoidSCMService } from '../../workbench/contrib/orbit/common/orbitSCMTypes.js';
 import { MCPChannel } from '../../workbench/contrib/orbit/electron-main/mcpChannel.js';
 import { NativeNotificationChannel } from '../../workbench/contrib/orbit/electron-main/nativeNotificationChannel.js';
@@ -1374,7 +1374,12 @@ export class CodeApplication extends Disposable {
 		mainProcessElectronServer.registerChannel(SEMANTIC_EMBEDDING_CHANNEL, semanticEmbeddingChannel);
 
 		// Void added this
-		const voidSCMChannel = ProxyChannel.fromService(accessor.get(IVoidSCMService), disposables);
+		const voidSCMChannel = new OrbitSCMChannel(
+			accessor.get(IVoidSCMService),
+			accessor.get(IWindowsMainService),
+			accessor.get(IWorkspacesManagementMainService),
+			accessor.get(IApplicationStorageMainService) as unknown as IApplicationStorageMainService,
+		);
 		mainProcessElectronServer.registerChannel('void-channel-scm', voidSCMChannel);
 
 		// Void added this — built-in MCP servers (in-process, no stdio transport).

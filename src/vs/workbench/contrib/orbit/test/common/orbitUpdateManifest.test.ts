@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------*/
 
 import * as assert from 'assert';
-import { canonicalOrbitJsonStringify, compareOrbitVersions, getCurrentOrbitVersion, getOrbitPlatformAssetKey, getOrbitUpdateManifestUrl, normalizeOrbitVersion, orbitManifestSigningPayload } from '../../common/orbitUpdateManifest.js';
+import { canonicalOrbitJsonStringify, compareOrbitVersions, getCurrentOrbitVersion, getOrbitPlatformAssetKey, getOrbitUpdateManifestUrl, isTrustedOrbitUpdateAssetUrl, isValidOrbitVersion, normalizeOrbitVersion, orbitManifestSigningPayload } from '../../common/orbitUpdateManifest.js';
 
 suite('orbitUpdateManifest', () => {
 	test('normalizeOrbitVersion strips leading v', () => {
@@ -28,6 +28,15 @@ suite('orbitUpdateManifest', () => {
 	test('getOrbitUpdateManifestUrl includes cache buster', () => {
 		const url = getOrbitUpdateManifestUrl();
 		assert.ok(url.includes('latest.json?t='));
+	});
+
+	test('validates release versions and trusted asset URLs', () => {
+		assert.strictEqual(isValidOrbitVersion('v0.5.2'), true);
+		assert.strictEqual(isValidOrbitVersion('0.5'), false);
+		assert.strictEqual(isValidOrbitVersion('0.5.2-beta'), false);
+		assert.strictEqual(isTrustedOrbitUpdateAssetUrl('https://github.com/ashish200729/orbiteditor/releases/download/v0.5.2/Orbit-0.5.2-darwin-arm64.dmg', '0.5.2'), true);
+		assert.strictEqual(isTrustedOrbitUpdateAssetUrl('https://example.com/Orbit-0.5.2.dmg', '0.5.2'), false);
+		assert.strictEqual(isTrustedOrbitUpdateAssetUrl('https://github.com/ashish200729/orbiteditor/releases/download/v0.5.1/Orbit-0.5.1-darwin-arm64.dmg', '0.5.2'), false);
 	});
 
 	test('uses package-specific Linux asset keys', () => {
