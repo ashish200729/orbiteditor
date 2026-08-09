@@ -35,12 +35,12 @@
 			"sha256": "557d37676021aae3cc881cd8d3ea3a5f53473e5e2907789a8bb997ddfcc3e119"
 		},
 		"win32-x64": {
-			"url": "https://github.com/ashish200729/orbiteditor/releases/download/v0.5.1/Orbit-0.5.1-win32-x64-setup.exe",
-			"sha256": "2d08c2fd46561822b3e052fe483ca87431a431561939fab735b8ca7d06cc9125"
+			"url": "https://github.com/ashish200729/orbiteditor/releases/download/v0.5.2/Orbit-0.5.2-win32-x64-setup.exe",
+			"sha256": "896509b619544b7bcdbba0ff56da39a1a513140db901975de1b597164b0b7387"
 		},
 		"win32-arm64": {
-			"url": "https://github.com/ashish200729/orbiteditor/releases/download/v0.5.1/Orbit-0.5.1-win32-arm64-setup.exe",
-			"sha256": "6615321de289e48debf191029afcacb98cd499bfaac7f403099a34089ff979cf"
+			"url": "https://github.com/ashish200729/orbiteditor/releases/download/v0.5.2/Orbit-0.5.2-win32-arm64-setup.exe",
+			"sha256": "0b0b88e2ce5f796e601099cec8b06a4f0efdb773060d60f2d8e81a22cf1a9c03"
 		}
 	},
 	"signature": "vZ5q1fqSschDIn0Kuv7cu42xIgG01DTXpbwMTCc+aqEHx/flDNLx3bN1X/wr/ecNHJkedaH3/tpkiJHkQYu+Aw=="
