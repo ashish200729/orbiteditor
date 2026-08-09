@@ -24,6 +24,7 @@ ARTIFACTS=()
 
 verify_app() {
 	local app="$1" expected_arch="$2" embedded_version executable
+	app="$(cd "$app" && pwd)"
 	embedded_version="$(node -p "require('$app/Contents/Resources/app/product.json').orbitVersion")"
 	if [[ "$embedded_version" != "$VERSION" ]]; then
 		echo "Embedded version mismatch in $app: $embedded_version" >&2
@@ -41,6 +42,10 @@ verify_app() {
 		exit 1
 	fi
 	codesign --verify --deep --strict --verbose=2 "$app"
+	(
+		cd "$app/Contents/Resources/app"
+		ELECTRON_RUN_AS_NODE=1 "$app/Contents/MacOS/$executable" -e "require('@vscode/deviceid')"
+	)
 }
 
 verify_dmg() {
