@@ -2,6 +2,46 @@
 
 All notable changes to Orbit Editor are documented here.
 
+## 0.5.2
+
+### Image annotation
+
+Mark up attached images before sending them to an agent. Open an image from the composer to draw directly over it, choose a color and stroke size, undo or redo changes, and save the annotated image back to the message.
+
+- Added a focused, full-size image markup editor for composer attachments.
+- Added five drawing colors, three stroke sizes, undo, redo, cancel, and save controls.
+- Preserved the original image until the user explicitly saves their edits.
+- Added responsive toolbar wrapping, keyboard focus management, reduced-motion support, and high-contrast theme handling.
+- Fixed transparent toolbar and dropdown surfaces that could make color and stroke controls disappear in some themes.
+
+### Security and privacy hardening
+
+- Bound tool execution to the immutable thread and workspace that started the run, preventing a visible workspace switch from changing the execution target.
+- Added workspace, sensitive-file, URI-scheme, and symlink-aware path protections for file and shell tools.
+- Centralized HTTPS and SSRF protection for MCP, OAuth, semantic search, billing, and other external endpoints.
+- Restricted browser automation to approved CDP operations and isolated browser events and commands by authenticated window context.
+- Hardened SCM IPC so repository operations remain inside the active window workspace and actual Git roots.
+- Strengthened MCP approvals, OAuth callback validation, token handling, shell-pattern validation, and bounded tool output handling.
+
+### Updates and reliability
+
+- Added Ed25519-signed update manifests, SHA-256 package verification, and strict GitHub release URL validation.
+- Hardened the macOS updater with code-signature checks, private staging directories, rollback on replacement or relaunch failure, and no automatic quarantine removal.
+- Added a transactional dual-architecture macOS release workflow so Apple Silicon and Intel artifacts are both verified before publication.
+- Fixed the v0.5.1 manifest signature after Windows assets were added, preserving the existing update key.
+- Improved provider token cleanup, MCP configuration merging, semantic endpoint validation, browser isolation, and shell result ownership.
+
+### macOS downloads
+
+- **Apple Silicon:** `Orbit-0.5.2-darwin-arm64.dmg`
+- **Intel:** `Orbit-0.5.2-darwin-x64.dmg`
+
+Orbit is currently ad-hoc signed rather than Apple-notarized. A fresh browser download may require **Right-click → Open** or approval under **System Settings → Privacy & Security**. The verified command-line installer validates the signed manifest, package checksum, and app signature before installation:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ashish200729/orbiteditor/main/install.sh | bash
+```
+
 ## 0.5.0
 
 ### Self-hosted Runner
