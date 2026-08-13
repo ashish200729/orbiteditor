@@ -1,0 +1,70 @@
+name: Publish macOS update manifest
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Orbit version without a leading v
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: orbit-macos-update-manifest
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Resolve and validate version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          VERSION="${INPUT_VERSION#v}"
+          test "$VERSION" = "$(node -p "require('./product.json').orbitVersion")"
+          git rev-parse --verify "refs/tags/v$VERSION"
+          echo "value=$VERSION" >> "$GITHUB_OUTPUT"
+      - name: Download published macOS assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ steps.version.outputs.value }}"
+          gh release download "v$VERSION" \
+            --pattern "Orbit-$VERSION-darwin-arm64.dmg" \
+            --pattern "Orbit-$VERSION-darwin-x64.dmg"
+      - name: Sign macOS update manifest entries
+        env:
+          ORBIT_UPDATE_SIGNING_KEY: ${{ secrets.ORBIT_UPDATE_SIGNING_KEY }}
+        run: |
+          test -n "$ORBIT_UPDATE_SIGNING_KEY"
+          VERSION="${{ steps.version.outputs.value }}"
+          node scripts/update-latest-json.js \
+            --version "$VERSION" \
+            --tag "v$VERSION" \
+            --commit "$(git rev-list -n 1 "v$VERSION")" \
+            --merge \
+            --asset "darwin-arm64=Orbit-$VERSION-darwin-arm64.dmg" \
+            --asset "darwin-x64=Orbit-$VERSION-darwin-x64.dmg"
+      - name: Publish update manifest
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add update/latest.json
+          if git diff --cached --quiet; then
+            echo "update/latest.json is already current"
+          else
+            git commit -m "release: publish Orbit ${{ steps.version.outputs.value }} macOS updates"
+            git push origin main
+          fi
