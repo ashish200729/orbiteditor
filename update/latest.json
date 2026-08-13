@@ -9,8 +9,31 @@
 		"darwin-x64": {
 			"url": "https://github.com/ashish200729/orbiteditor/releases/download/v0.5.3/Orbit-0.5.3-darwin-x64.dmg",
 			"sha256": "aabfeaddeb51cadf8b036ff69f0caf9164afd20b4feaf85b79cba50d30cb8d9a"
+		},
+		"linux-x64-deb": {
+			"url": "https://github.com/ashish200729/orbiteditor/releases/download/v0.5.3/Orbit-0.5.3-linux-x64.deb",
+			"sha256": "8b359f57b7c10c10386aec275ebaa656162a3b56fac93725873f9aac5802255b"
+		},
+		"linux-x64-rpm": {
+			"url": "https://github.com/ashish200729/orbiteditor/releases/download/v0.5.3/Orbit-0.5.3-linux-x64.rpm",
+			"sha256": "aad0cf7621fd28251546e9679c4ac3e11bbc2849fb5c938127d8d842f414a7f8"
+		},
+		"linux-x64-appimage": {
+			"url": "https://github.com/ashish200729/orbiteditor/releases/download/v0.5.3/Orbit-0.5.3-linux-x64.AppImage",
+			"sha256": "89023ab0cdb4c513041e7c283b68d8c80a1fd480e4e70111a62ba86d083a34af"
+		},
+		"linux-arm64-deb": {
+			"url": "https://github.com/ashish200729/orbiteditor/releases/download/v0.5.3/Orbit-0.5.3-linux-arm64.deb",
+			"sha256": "dd2c4904f4ca755d2ea00669ffabe2170e2a8509597341a8308d56ef25bf6919"
+		},
+		"linux-arm64-rpm": {
+			"url": "https://github.com/ashish200729/orbiteditor/releases/download/v0.5.3/Orbit-0.5.3-linux-arm64.rpm",
+			"sha256": "7ab9d95f5d663d5d1f8224042bdecf1b46dd1d03ff63d66711389c28219b755e"
+		},
+		"linux-arm64-appimage": {
+			"url": "https://github.com/ashish200729/orbiteditor/releases/download/v0.5.3/Orbit-0.5.3-linux-arm64.AppImage",
+			"sha256": "557d37676021aae3cc881cd8d3ea3a5f53473e5e2907789a8bb997ddfcc3e119"
 		}
 	},
-	"commit": "866e0a3eb5e6ebbb328919abe8131beb33e665d7",
-	"signature": "QKNqS28C2IINARySwBYQQFbYRQgabIJrsY+uMBxgcpDgK6wTdYOn5sgMh1Ut1+1ye38NVqTZEy6Mo5heDSMdDQ=="
+	"signature": "vZ5q1fqSschDIn0Kuv7cu42xIgG01DTXpbwMTCc+aqEHx/flDNLx3bN1X/wr/ecNHJkedaH3/tpkiJHkQYu+Aw=="
 }
