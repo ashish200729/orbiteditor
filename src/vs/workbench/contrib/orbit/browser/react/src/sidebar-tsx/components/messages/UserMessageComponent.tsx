@@ -19,6 +19,7 @@ import { IconX } from '../icons/IconX.js';
 import { Checkpoint } from '../chatComponents/Checkpoint.js';
 import { ChatScrollActions } from '../../utils/scrollUtils.js';
 import { RunnerThreadCloudIcon } from '../runner/RunnerThreadCloudIcon.js';
+import { TextQuoteCards } from '../chat/TextQuoteCards.js';
 
 type ChatBubbleMode = 'display' | 'edit'
 
@@ -89,6 +90,7 @@ export const UserMessageComponent = React.memo(({ chatMessage, messageIdx, isChe
 	const [textAreaRefState, setTextAreaRef] = useState<HTMLTextAreaElement | null>(null)
 	const textAreaFnsRef = useRef<TextAreaFns | null>(null)
 	const [editImages, setEditImages] = useState<EditImage[]>([])
+	const [editTextQuotes, setEditTextQuotes] = useState(() => chatMessage.textQuotes?.map(quote => ({ ...quote })) ?? [])
 	// Text truncation state
 	const [isExpanded, setIsExpanded] = useState(false)
 	const [shouldTruncate, setShouldTruncate] = useState(false)
@@ -111,6 +113,7 @@ export const UserMessageComponent = React.memo(({ chatMessage, messageIdx, isChe
 
 			// Initialize images for edit mode
 			setEditImages((chatMessage.images || []).map(url => ({ id: nextEditImageId(), url })))
+			setEditTextQuotes(chatMessage.textQuotes?.map(quote => ({ ...quote })) ?? [])
 
 			// Re-stage slash tokens that were injected when this message was originally sent.
 			const present = new Set(parseSlashTokenNames(chatMessage.displayContent || ''))
@@ -226,6 +229,7 @@ export const UserMessageComponent = React.memo(({ chatMessage, messageIdx, isChe
 	let chatbubbleContents: React.ReactNode
 	if (mode === 'display') {
 		chatbubbleContents = <>
+			<TextQuoteCards quotes={chatMessage.textQuotes ?? []} compact />
 			<SelectedFiles type='past' messageIdx={messageIdx} selections={chatMessage.selections || []} />
 			{/* Display images if present */}
 			{chatMessage.images && chatMessage.images.length > 0 && (
@@ -287,7 +291,7 @@ export const UserMessageComponent = React.memo(({ chatMessage, messageIdx, isChe
 
 		const onSubmit = async () => {
 
-			if (isDisabled) return;
+			if (isDisabled && editTextQuotes.length === 0) return;
 			if (!textAreaRefState) return;
 			if (messageIdx === undefined) return;
 
@@ -304,7 +308,7 @@ export const UserMessageComponent = React.memo(({ chatMessage, messageIdx, isChe
 			try {
 				// Images are preserved from the original message when editing
 				// The editUserMessageAndStreamResponse method automatically preserves images
-				await chatThreadsService.editUserMessageAndStreamResponse({ userMessage, messageIdx, threadId })
+				await chatThreadsService.editUserMessageAndStreamResponse({ userMessage, messageIdx, threadId, _textQuotes: editTextQuotes })
 			} catch (e) {
 				console.error('Error while editing message:', e)
 			}
@@ -333,7 +337,7 @@ export const UserMessageComponent = React.memo(({ chatMessage, messageIdx, isChe
 			}
 		}
 
-		if (!chatMessage.content) { // don't show if empty and not loading (if loading, want to show).
+		if (!chatMessage.content && editTextQuotes.length === 0) { // quote-only turns remain editable.
 			return null
 		}
 
@@ -342,16 +346,18 @@ export const UserMessageComponent = React.memo(({ chatMessage, messageIdx, isChe
 			onSubmit={onSubmit}
 			onAbort={onAbort}
 			isStreaming={false}
-			isDisabled={isDisabled}
+			isDisabled={isDisabled && editTextQuotes.length === 0}
 			showSelections={true}
 			showProspectiveSelections={false}
 			selections={stagingSelections}
 			setSelections={setStagingSelections}
 		>
+			<TextQuoteCards quotes={editTextQuotes} onRemove={id => setEditTextQuotes(current => current.filter(quote => quote.id !== id))} />
 			<VoidInputBox2
 				key={`edit-${messageIdx}`}
 				enableAtToMention
 				enableSlashCommands
+				threadId={threadId}
 				initValue={chatMessage.displayContent || ''}
 				ref={setTextAreaRef}
 				className='min-h-[81px] max-h-[500px] px-0.5 py-0.5'

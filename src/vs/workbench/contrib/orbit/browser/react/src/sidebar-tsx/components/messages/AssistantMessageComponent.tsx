@@ -37,7 +37,7 @@ export const AssistantMessageComponent = React.memo(({ chatMessage, isCheckpoint
 	return <div className={`w-full ${isCheckpointGhost ? 'opacity-50' : ''}`}>
 		{/* reasoning token */}
 		{hasReasoning &&
-			<div className={`mb-2 last:mb-0 ${isCheckpointGhost ? 'opacity-50' : ''}`}>
+			<div className={`mb-2 last:mb-0 ${isCheckpointGhost ? 'opacity-50' : ''}`} data-orbit-chat-selectable data-orbit-quote-source='reasoning' data-orbit-thread-id={threadId} data-orbit-message-idx={messageIdx}>
 				<ReasoningWrapper isDoneReasoning={isDoneReasoning} isStreaming={!isCommitted} reasoningContentLength={reasoningStr?.length ?? 0}>
 					{/* Reasoning text reads as one calm, muted tone: bold, headings and
 					    inline code inherit the body color instead of standing out bright/white. */}
@@ -57,7 +57,7 @@ export const AssistantMessageComponent = React.memo(({ chatMessage, isCheckpoint
 
 		{/* assistant message */}
 		{hasDisplayContent &&
-			<div className={isCheckpointGhost ? 'opacity-50' : ''}>
+			<div className={isCheckpointGhost ? 'opacity-50' : ''} data-orbit-chat-selectable data-orbit-quote-source='assistant' data-orbit-thread-id={threadId} data-orbit-message-idx={messageIdx}>
 				<ProseWrapper>
 					<ChatMarkdownRender
 						string={chatMessage.displayContent || ''}

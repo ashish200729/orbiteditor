@@ -19,7 +19,8 @@ import { RemoteSubmitProgress } from './components/runner/RemoteSubmitProgress.j
 
 // Common imports
 import { URI } from '../../../../../../../base/common/uri.js';
-import { ChatMessage, StagingSelectionItem } from '../../../../common/chatThreadServiceTypes.js';
+import { ChatMessage, StagingSelectionItem, TextQuoteAttachment } from '../../../../common/chatThreadServiceTypes.js';
+import { appendTextQuotesToPrompt, quotePreviewTitle, textQuotesEqual } from '../../../../common/textQuoteAttachments.js';
 import { ThreadType } from '../../../chatThreadService.js';
 import { isFeatureNameDisabled } from '../../../../common/orbitSettingsTypes.js';
 import { isABuiltinToolName } from '../../../../common/prompt/prompts.js';
@@ -69,6 +70,8 @@ import {
 // Extracted hooks
 import { useChatScrollPolicy } from './hooks/useChatScrollPolicy.js';
 import { useStickyUserMessages } from './hooks/useStickyUserMessages.js';
+import { TextQuoteCards } from './components/chat/TextQuoteCards.js';
+import { ChatSelectionToolbar } from './components/chat/ChatSelectionToolbar.js';
 
 // ============================================================================
 // RE-EXPORTS FOR BACKWARDS COMPATIBILITY
@@ -130,11 +133,27 @@ const REMOTE_TERMINAL_STATES: ReadonlySet<string> = new Set([
 	'COMPLETED', 'FAILED', 'CANCELLED', 'TIMED_OUT', 'LOST',
 ])
 
-export const SidebarChat = ({ isAgentWindow = false }: { isAgentWindow?: boolean }) => {
+export type ChatComposerSurface = 'ide' | 'agent-main' | 'agent-side';
+
+export interface SidebarChatProps {
+	isAgentWindow?: boolean;
+	explicitThreadId?: string;
+	chatSurface?: ChatComposerSurface;
+	initialTextQuotes?: TextQuoteAttachment[];
+	initialDraftText?: string;
+	initialImages?: string[];
+	onFirstSubmit?: (title: string) => void;
+	onTextQuotesChange?: (quotes: readonly TextQuoteAttachment[]) => void;
+	onDraftTextChange?: (text: string) => void;
+	onImagesChange?: (images: readonly string[]) => void;
+	onSessionDirtyChange?: (dirty: boolean) => void;
+}
+
+export const SidebarChat = ({ isAgentWindow = false, explicitThreadId, chatSurface, initialTextQuotes, initialDraftText, initialImages, onFirstSubmit, onTextQuotesChange, onDraftTextChange, onImagesChange, onSessionDirtyChange }: SidebarChatProps) => {
 	const accessor = useAccessor()
 	const chatThreadsService = accessor.get('IChatThreadService')
 	const chatThreadsState = useChatThreadsState()
-	const selectedThreadId = (isAgentWindow ? chatThreadsState.agentWindowThreadId : chatThreadsState.currentThreadId)
+	const selectedThreadId = explicitThreadId ?? (isAgentWindow ? chatThreadsState.agentWindowThreadId : chatThreadsState.currentThreadId)
 		?? chatThreadsService.getSelectedThreadId(isAgentWindow)
 	const currentThread = selectedThreadId ? chatThreadsService.getThread(selectedThreadId) : undefined
 	if (!currentThread) {
@@ -144,10 +163,22 @@ export const SidebarChat = ({ isAgentWindow = false }: { isAgentWindow?: boolean
 			</div>
 		)
 	}
-	return <SidebarChatLoaded isAgentWindow={isAgentWindow} currentThread={currentThread} />
+	return <SidebarChatLoaded key={currentThread.id} isAgentWindow={isAgentWindow} currentThread={currentThread} chatSurface={chatSurface ?? (isAgentWindow ? 'agent-main' : 'ide')} initialTextQuotes={initialTextQuotes} initialDraftText={initialDraftText} initialImages={initialImages} onFirstSubmit={onFirstSubmit} onTextQuotesChange={onTextQuotesChange} onDraftTextChange={onDraftTextChange} onImagesChange={onImagesChange} onSessionDirtyChange={onSessionDirtyChange} />
 }
 
-const SidebarChatLoaded = ({ isAgentWindow = false, currentThread }: { isAgentWindow?: boolean; currentThread: ThreadType }) => {
+const SidebarChatLoaded = ({ isAgentWindow = false, currentThread, chatSurface, initialTextQuotes, initialDraftText, initialImages, onFirstSubmit, onTextQuotesChange, onDraftTextChange, onImagesChange, onSessionDirtyChange }: {
+	isAgentWindow?: boolean;
+	currentThread: ThreadType;
+	chatSurface: ChatComposerSurface;
+	initialTextQuotes?: TextQuoteAttachment[];
+	initialDraftText?: string;
+	initialImages?: string[];
+	onFirstSubmit?: (title: string) => void;
+	onTextQuotesChange?: (quotes: readonly TextQuoteAttachment[]) => void;
+	onDraftTextChange?: (text: string) => void;
+	onImagesChange?: (images: readonly string[]) => void;
+	onSessionDirtyChange?: (dirty: boolean) => void;
+}) => {
 	const textAreaRef = useRef<HTMLTextAreaElement | null>(null)
 	const textAreaFnsRef = useRef<TextAreaFns | null>(null)
 
@@ -191,16 +222,34 @@ const SidebarChatLoaded = ({ isAgentWindow = false, currentThread }: { isAgentWi
 	// ----- SIDEBAR CHAT state (local) -----
 
 	// state of current message
-	const initVal = ''
+	const initVal = initialDraftText ?? ''
 	const [instructionsAreEmpty, setInstructionsAreEmpty] = useState(!initVal)
+	const [textQuotes, setTextQuotes] = useState<TextQuoteAttachment[]>(() => initialTextQuotes?.map(quote => ({ ...quote })) ?? [])
+	const onTextQuotesChangeRef = useRef(onTextQuotesChange)
+	const onDraftTextChangeRef = useRef(onDraftTextChange)
+	const onImagesChangeRef = useRef(onImagesChange)
+	const onSessionDirtyChangeRef = useRef(onSessionDirtyChange)
+	useEffect(() => { onTextQuotesChangeRef.current = onTextQuotesChange }, [onTextQuotesChange])
+	useEffect(() => { onDraftTextChangeRef.current = onDraftTextChange }, [onDraftTextChange])
+	useEffect(() => { onImagesChangeRef.current = onImagesChange }, [onImagesChange])
+	useEffect(() => { onSessionDirtyChangeRef.current = onSessionDirtyChange }, [onSessionDirtyChange])
+	useEffect(() => { onTextQuotesChangeRef.current?.(textQuotes) }, [textQuotes])
+	const hasSubmittedRef = useRef(currentThread.messages.some(message => message.role === 'user'))
+	const updateTextQuotes = useCallback((update: (current: TextQuoteAttachment[]) => TextQuoteAttachment[]) => {
+		setTextQuotes(update)
+	}, [])
 
-	const isDisabled = instructionsAreEmpty || !!isFeatureNameDisabled('Chat', settingsState)
+	const isDisabled = (instructionsAreEmpty && textQuotes.length === 0) || !!isFeatureNameDisabled('Chat', settingsState)
 
 	const sidebarRef = useRef<HTMLDivElement>(null)
 	const scrollContainerRef = useRef<HTMLDivElement | null>(null)
 	// State for images. Each carries a stable id so React keys survive delete+add (index keys
 	// reuse the wrong DOM node, and identical data-URLs would collide if keyed by content).
-	const [images, setImages] = useState<StagedImage[]>([])
+	const [images, setImages] = useState<StagedImage[]>(() => initialImages?.map(url => ({ id: nextStagedImageId(), url })) ?? [])
+	useEffect(() => { onImagesChangeRef.current?.(images.map(image => image.url)) }, [images])
+	useEffect(() => {
+		onSessionDirtyChangeRef.current?.(!instructionsAreEmpty || textQuotes.length > 0 || images.length > 0 || selections.length > 0)
+	}, [images.length, instructionsAreEmpty, selections.length, textQuotes.length])
 	const [editingImageTarget, setEditingImageTarget] = useState<{ threadId: string; imageId: string } | null>(null)
 	// State for drag and drop visual feedback
 	const [isDragOver, setIsDragOver] = useState(false)
@@ -209,6 +258,7 @@ const SidebarChatLoaded = ({ isAgentWindow = false, currentThread }: { isAgentWi
 		setEditingImageTarget(current => current?.threadId === threadId ? current : null)
 	}, [threadId])
 	const globalExecutionTarget = parseExecutionTargetId(settingsState.globalSettings.executionTarget)
+	const isSideChat = chatSurface === 'agent-side'
 	const threadRunnerId = chatThreadsState.allThreads[threadId]?.runnerProfile?.lastRunnerId
 	const workspaceGit = useWorkspaceGitForRunner(isAgentWindow)
 	const remoteTasks = useRemoteTasks()
@@ -251,7 +301,7 @@ const SidebarChatLoaded = ({ isAgentWindow = false, currentThread }: { isAgentWi
 
 	// Effective target for this thread — never inherit a stale global Runner onto local history.
 	const threadAllowsRemote = localMessages.length === 0 || !!threadRunnerId || hasInFlightRemoteWork
-	const executionTarget = threadRunnerId
+	const executionTarget = isSideChat ? 'local' : threadRunnerId
 		? makeRunnerExecutionTarget(threadRunnerId)
 		: (globalExecutionTarget !== 'local' && threadAllowsRemote)
 			? globalExecutionTarget
@@ -269,6 +319,7 @@ const SidebarChatLoaded = ({ isAgentWindow = false, currentThread }: { isAgentWi
 	}, [isRemoteTarget])
 
 	useEffect(() => {
+		if (isSideChat) return
 		if (threadRunnerId) {
 			const desired = makeRunnerExecutionTarget(threadRunnerId)
 			if (settingsState.globalSettings.executionTarget !== desired) {
@@ -280,7 +331,7 @@ const SidebarChatLoaded = ({ isAgentWindow = false, currentThread }: { isAgentWi
 		if (isLocalOnlyThread && settingsState.globalSettings.executionTarget !== 'local') {
 			void voidSettingsService.setGlobalSetting('executionTarget', 'local')
 		}
-	}, [threadId, threadRunnerId, hasInFlightRemoteWork, localMessages.length, settingsState.globalSettings.executionTarget, voidSettingsService])
+	}, [threadId, threadRunnerId, hasInFlightRemoteWork, isSideChat, localMessages.length, settingsState.globalSettings.executionTarget, voidSettingsService])
 
 	// Reconnect in-flight remote tasks only when navigating to this thread.
 	// Do not depend on remoteTasks: every streamed task.event refreshes that list
@@ -495,7 +546,7 @@ const SidebarChatLoaded = ({ isAgentWindow = false, currentThread }: { isAgentWi
 				setRemoteSubmitError('Select a Self-hosted Runner in the execution target dropdown.')
 				return
 			}
-			if (!userMessage.trim()) {
+			if (!userMessage.trim() && textQuotes.length === 0) {
 				return
 			}
 			if (isRemoteRunning) {
@@ -612,6 +663,7 @@ const SidebarChatLoaded = ({ isAgentWindow = false, currentThread }: { isAgentWi
 				messageIndex = chatThreadsService.addRemoteUserTurn({
 					threadId,
 					userMessage: userMessage.trim(),
+					textQuotes,
 					runnerId,
 					runnerName: runnerService.getRunner(runnerId)?.name,
 				})
@@ -624,7 +676,7 @@ const SidebarChatLoaded = ({ isAgentWindow = false, currentThread }: { isAgentWi
 				const injectIndex = messageIndex + 1
 				const result = await remoteTaskService.createTask({
 					runnerId,
-					prompt: userMessage.trim(),
+					prompt: appendTextQuotesToPrompt(userMessage.trim(), textQuotes),
 					git: gitForTask,
 					model: {
 						provider: modelSelection.providerName,
@@ -647,9 +699,14 @@ const SidebarChatLoaded = ({ isAgentWindow = false, currentThread }: { isAgentWi
 				}
 				setSelections([])
 				setImages([])
+				updateTextQuotes(() => [])
 				setEditingImageTarget(null)
 				textAreaFnsRef.current?.setValue('')
 				focusInConnectedWindow(textAreaRef.current)
+				if (!hasSubmittedRef.current) {
+					hasSubmittedRef.current = true
+					onFirstSubmit?.(quotePreviewTitle(userMessage, textQuotes))
+				}
 			} catch (e) {
 				if (messageIndex !== null) {
 					chatThreadsService.revertRemoteUserTurn(threadId, messageIndex)
@@ -673,18 +730,23 @@ const SidebarChatLoaded = ({ isAgentWindow = false, currentThread }: { isAgentWi
 		}
 
 		try {
-			await chatThreadsService.addUserMessageAndStreamResponse({ userMessage, _chatSelections: selectionsSnapshot, _images: imagesToSend.length > 0 ? imagesToSend : undefined, threadId })
+			await chatThreadsService.addUserMessageAndStreamResponse({ userMessage, _chatSelections: selectionsSnapshot, _images: imagesToSend.length > 0 ? imagesToSend : undefined, _textQuotes: textQuotes, threadId })
 		} catch (e) {
 			console.error('Error while sending message in chat:', e)
 		}
 
 		setSelections([]) // clear staging
 		setImages([]) // clear images
+		updateTextQuotes(() => [])
 		setEditingImageTarget(null)
 		textAreaFnsRef.current?.setValue('')
 		focusInConnectedWindow(textAreaRef.current) // focus input after submit (keeps Agents pop-out frontmost)
+		if (!hasSubmittedRef.current) {
+			hasSubmittedRef.current = true
+			onFirstSubmit?.(quotePreviewTitle(userMessage, textQuotes))
+		}
 
-	}, [chatThreadsService, currentThread.id, isDisabled, textAreaRef, textAreaFnsRef, setSelections, settingsState, images, accessor, workspaceGit, isRemoteRunning, selections.length, localMessages.length, tasksForCurrentRunner, tasksForThread, threadRunnerId, executionTarget, inAgentWindow, mcpToolNameSet])
+	}, [chatThreadsService, currentThread.id, isDisabled, textAreaRef, textAreaFnsRef, setSelections, settingsState, images, accessor, workspaceGit, isRemoteRunning, selections.length, localMessages.length, tasksForCurrentRunner, tasksForThread, threadRunnerId, executionTarget, inAgentWindow, mcpToolNameSet, textQuotes, updateTextQuotes, onFirstSubmit])
 
 	const onAbort = useCallback(async () => {
 		if (activeRemoteTask && isRemoteRunning) {
@@ -769,7 +831,15 @@ const SidebarChatLoaded = ({ isAgentWindow = false, currentThread }: { isAgentWi
 
 	const onChangeText = useCallback((newStr: string) => {
 		setInstructionsAreEmpty(!newStr)
-	}, [setInstructionsAreEmpty])
+		onDraftTextChangeRef.current?.(newStr)
+	}, [])
+	const addQuoteToComposer = useCallback((quote: TextQuoteAttachment) => {
+		updateTextQuotes(current => current.some(existing => textQuotesEqual(existing, quote)) ? current : [...current, quote])
+		focusInConnectedWindow(textAreaRef.current)
+	}, [updateTextQuotes])
+	const addQuoteToSideChat = useCallback((quote: TextQuoteAttachment) => {
+		agentWindowService.requestWorkspacePanel('sideChat', undefined, { parentThreadId: threadId, initialQuotes: [quote] })
+	}, [agentWindowService, threadId])
 	const onKeyDown = useCallback((e: KeyboardEvent<HTMLTextAreaElement>) => {
 		if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
 			onSubmit()
@@ -920,7 +990,7 @@ const SidebarChatLoaded = ({ isAgentWindow = false, currentThread }: { isAgentWi
 		onAbort={onAbort}
 		isStreaming={isComposerRunning}
 		isDisabled={isDisabled || isRemoteRunning || remoteSubmitPending}
-		hasMessageToSubmit={!instructionsAreEmpty}
+		hasMessageToSubmit={!instructionsAreEmpty || textQuotes.length > 0}
 		showSelections={true}
 		// showProspectiveSelections={previousMessagesHTML.length === 0}
 		selections={selections}
@@ -959,12 +1029,14 @@ const SidebarChatLoaded = ({ isAgentWindow = false, currentThread }: { isAgentWi
 			onDragLeave={dragHandlers.handleDragLeave}
 			onDrop={dragHandlers.handleDrop}
 		>
+			<TextQuoteCards quotes={textQuotes} onRemove={id => updateTextQuotes(current => current.filter(quote => quote.id !== id))} />
 			<VoidInputBox2
 				isThreadComposer
 				enableAtToMention
 				enableSlashCommands
+				initValue={initVal}
 className={`min-h-[40px] px-0.5 py-0.5 resize-none placeholder:text-void-fg-4`}
-				placeholder='Plan, Build, / for skills, @ for context'
+				placeholder={isSideChat ? 'Send a follow-up' : 'Plan, Build, / for skills, @ for context'}
 				onChangeText={onChangeText}
 				onKeyDown={onKeyDown}
 				onFocus={() => { chatThreadsService.setThreadFocusedMessageIdx(threadId, undefined) }}
@@ -975,6 +1047,8 @@ className={`min-h-[40px] px-0.5 py-0.5 resize-none placeholder:text-void-fg-4`}
 				onDrop={dragHandlers.handleDrop}
 				ref={textAreaRef}
 				fnsRef={textAreaFnsRef}
+				threadId={threadId}
+				composerSurface={chatSurface}
 				multiline={true}
 			/>
 
@@ -1037,7 +1111,7 @@ className={`min-h-[40px] px-0.5 py-0.5 resize-none placeholder:text-void-fg-4`}
 
 	const isLandingPage = previousMessages.length === 0
 
-	const executionTargetHeader = inAgentWindow ? (
+	const executionTargetHeader = isSideChat ? null : inAgentWindow ? (
 		<ErrorBoundary>
 			<AgentWorkspaceHeader />
 		</ErrorBoundary>
@@ -1089,7 +1163,7 @@ className={`min-h-[40px] px-0.5 py-0.5 resize-none placeholder:text-void-fg-4`}
 			</div>
 			<div role='list' className={VOID_MESSAGE_QUEUE_LIST}>
 				{queuedMessages.map((q, i) => {
-					const attachmentCount = (q._chatSelections?.length ?? 0) + (q._images?.length ?? 0)
+					const attachmentCount = (q._chatSelections?.length ?? 0) + (q._images?.length ?? 0) + (q._textQuotes?.length ?? 0)
 					return (
 						<div key={i} role='listitem' className={VOID_MESSAGE_QUEUE_ITEM}>
 							<span className={`${VOID_MESSAGE_QUEUE_POSITION} select-none`} aria-hidden='true'>{i + 1}</span>
@@ -1145,15 +1219,15 @@ className={`min-h-[40px] px-0.5 py-0.5 resize-none placeholder:text-void-fg-4`}
 	) : null
 
 	const threadPageInput = <div key={'input' + threadId} className='shrink-0'>
-		<div className='px-4'>
-		<CommandBarInChat
-		threadId={threadId}
-		agentRunningState={displayedRunningState}
-		remotePhaseLabel={remotePhaseLabel}
-		remoteFailed={remoteFailed}
-		remotePatchPending={isRemoteRunning}
-	/>
-		</div>
+		{!isSideChat && <div className='px-4'>
+			<CommandBarInChat
+				threadId={threadId}
+				agentRunningState={displayedRunningState}
+				remotePhaseLabel={remotePhaseLabel}
+				remoteFailed={remoteFailed}
+				remotePatchPending={isRemoteRunning}
+			/>
+		</div>}
 		{anchorMismatchNotice}
 		{!isRemoteTarget && queuedMessagesHTML}
 		{remoteAttachmentNotice && (
@@ -1224,10 +1298,10 @@ className={`min-h-[40px] px-0.5 py-0.5 resize-none placeholder:text-void-fg-4`}
 			{landingPageInput}
 		</ErrorBoundary>
 
-		<ErrorBoundary>
+		{!isSideChat && <ErrorBoundary>
 			<div className='pt-8 mb-2 text-void-fg-0 text-root select-none pointer-events-none'>Suggestions</div>
 			{initiallySuggestedPromptsHTML}
-		</ErrorBoundary>
+		</ErrorBoundary>}
 	</div>
 
 
@@ -1259,6 +1333,7 @@ className={`min-h-[40px] px-0.5 py-0.5 resize-none placeholder:text-void-fg-4`}
 
 	return (
 		<div className='w-full h-full flex flex-col overflow-hidden'>
+			{inAgentWindow && <ChatSelectionToolbar threadId={threadId} onAddToChat={addQuoteToComposer} onAddToSideChat={chatSurface === 'agent-main' ? addQuoteToSideChat : undefined} />}
 			<TodoProvider
 				threadId={threadId}
 				initialTodos={chatThreadsState.allThreads[threadId]?.todoList}
@@ -1266,7 +1341,7 @@ className={`min-h-[40px] px-0.5 py-0.5 resize-none placeholder:text-void-fg-4`}
 			>
 				<Fragment key={threadId} // force rerender when change thread
 				>
-					{isLandingPage ?
+					{isLandingPage && !isSideChat ?
 						landingPageContent
 						: threadPageContent}
 				</Fragment>

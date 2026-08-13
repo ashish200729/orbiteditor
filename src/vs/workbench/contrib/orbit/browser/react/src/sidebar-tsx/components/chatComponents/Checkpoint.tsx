@@ -50,7 +50,7 @@ export const Checkpoint = ({
 
 	return (
 		<div
-			className={`group/checkpoint flex items-center gap-2 w-full select-none ${isFirstUserMessage ? 'mt-1' : 'mt-4 mb-1'}`}
+			className={`group/checkpoint flex items-center gap-2 w-full pb-1 bg-void-bg-3 select-none ${isFirstUserMessage ? 'pt-2' : 'pt-5 mb-1'}`}
 		>
 			<div className="flex-1 h-px bg-void-border-2 opacity-60 group-hover/checkpoint:opacity-100 transition-opacity" />
 			<button

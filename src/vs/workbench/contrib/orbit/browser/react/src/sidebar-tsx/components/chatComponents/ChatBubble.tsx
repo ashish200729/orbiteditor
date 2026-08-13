@@ -42,9 +42,15 @@ export type ChatBubbleProps = {
 }
 
 export const ChatBubble = (props: ChatBubbleProps) => {
-	return <ErrorBoundary>
-		<_ChatBubble {...props} />
-	</ErrorBoundary>
+	const selectable = props.chatMessage.role === 'tool';
+	const content = <ErrorBoundary><_ChatBubble {...props} /></ErrorBoundary>;
+	if (!selectable) return content;
+	return <div
+		data-orbit-chat-selectable={selectable ? '' : undefined}
+		data-orbit-quote-source={selectable ? 'tool' : undefined}
+		data-orbit-thread-id={selectable ? props.threadId : undefined}
+		data-orbit-message-idx={selectable ? props.messageIdx : undefined}
+	>{content}</div>
 }
 
 const _ChatBubble = React.memo(({ threadId, chatMessage, currCheckpointIdx, checkpointBeforeIdx, isFirstUserMessage, isCommitted, messageIdx, chatIsRunning, scrollActions, threadTodos, isAgentRunning, toolRenderCompact }: ChatBubbleProps) => {

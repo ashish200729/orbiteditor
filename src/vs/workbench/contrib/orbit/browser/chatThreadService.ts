@@ -25,7 +25,7 @@ import { getEffectiveGrepHeadLimit } from '../common/grepToolHelpers.js';
 import { toFilenameSearchGlobPattern } from '../common/globToolHelpers.js';
 import { CancellationToken, CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { ILanguageFeaturesService } from '../../../../editor/common/services/languageFeatures.js';
-import { AskQuestionUserAnswer, ChatMessage, CheckpointEntry, CodespanLocationLink, PlanBuildState, PlanDraft, StagingSelectionItem, TodoItem, TodoStatus, ToolMessage } from '../common/chatThreadServiceTypes.js';
+import { AskQuestionUserAnswer, ChatMessage, CheckpointEntry, CodespanLocationLink, PlanBuildState, PlanDraft, StagingSelectionItem, TextQuoteAttachment, TodoItem, TodoStatus, ToolMessage } from '../common/chatThreadServiceTypes.js';
 import { formatAnswersForLLM, normalizeAnswer } from '../common/askQuestionToolHelpers.js';
 import { Position } from '../../../../editor/common/core/position.js';
 import { IMetricsService } from '../common/metricsService.js';
@@ -60,7 +60,8 @@ import { applyTodoWrite, normalizeTodoList, todoListsEqual } from '../common/tod
 import { getActiveWindow } from '../../../../base/browser/dom.js';
 import { findThreadComposerInWindow, focusInConnectedWindow } from './connectedWindowDom.js';
 import { getPathAccessApprovalReason } from '../common/agentToolSecurity.js';
-import { cloneStagingSelection, queuedUserMessagesEqual, type QueuedUserMessage } from '../common/messageQueueHelpers.js';
+import { cloneQueuedTextQuotes, cloneStagingSelection, queuedUserMessagesEqual, type QueuedUserMessage } from '../common/messageQueueHelpers.js';
+import { appendTextQuotesToPrompt } from '../common/textQuoteAttachments.js';
 import { resolveShellWorkingDirectory } from '../common/shellToolHelpers.js';
 import { assertNoWorkspaceSymlinkTraversal } from '../common/agentPathSecurity.js';
 
@@ -277,6 +278,9 @@ export type ThreadType = {
 	 * - undefined: legacy / main-IDE thread (not agent-workspace-scoped)
 	 */
 	agentWorkspaceId?: string | null;
+	/** Session-only side chats never enter history or persisted storage. */
+	sessionKind?: 'side-chat';
+	parentThreadId?: string;
 
 	/** Present when the thread has at least one Self-hosted Runner turn. */
 	runnerProfile?: {
@@ -388,7 +392,7 @@ export type ThreadStreamState = {
 	[threadId: string]: undefined | ThreadStreamStateItem
 }
 
-const newThreadObject = (opts?: { agentWorkspaceId?: string | null }) => {
+const newThreadObject = (opts?: { agentWorkspaceId?: string | null; sessionKind?: 'side-chat'; parentThreadId?: string }) => {
 	const now = new Date().toISOString()
 	const thread: ThreadType = {
 		id: generateUuid(),
@@ -406,6 +410,10 @@ const newThreadObject = (opts?: { agentWorkspaceId?: string | null }) => {
 	}
 	if (opts && 'agentWorkspaceId' in opts) {
 		thread.agentWorkspaceId = opts.agentWorkspaceId ?? null
+	}
+	if (opts?.sessionKind) {
+		thread.sessionKind = opts.sessionKind
+		thread.parentThreadId = opts.parentThreadId
 	}
 	return thread
 }
@@ -426,6 +434,9 @@ export interface IChatThreadService {
 
 	getCurrentThread(): ThreadType;
 	getThread(threadId: string): ThreadType | undefined;
+	createSessionSideThread(opts: { agentWorkspaceId: string | null; parentThreadId: string }): string;
+	disposeSessionSideThread(threadId: string): Promise<void>;
+	getSessionSideThreadIds(): string[];
 	getSelectedThreadId(inAgentWindow: boolean): string | null;
 	/** Ensure the Agents window has a thread in exactly this workspace scope. */
 	ensureAgentWindowThread(agentWorkspaceId: string | null): string;
@@ -467,6 +478,9 @@ export interface IChatThreadService {
 
 	popStagingSelections(numPops?: number): void;
 	addNewStagingSelection(newSelection: StagingSelectionItem): void;
+	/** Add/remove staged context for an explicit thread, including its active message editor. */
+	addThreadStagingSelection(threadId: string, newSelection: StagingSelectionItem): void;
+	popThreadStagingSelections(threadId: string, numPops?: number): void;
 	addStagedSlashToken(name: string): void;
 
 	dangerousSetState: (newState: ThreadsState) => void;
@@ -491,10 +505,10 @@ export interface IChatThreadService {
 	dismissStreamError(threadId: string): void;
 
 	// call to edit a message
-	editUserMessageAndStreamResponse({ userMessage, messageIdx, threadId }: { userMessage: string, messageIdx: number, threadId: string }): Promise<void>;
+	editUserMessageAndStreamResponse({ userMessage, messageIdx, threadId, _textQuotes }: { userMessage: string, messageIdx: number, threadId: string, _textQuotes?: TextQuoteAttachment[] }): Promise<void>;
 
 	// call to add a message
-	addUserMessageAndStreamResponse({ userMessage, llmInstructions, _chatSelections, _images, threadId }: { userMessage: string, llmInstructions?: string, _chatSelections?: StagingSelectionItem[], _images?: string[], threadId: string }): Promise<void>;
+	addUserMessageAndStreamResponse({ userMessage, llmInstructions, _chatSelections, _images, _textQuotes, threadId }: { userMessage: string, llmInstructions?: string, _chatSelections?: StagingSelectionItem[], _images?: string[], _textQuotes?: TextQuoteAttachment[], threadId: string }): Promise<void>;
 
 	// message queueing (Cursor-style: sending while the agent runs queues instead of aborting)
 	/** Messages queued while the agent is running; drained FIFO as each run ends. */
@@ -579,7 +593,7 @@ export interface IChatThreadService {
 	waitForThreadAgentRunEnd(threadId: string): Promise<void>;
 
 	/** Persist a user turn for Self-hosted Runner without starting the local agent loop. */
-	addRemoteUserTurn(opts: { threadId: string; userMessage: string; runnerId: string; runnerName?: string }): number | null;
+	addRemoteUserTurn(opts: { threadId: string; userMessage: string; textQuotes?: TextQuoteAttachment[]; runnerId: string; runnerName?: string }): number | null;
 
 	/** Remove a failed remote submit turn (user message and trailing checkpoint). */
 	revertRemoteUserTurn(threadId: string, fromMessageIndex: number): void;
@@ -1008,9 +1022,9 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 	}
 
 	private _sanitizeThreadsForStorage(threads: ChatThreads): ChatThreads {
-		const entries = Object.entries(threads).filter((e): e is [string, ThreadType] => !!e[1])
+		const entries = Object.entries(threads).filter((e): e is [string, ThreadType] => !!e[1] && e[1].sessionKind !== 'side-chat')
 		if (entries.length <= MAX_PERSISTED_THREADS) {
-			return threads
+			return Object.fromEntries(entries)
 		}
 		// Keep only the most recently-modified threads on disk (see MAX_PERSISTED_THREADS).
 		entries.sort((a, b) => (b[1].lastModified || '').localeCompare(a[1].lastModified || ''))
@@ -1087,9 +1101,10 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 			const out: { [threadId: string]: QueuedUserMessage[] } = {}
 			for (const [threadId, queue] of this._queuedUserMessagesByThread) {
 				if (!queue || queue.length === 0) continue
+				if (this.state.allThreads[threadId]?.sessionKind === 'side-chat') continue
 				// Persist text + file/selection context. Drop heavy image data-URIs from the persisted copy
 				// (they can be re-attached after a reload); the string replacer caps any oversized field.
-				out[threadId] = queue.map(q => ({ userMessage: q.userMessage, llmInstructions: q.llmInstructions, _chatSelections: q._chatSelections }))
+				out[threadId] = queue.map(q => ({ userMessage: q.userMessage, llmInstructions: q.llmInstructions, _chatSelections: q._chatSelections, _textQuotes: cloneQueuedTextQuotes(q._textQuotes) }))
 			}
 			if (Object.keys(out).length === 0) {
 				this._storageService.remove(QUEUED_MESSAGES_STORAGE_KEY, StorageScope.APPLICATION)
@@ -3173,7 +3188,7 @@ We only need to do it for files that were edited since `from`, ie files between 
 	}
 
 
-	private async _addUserMessageAndStreamResponse({ userMessage, llmInstructions, _chatSelections, _images, threadId }: { userMessage: string, llmInstructions?: string, _chatSelections?: StagingSelectionItem[], _images?: string[], threadId: string }) {
+	private async _addUserMessageAndStreamResponse({ userMessage, llmInstructions, _chatSelections, _images, _textQuotes, threadId }: { userMessage: string, llmInstructions?: string, _chatSelections?: StagingSelectionItem[], _images?: string[], _textQuotes?: TextQuoteAttachment[], threadId: string }) {
 		const thread = this.state.allThreads[threadId]
 		if (!thread) return // should never happen
 
@@ -3193,13 +3208,17 @@ We only need to do it for files that were edited since `from`, ie files between 
 		// llmInstructions (when provided, e.g. by Plan Build) replaces what the LLM
 		// sees while userMessage stays as the rendered bubble text. Default: both are
 		// the same string.
-		const instructions = llmInstructions ?? userMessage
+		const baseInstructions = llmInstructions ?? userMessage
+		const instructions = appendTextQuotesToPrompt(baseInstructions, _textQuotes)
 		const currSelns: StagingSelectionItem[] = _chatSelections ?? thread.state.stagingSelections
 
 		// Active slash tokens = ones explicitly inserted via the menu AND still present in the
 		// text (so deleting a token, or typing one in prose, doesn't inject it).
 		const stagedSlashTokens = thread.state.stagedSlashTokens ?? []
-		const presentTokens = new Set(parseSlashTokenNames(instructions))
+		// Quotes are inert context. A literal `/command` inside a selected excerpt
+		// must never reactivate a staged slash command that the user removed from
+		// the actual composer text.
+		const presentTokens = new Set(parseSlashTokenNames(baseInstructions))
 		const activeSlashTokens = stagedSlashTokens.filter(name => presentTokens.has(name))
 
 		const userMessageContent = await chat_userMessageContent(instructions, currSelns, { directoryStrService: this._directoryStringService, fileService: this._fileService }, activeSlashTokens) // user message + names of files (NOT content)
@@ -3213,6 +3232,7 @@ We only need to do it for files that were edited since `from`, ie files between 
 			displayContent: userMessage,
 			selections: currSelns,
 			images: mergedImages,
+			textQuotes: cloneQueuedTextQuotes(_textQuotes),
 			injectedSlashTokens: activeSlashTokens.length > 0 ? activeSlashTokens : undefined,
 			state: defaultMessageState,
 		}
@@ -3331,7 +3351,7 @@ We only need to do it for files that were edited since `from`, ie files between 
 		return true
 	}
 
-	async addUserMessageAndStreamResponse({ userMessage, llmInstructions, _chatSelections, _images, threadId }: { userMessage: string, llmInstructions?: string, _chatSelections?: StagingSelectionItem[], _images?: string[], threadId: string }) {
+	async addUserMessageAndStreamResponse({ userMessage, llmInstructions, _chatSelections, _images, _textQuotes, threadId }: { userMessage: string, llmInstructions?: string, _chatSelections?: StagingSelectionItem[], _images?: string[], _textQuotes?: TextQuoteAttachment[], threadId: string }) {
 		const thread = this.state.allThreads[threadId];
 		if (!thread) return
 
@@ -3346,7 +3366,7 @@ We only need to do it for files that were edited since `from`, ie files between 
 		const hasPausedQueue = this.getIsQueuePaused(threadId)
 		if (isActivelyRunning || hasPausedQueue) {
 			// Q7: reject empty/whitespace-only sends that carry no attachments.
-			const hasContent = userMessage.trim().length > 0 || (_chatSelections?.length ?? 0) > 0 || (_images?.length ?? 0) > 0
+			const hasContent = userMessage.trim().length > 0 || (_chatSelections?.length ?? 0) > 0 || (_images?.length ?? 0) > 0 || (_textQuotes?.length ?? 0) > 0
 			if (!hasContent) return
 			const queue = this._queuedUserMessagesByThread.get(threadId) ?? []
 			// Q7: cap depth so runaway Enter presses can't grow the queue unbounded.
@@ -3360,6 +3380,7 @@ We only need to do it for files that were edited since `from`, ie files between 
 				llmInstructions,
 				_chatSelections: _chatSelections ? _chatSelections.map(cloneStagingSelection) : undefined,
 				_images: _images ? [..._images] : undefined,
+				_textQuotes: cloneQueuedTextQuotes(_textQuotes),
 			}
 			const tail = queue[queue.length - 1]
 			if (tail && queuedUserMessagesEqual(tail, queuedEntry)) {
@@ -3394,11 +3415,11 @@ We only need to do it for files that were edited since `from`, ie files between 
 		}
 
 		// Now call the original method to add the user message and stream the response
-		await this._addUserMessageAndStreamResponse({ userMessage, llmInstructions, _chatSelections, _images, threadId });
+		await this._addUserMessageAndStreamResponse({ userMessage, llmInstructions, _chatSelections, _images, _textQuotes, threadId });
 
 	}
 
-	editUserMessageAndStreamResponse: IChatThreadService['editUserMessageAndStreamResponse'] = async ({ userMessage, messageIdx, threadId }) => {
+	editUserMessageAndStreamResponse: IChatThreadService['editUserMessageAndStreamResponse'] = async ({ userMessage, messageIdx, threadId, _textQuotes }) => {
 
 		const thread = this.state.allThreads[threadId]
 		if (!thread) return // should never happen
@@ -3414,6 +3435,7 @@ We only need to do it for files that were edited since `from`, ie files between 
 		// get prev and curr selections before clearing the message
 		const currSelns = thread.messages[messageIdx].state.stagingSelections || [] // staging selections for the edited message
 		const currImages = thread.messages[messageIdx].images
+		const currTextQuotes = _textQuotes ?? thread.messages[messageIdx].textQuotes
 		const prevInjected = thread.messages[messageIdx].role === 'user'
 			? (thread.messages[messageIdx].injectedSlashTokens ?? [])
 			: []
@@ -3451,7 +3473,7 @@ We only need to do it for files that were edited since `from`, ie files between 
 		this._setThreadState(threadId, { stagedSlashTokens: restoredSlash })
 
 		// re-add the message and stream it
-		await this._addUserMessageAndStreamResponse({ userMessage, _chatSelections: currSelns, _images: currImages, threadId })
+		await this._addUserMessageAndStreamResponse({ userMessage, _chatSelections: currSelns, _images: currImages, _textQuotes: currTextQuotes, threadId })
 	}
 
 	// ---------- the rest ----------
@@ -3749,6 +3771,33 @@ We only need to do it for files that were edited since `from`, ie files between 
 		return this.state.allThreads[threadId]
 	}
 
+	createSessionSideThread({ agentWorkspaceId, parentThreadId }: { agentWorkspaceId: string | null; parentThreadId: string }): string {
+		const parent = this.state.allThreads[parentThreadId]
+		if (!parent || parent.sessionKind === 'side-chat' || parent.agentWorkspaceId !== agentWorkspaceId) {
+			throw new Error('A side chat must use the exact workspace scope of its parent conversation.')
+		}
+		const thread = newThreadObject({ agentWorkspaceId, sessionKind: 'side-chat', parentThreadId })
+		this._turnSequenceOfThread[thread.id] = 0
+		this._setState({ allThreads: { ...this.state.allThreads, [thread.id]: thread } })
+		this._ensureMountInfoForThread(thread.id)
+		return thread.id
+	}
+
+	getSessionSideThreadIds(): string[] {
+		return Object.values(this.state.allThreads)
+			.filter((thread): thread is ThreadType => thread?.sessionKind === 'side-chat')
+			.map(thread => thread.id)
+	}
+
+	async disposeSessionSideThread(threadId: string): Promise<void> {
+		const thread = this.state.allThreads[threadId]
+		if (!thread || thread.sessionKind !== 'side-chat') return
+		if (this.streamState[threadId]?.isRunning !== undefined) {
+			await this.abortRunning(threadId)
+		}
+		this.deleteThread(threadId)
+	}
+
 	getSelectedThreadId(inAgentWindow: boolean): string | null {
 		return inAgentWindow ? this.state.agentWindowThreadId : this.state.currentThreadId
 	}
@@ -3760,7 +3809,7 @@ We only need to do it for files that were edited since `from`, ie files between 
 			return selected.id
 		}
 
-		const nextId = findNewestThreadIdInExactScope(Object.values(this.state.allThreads), agentWorkspaceId)
+		const nextId = findNewestThreadIdInExactScope(Object.values(this.state.allThreads).filter(thread => thread?.sessionKind !== 'side-chat'), agentWorkspaceId)
 		const next = nextId ? this.state.allThreads[nextId] : undefined
 		if (next) {
 			this._setState({ agentWindowThreadId: next.id }, true)
@@ -3874,7 +3923,7 @@ We only need to do it for files that were edited since `from`, ie files between 
 		if (!opts?.forceNew) {
 			for (const threadId in currentThreads) {
 				const existing = currentThreads[threadId]
-				if (!existing || existing.messages.length !== 0) {
+				if (!existing || existing.sessionKind === 'side-chat' || existing.messages.length !== 0) {
 					continue
 				}
 				// Match workspace scope: agent-window callers only reuse empty threads
@@ -3900,7 +3949,7 @@ We only need to do it for files that were edited since `from`, ie files between 
 			threadsForCreate = { ...currentThreads }
 			for (const threadId in currentThreads) {
 				const existing = currentThreads[threadId]
-				if (!existing || existing.messages.length !== 0) {
+				if (!existing || existing.sessionKind === 'side-chat' || existing.messages.length !== 0) {
 					continue
 				}
 				if (wantsWorkspaceField) {
@@ -3997,7 +4046,7 @@ We only need to do it for files that were edited since `from`, ie files between 
 
 		const deletedThread = currentThreads[threadId]
 		const newestInScope = (agentWorkspaceId: string | null | undefined): string | undefined =>
-			findNewestThreadIdInExactScope(Object.values(newThreads), agentWorkspaceId)
+			findNewestThreadIdInExactScope(Object.values(newThreads).filter(thread => thread?.sessionKind !== 'side-chat'), agentWorkspaceId)
 		const createInScope = (agentWorkspaceId: string | null | undefined): string => {
 			const replacement = newThreadObject(agentWorkspaceId === undefined ? undefined : { agentWorkspaceId })
 			newThreads[replacement.id] = replacement
@@ -4085,11 +4134,11 @@ We only need to do it for files that were edited since `from`, ie files between 
 		this._setState({ allThreads: newThreads }) // the current thread just changed (it had a message added to it)
 	}
 
-	addRemoteUserTurn({ threadId, userMessage, runnerId, runnerName }: { threadId: string; userMessage: string; runnerId: string; runnerName?: string }): number | null {
+	addRemoteUserTurn({ threadId, userMessage, textQuotes, runnerId, runnerName }: { threadId: string; userMessage: string; textQuotes?: TextQuoteAttachment[]; runnerId: string; runnerName?: string }): number | null {
 		const thread = this.state.allThreads[threadId]
 		if (!thread) { return null }
 		const trimmed = userMessage.trim()
-		if (!trimmed) { return null }
+		if (!trimmed && !textQuotes?.length) { return null }
 
 		const lastMsg = thread.messages[thread.messages.length - 1]
 		if (lastMsg?.role !== 'checkpoint') {
@@ -4098,9 +4147,10 @@ We only need to do it for files that were edited since `from`, ie files between 
 
 		const userHistoryElt: ChatMessage = {
 			role: 'user',
-			content: trimmed,
+			content: appendTextQuotesToPrompt(trimmed, textQuotes),
 			displayContent: trimmed,
 			selections: [],
+			textQuotes: cloneQueuedTextQuotes(textQuotes),
 			state: defaultMessageState,
 		}
 		this._addMessageToThread(threadId, userHistoryElt)
@@ -4222,20 +4272,24 @@ We only need to do it for files that were edited since `from`, ie files between 
 		this.setCurrentThreadState({ stagedSlashTokens: [...current, name] })
 	}
 
-	addNewStagingSelection(newSelection: StagingSelectionItem): void {
+	addThreadStagingSelection(threadId: string, newSelection: StagingSelectionItem): void {
+		const thread = this.state.allThreads[threadId]
+		if (!thread) return
 
-		const focusedMessageIdx = this.getCurrentFocusedMessageIdx()
+		const focusedMessageIdx = thread.state.focusedMessageIdx
 
 		// set the selections to the proper value
 		let selections: StagingSelectionItem[] = []
 		let setSelections = (s: StagingSelectionItem[]) => { }
 
 		if (focusedMessageIdx === undefined) {
-			selections = this.getCurrentThreadState().stagingSelections
-			setSelections = (s: StagingSelectionItem[]) => this.setCurrentThreadState({ stagingSelections: s })
+			selections = thread.state.stagingSelections
+			setSelections = (s: StagingSelectionItem[]) => this.setThreadState(threadId, { stagingSelections: s })
 		} else {
-			selections = this.getCurrentMessageState(focusedMessageIdx).stagingSelections
-			setSelections = (s) => this.setCurrentMessageState(focusedMessageIdx, { stagingSelections: s })
+			const message = thread.messages[focusedMessageIdx]
+			if (message?.role !== 'user') return
+			selections = message.state.stagingSelections
+			setSelections = (s) => this.setThreadMessageState(threadId, focusedMessageIdx, { stagingSelections: s })
 		}
 
 		// if matches with existing selection, overwrite (since text may change)
@@ -4253,30 +4307,40 @@ We only need to do it for files that were edited since `from`, ie files between 
 		}
 	}
 
+	addNewStagingSelection(newSelection: StagingSelectionItem): void {
+		this.addThreadStagingSelection(this.state.currentThreadId, newSelection)
+	}
+
 
 	// Pops the staging selections from the current thread's state
-	popStagingSelections(numPops: number): void {
+	popThreadStagingSelections(threadId: string, numPops: number = 1): void {
+		const thread = this.state.allThreads[threadId]
+		if (!thread) return
 
-		numPops = numPops ?? 1;
-
-		const focusedMessageIdx = this.getCurrentFocusedMessageIdx()
+		const focusedMessageIdx = thread.state.focusedMessageIdx
 
 		// set the selections to the proper value
 		let selections: StagingSelectionItem[] = []
 		let setSelections = (s: StagingSelectionItem[]) => { }
 
 		if (focusedMessageIdx === undefined) {
-			selections = this.getCurrentThreadState().stagingSelections
-			setSelections = (s: StagingSelectionItem[]) => this.setCurrentThreadState({ stagingSelections: s })
+			selections = thread.state.stagingSelections
+			setSelections = (s: StagingSelectionItem[]) => this.setThreadState(threadId, { stagingSelections: s })
 		} else {
-			selections = this.getCurrentMessageState(focusedMessageIdx).stagingSelections
-			setSelections = (s) => this.setCurrentMessageState(focusedMessageIdx, { stagingSelections: s })
+			const message = thread.messages[focusedMessageIdx]
+			if (message?.role !== 'user') return
+			selections = message.state.stagingSelections
+			setSelections = (s) => this.setThreadMessageState(threadId, focusedMessageIdx, { stagingSelections: s })
 		}
 
 		setSelections([
 			...selections.slice(0, selections.length - numPops)
 		])
 
+	}
+
+	popStagingSelections(numPops: number = 1): void {
+		this.popThreadStagingSelections(this.state.currentThreadId, numPops)
 	}
 
 	// set message.state

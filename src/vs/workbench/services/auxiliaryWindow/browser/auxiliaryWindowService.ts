@@ -17,7 +17,7 @@ import { isFirefox, isWeb } from '../../../../base/common/platform.js';
 import Severity from '../../../../base/common/severity.js';
 import { localize } from '../../../../nls.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
-import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
+import { IConfirmation, IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
@@ -70,6 +70,8 @@ export interface IAuxiliaryWindowService {
 
 export interface BeforeAuxiliaryWindowUnloadEvent {
 	veto(reason: string | undefined): void;
+	/** Request a recoverable confirmation before closing this auxiliary window. */
+	confirm(confirmation: IConfirmation): void;
 }
 
 export interface IAuxiliaryWindow extends IDisposable {
@@ -93,6 +95,7 @@ export interface IAuxiliaryWindow extends IDisposable {
 const DEFAULT_AUX_WINDOW_DIMENSIONS = new Dimension(DEFAULT_AUX_WINDOW_SIZE.width, DEFAULT_AUX_WINDOW_SIZE.height);
 
 export class AuxiliaryWindow extends BaseWindow implements IAuxiliaryWindow {
+	protected skipUnloadConfirmation = false;
 
 	private readonly _onWillLayout = this._register(new Emitter<Dimension>());
 	readonly onWillLayout = this._onWillLayout.event;
@@ -117,7 +120,8 @@ export class AuxiliaryWindow extends BaseWindow implements IAuxiliaryWindow {
 		stylesHaveLoaded: Barrier,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@IHostService hostService: IHostService,
-		@IWorkbenchEnvironmentService environmentService: IWorkbenchEnvironmentService
+		@IWorkbenchEnvironmentService environmentService: IWorkbenchEnvironmentService,
+		@IDialogService protected readonly dialogService: IDialogService,
 	) {
 		super(window, undefined, hostService, environmentService);
 
@@ -153,15 +157,24 @@ export class AuxiliaryWindow extends BaseWindow implements IAuxiliaryWindow {
 
 		// Check for veto from a listening component
 		let veto: string | undefined;
+		let confirmation: IConfirmation | undefined;
 		this._onBeforeUnload.fire({
 			veto(reason) {
 				if (reason) {
 					veto = reason;
 				}
+			},
+			confirm(options) {
+				confirmation ??= options;
 			}
 		});
 		if (veto) {
 			this.handleVetoBeforeClose(e, veto);
+
+			return;
+		}
+		if (confirmation) {
+			this.confirmBeforeClose(e, confirmation);
 
 			return;
 		}
@@ -183,8 +196,19 @@ export class AuxiliaryWindow extends BaseWindow implements IAuxiliaryWindow {
 		e.returnValue = localize('lifecycleVeto', "Changes that you made may not be saved. Please check press 'Cancel' and try again.");
 	}
 
-	protected confirmBeforeClose(e: BeforeUnloadEvent): void {
+	protected async confirmBeforeClose(e: BeforeUnloadEvent, confirmation?: IConfirmation): Promise<void> {
+		if (this.skipUnloadConfirmation) {
+			return;
+		}
 		this.preventUnload(e);
+		if (!confirmation) {
+			return;
+		}
+		const result = await this.dialogService.confirm(confirmation);
+		if (result.confirmed) {
+			this.skipUnloadConfirmation = true;
+			this.window.close();
+		}
 	}
 
 	private handleUnload(): void {
@@ -309,7 +333,7 @@ export class BrowserAuxiliaryWindowService extends Disposable implements IAuxili
 	}
 
 	protected createAuxiliaryWindow(targetWindow: CodeWindow, container: HTMLElement, stylesLoaded: Barrier): AuxiliaryWindow {
-		return new AuxiliaryWindow(targetWindow, container, stylesLoaded, this.configurationService, this.hostService, this.environmentService);
+		return new AuxiliaryWindow(targetWindow, container, stylesLoaded, this.configurationService, this.hostService, this.environmentService, this.dialogService);
 	}
 
 	private async openWindow(options?: IAuxiliaryWindowOpenOptions): Promise<Window | undefined> {

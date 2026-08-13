@@ -29,9 +29,9 @@ import { ipcRenderer } from '../../../../base/parts/sandbox/electron-sandbox/glo
 import { BROWSER_AUTOMATION_IPC_CHANNELS, IBrowserViewService } from '../../../../platform/browserView/common/browserView.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
 import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
-import { IAgentWindowService, type WorkspacePanelKind } from './agentWindowService.interface.js';
+import { IAgentWindowService, type WorkspacePanelKind, type WorkspacePanelRequest } from './agentWindowService.interface.js';
 
-export { IAgentWindowService, type WorkspacePanelKind } from './agentWindowService.interface.js';
+export { IAgentWindowService, type WorkspacePanelKind, type WorkspacePanelRequest } from './agentWindowService.interface.js';
 
 // ---------------------------------------------------------------------------
 // Storage keys
@@ -166,8 +166,8 @@ export class AgentWindowService extends Disposable implements IAgentWindowServic
 	private readonly _onDidChangeState = this._register(new Emitter<void>());
 	readonly onDidChangeState: Event<void> = this._onDidChangeState.event;
 
-	private readonly _onDidRequestWorkspacePanel = this._register(new Emitter<{ kind: WorkspacePanelKind; resource?: string }>());
-	readonly onDidRequestWorkspacePanel: Event<{ kind: WorkspacePanelKind; resource?: string }> = this._onDidRequestWorkspacePanel.event;
+	private readonly _onDidRequestWorkspacePanel = this._register(new Emitter<WorkspacePanelRequest>());
+	readonly onDidRequestWorkspacePanel: Event<WorkspacePanelRequest> = this._onDidRequestWorkspacePanel.event;
 
 	private readonly _onDidRequestSelectBrowserView = this._register(new Emitter<{ browserViewId: string; workspaceTabId: string }>());
 	readonly onDidRequestSelectBrowserView = this._onDidRequestSelectBrowserView.event;
@@ -187,7 +187,8 @@ export class AgentWindowService extends Disposable implements IAgentWindowServic
 	 * (it mounts via an async import after the window opens). Drained by
 	 * {@link consumePendingWorkspacePanelRequests}; cleared on window close.
 	 */
-	private _pendingPanelRequests: { kind: WorkspacePanelKind; resource?: string }[] = [];
+	private _pendingPanelRequests: WorkspacePanelRequest[] = [];
+	private readonly _dirtySideChats = new Set<string>();
 	/** >0 while a divider drag is active — pane clamping must not fight the drag. */
 	private _dividerDragActive = 0;
 	private _saveBoundsTimer: ReturnType<typeof setTimeout> | undefined;
@@ -335,6 +336,24 @@ export class AgentWindowService extends Disposable implements IAgentWindowServic
 		// Register the unload handler IMMEDIATELY so we don't miss a close event
 		// that happens while we are awaiting `whenStylesHaveLoaded`.
 		disposables.add(aux.onUnload(() => this.handleClosed()));
+		disposables.add(aux.onBeforeUnload(event => {
+			const hasNonEmptySideChat = this.chatThreadService.getSessionSideThreadIds().some(threadId => {
+				const thread = this.chatThreadService.getThread(threadId);
+				return this._dirtySideChats.has(threadId)
+					|| !!thread?.messages.length
+					|| this.chatThreadService.getQueuedUserMessages(threadId).length > 0
+					|| this.chatThreadService.streamState[threadId]?.isRunning !== undefined;
+			});
+			if (hasNonEmptySideChat) {
+				event.confirm({
+					type: 'warning',
+					message: 'Close Agents and discard all side chats?',
+					detail: 'Side-chat drafts, messages, queued work, and running tasks will be discarded. Workspace edits already made will not be reverted.',
+					primaryButton: 'Close Agents',
+					cancelButton: 'Cancel',
+				});
+			}
+		}));
 
 		// Guard main-window-only shortcuts from the moment the window exists — not
 		// after styles load — so a Cmd+J pressed during the brief style-load window
@@ -1242,7 +1261,7 @@ export class AgentWindowService extends Disposable implements IAgentWindowServic
 		this.auxWindow?.layout();
 	}
 
-	requestWorkspacePanel(kind: WorkspacePanelKind, resource?: string): void {
+	requestWorkspacePanel(kind: WorkspacePanelKind, resource?: string, sideChat?: WorkspacePanelRequest['sideChat']): void {
 		if (!this.shellEl) {
 			// Window not open — nothing to route to. (Callers only invoke this from
 			// inside the agents window, so this is a defensive no-op.)
@@ -1256,15 +1275,24 @@ export class AgentWindowService extends Disposable implements IAgentWindowServic
 			this.auxWindow?.layout();
 		}
 		if (this._onDidRequestWorkspacePanel.hasListeners()) {
-			this._onDidRequestWorkspacePanel.fire({ kind, resource });
+			this._onDidRequestWorkspacePanel.fire({ kind, resource, sideChat });
 		} else {
 			// The React workspace hasn't subscribed yet (async mount). Queue the
 			// request; AgentWorkspace drains the queue right after subscribing.
-			this._pendingPanelRequests.push({ kind, resource });
+			this._pendingPanelRequests.push({ kind, resource, sideChat });
 		}
 	}
 
-	consumePendingWorkspacePanelRequests(): { kind: WorkspacePanelKind; resource?: string }[] {
+	setSideChatDirty(threadId: string, dirty: boolean): void {
+		if (dirty) this._dirtySideChats.add(threadId);
+		else this._dirtySideChats.delete(threadId);
+	}
+
+	isSideChatDirty(threadId: string): boolean {
+		return this._dirtySideChats.has(threadId);
+	}
+
+	consumePendingWorkspacePanelRequests(): WorkspacePanelRequest[] {
 		const pending = this._pendingPanelRequests;
 		this._pendingPanelRequests = [];
 		return pending;
@@ -1391,6 +1419,10 @@ export class AgentWindowService extends Disposable implements IAgentWindowServic
 		}
 
 		void this.teardownAuxBrowserViews();
+		for (const threadId of this.chatThreadService.getSessionSideThreadIds()) {
+			void this.chatThreadService.disposeSessionSideThread(threadId);
+		}
+		this._dirtySideChats.clear();
 
 		if (this._pendingOpenTab) {
 			clearTimeout(this._pendingOpenTab.timer);

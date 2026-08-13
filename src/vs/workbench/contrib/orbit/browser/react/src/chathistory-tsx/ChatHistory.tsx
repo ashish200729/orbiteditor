@@ -163,7 +163,7 @@ const ChatHistoryContent = ({ inAgentWindow }: { inAgentWindow: boolean }) => {
 			return [];
 		}
 
-		let threads = (Object.values(allThreads) as ThreadType[])
+		let threads = (Object.values(allThreads) as ThreadType[]).filter(thread => thread?.sessionKind !== 'side-chat')
 			.filter((thread) => {
 				if (!thread || thread.messages.length === 0) return false;
 
@@ -193,7 +193,7 @@ const ChatHistoryContent = ({ inAgentWindow }: { inAgentWindow: boolean }) => {
 			return 0;
 		}
 		return filterThreadsByWorkspaceId(
-			(Object.values(allThreads) as ThreadType[]).filter(t => t && t.messages.length > 0),
+			(Object.values(allThreads) as ThreadType[]).filter(t => t && t.sessionKind !== 'side-chat' && t.messages.length > 0),
 			agentWorkspaceState.activeWorkspaceId,
 			'unassigned',
 		).length;

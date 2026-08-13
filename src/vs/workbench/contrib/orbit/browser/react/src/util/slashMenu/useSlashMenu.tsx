@@ -28,6 +28,8 @@ export type UseSlashMenuArgs = {
 	textAreaRef: MutableRefObject<HTMLTextAreaElement | null>;
 	onChangeText?: (newText: string) => void;
 	adjustHeight: () => void;
+	threadId?: string;
+	composerSurface?: 'ide' | 'agent-main' | 'agent-side';
 };
 
 export type SlashMenu = ReturnType<typeof useSlashMenu>;
@@ -36,7 +38,7 @@ export type SlashMenu = ReturnType<typeof useSlashMenu>;
 const isTokenBoundary = (value: string, slashIdx: number): boolean =>
 	slashIdx === 0 || /\s/.test(value[slashIdx - 1]);
 
-export const useSlashMenu = ({ accessor, enabled, textAreaRef, onChangeText, adjustHeight }: UseSlashMenuArgs) => {
+export const useSlashMenu = ({ accessor, enabled, textAreaRef, onChangeText, adjustHeight, threadId, composerSurface }: UseSlashMenuArgs) => {
 	const settingsState = useSettingsState();
 
 	const [isOpen, setIsOpen] = useState(false);
@@ -76,7 +78,7 @@ export const useSlashMenu = ({ accessor, enabled, textAreaRef, onChangeText, adj
 		strategy: 'fixed',
 	});
 
-	const ctx: SlashProviderContext = useMemo(() => ({ accessor, settingsState, skills }), [accessor, settingsState, skills]);
+	const ctx: SlashProviderContext = useMemo(() => ({ accessor, settingsState, skills, threadId, composerSurface }), [accessor, settingsState, skills, threadId, composerSurface]);
 
 	// Only compute the (potentially expensive) item lists while the menu is actually open —
 	// VoidInputBox2 mounts this hook in every input box, most of which never open the menu.
@@ -190,14 +192,22 @@ export const useSlashMenu = ({ accessor, enabled, textAreaRef, onChangeText, adj
 		if (item.insertsToken) {
 			// Record the explicit selection so the prompt builder injects ONLY menu-inserted
 			// tokens (never a literal /word the user typed in prose).
-			try { accessor.get('IChatThreadService').addStagedSlashToken(item.name); } catch { /* non-fatal */ }
+			try {
+				const service = accessor.get('IChatThreadService');
+				if (threadId) {
+					const existing = service.getThread(threadId)?.state.stagedSlashTokens ?? [];
+					service.setThreadState(threadId, { stagedSlashTokens: [...new Set([...existing, item.name])] });
+				} else {
+					service.addStagedSlashToken(item.name);
+				}
+			} catch { /* non-fatal */ }
 			replaceSlug(`${item.insertsToken.token} `);
 		} else {
 			// Mode/Model: run the side effect and remove the `/slug` (no token left behind).
-			item.onSelect?.({ accessor });
+			item.onSelect?.({ accessor, threadId, composerSurface });
 			replaceSlug('');
 		}
-	}, [selectable, replaceSlug, accessor]);
+	}, [selectable, replaceSlug, accessor, threadId, composerSurface]);
 
 	/** Returns true if the key was consumed by the menu. */
 	const onMenuKeyDown = useCallback((e: ReactKeyboardEvent): boolean => {

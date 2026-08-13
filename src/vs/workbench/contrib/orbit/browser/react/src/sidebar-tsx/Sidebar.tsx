@@ -12,8 +12,23 @@ import { SidebarChat } from './SidebarChat.js';
 import ErrorBoundary from './ErrorBoundary.js';
 import { SubAgentPopupProvider } from './contexts/SubAgentPopupContext.js';
 import { ConnectedWindowProvider } from './contexts/ConnectedWindowContext.js';
+import type { TextQuoteAttachment } from '../../../../common/chatThreadServiceTypes.js';
+import type { ChatComposerSurface } from './SidebarChat.js';
 
-export const Sidebar = ({ className, isAgentWindow = false }: { className: string; isAgentWindow?: boolean }) => {
+export const Sidebar = ({ className, isAgentWindow = false, explicitThreadId, chatSurface, initialTextQuotes, initialDraftText, initialImages, onFirstSubmit, onTextQuotesChange, onDraftTextChange, onImagesChange, onSessionDirtyChange }: {
+	className: string;
+	isAgentWindow?: boolean;
+	explicitThreadId?: string;
+	chatSurface?: ChatComposerSurface;
+	initialTextQuotes?: TextQuoteAttachment[];
+	initialDraftText?: string;
+	initialImages?: string[];
+	onFirstSubmit?: (title: string) => void;
+	onTextQuotesChange?: (quotes: readonly TextQuoteAttachment[]) => void;
+	onDraftTextChange?: (text: string) => void;
+	onImagesChange?: (images: readonly string[]) => void;
+	onSessionDirtyChange?: (dirty: boolean) => void;
+}) => {
 
 	const isDark = useIsDark()
 	const themeSettingsId = useThemeSettingsId()
@@ -37,7 +52,7 @@ export const Sidebar = ({ className, isAgentWindow = false }: { className: strin
 					<div className="flex-1 min-h-0">
 						<ErrorBoundary>
 							<SubAgentPopupProvider>
-								<SidebarChat isAgentWindow={isAgentWindow} />
+								<SidebarChat isAgentWindow={isAgentWindow} explicitThreadId={explicitThreadId} chatSurface={chatSurface} initialTextQuotes={initialTextQuotes} initialDraftText={initialDraftText} initialImages={initialImages} onFirstSubmit={onFirstSubmit} onTextQuotesChange={onTextQuotesChange} onDraftTextChange={onDraftTextChange} onImagesChange={onImagesChange} onSessionDirtyChange={onSessionDirtyChange} />
 							</SubAgentPopupProvider>
 						</ErrorBoundary>
 					</div>

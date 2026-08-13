@@ -31,4 +31,12 @@ suite('messageQueueHelpers', () => {
 		const right: QueuedUserMessage = { userMessage: 'Review', _images: ['data:image/png;base64,bbb'] };
 		assert.strictEqual(queuedUserMessagesEqual(left, right), false);
 	});
+
+	test('includes immutable quote attachments in duplicate detection', () => {
+		const left: QueuedUserMessage = { userMessage: '', _textQuotes: [{ id: 'first', text: 'quoted', sourceKind: 'assistant' }] };
+		const sameText: QueuedUserMessage = { userMessage: '', _textQuotes: [{ id: 'second', text: 'quoted', sourceKind: 'assistant' }] };
+		const differentSource: QueuedUserMessage = { userMessage: '', _textQuotes: [{ id: 'third', text: 'quoted', sourceKind: 'tool' }] };
+		assert.strictEqual(queuedUserMessagesEqual(left, sameText), true);
+		assert.strictEqual(queuedUserMessagesEqual(left, differentSource), false);
+	});
 });

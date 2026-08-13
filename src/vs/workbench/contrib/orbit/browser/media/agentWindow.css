@@ -3238,3 +3238,182 @@
 	opacity: 0.55;
 	margin-left: 4px;
 }
+.void-agent-side-chat-panel {
+	display: flex;
+	width: 100%;
+	height: 100%;
+	flex: 1 1 auto;
+	min-width: 0;
+	min-height: 0;
+	flex-direction: column;
+	overflow: hidden;
+	background: var(--vscode-editor-background);
+}
+
+.void-agent-side-chat-content {
+	display: flex;
+	flex: 1 1 auto;
+	min-width: 0;
+	min-height: 0;
+	overflow: hidden;
+}
+
+.void-agent-side-chat-footer {
+	display: flex;
+	flex: 0 0 28px;
+	align-items: center;
+	min-width: 0;
+	padding: 0 12px;
+	overflow: hidden;
+	border-top: 1px solid var(--vscode-panel-border);
+	background: var(--vscode-editor-background);
+	color: var(--vscode-foreground);
+	font-family: inherit;
+	font-size: 11px;
+	line-height: 1;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+/* Portaled selection actions live directly under the auxiliary document body,
+   outside React's `.void-scope`; keep their chrome in this document-level sheet. */
+.orbit-selection-toolbar {
+	position: fixed;
+	z-index: 10000;
+	display: flex;
+	align-items: center;
+	gap: 2px;
+	min-height: 38px;
+	padding: 4px;
+	border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
+	border-radius: 10px;
+	/* Auxiliary windows may expose translucent vibrancy-backed theme surfaces.
+	   Resolve the color channels at full alpha so chat text never bleeds through. */
+	background-color: #ffffff;
+	background-color: rgb(from var(--vscode-editorWidget-background, #ffffff) r g b / 1);
+	background-image: none !important;
+	backdrop-filter: none !important;
+	-webkit-backdrop-filter: none !important;
+	opacity: 1 !important;
+	color: var(--vscode-menu-foreground, var(--vscode-foreground));
+	box-shadow: 0 8px 24px color-mix(in srgb, var(--vscode-widget-shadow, #000) 24%, transparent);
+	font-family: -apple-system, BlinkMacSystemFont, "Segoe WPC", "Segoe UI", system-ui, "Ubuntu", "Droid Sans", sans-serif;
+	font-size: 12.5px;
+	font-weight: 500;
+	line-height: 1;
+	-webkit-font-smoothing: antialiased;
+	isolation: isolate;
+}
+
+.orbit-selection-toolbar button {
+	display: inline-flex;
+	align-items: center;
+	gap: 7px;
+	height: 30px;
+	padding: 0 9px;
+	border: 0;
+	border-radius: 6px;
+	background-color: #ffffff;
+	background-color: rgb(from var(--vscode-editorWidget-background, #ffffff) r g b / 1);
+	background-image: none;
+	color: inherit;
+	font: inherit;
+	white-space: nowrap;
+	cursor: pointer;
+	transition: background-color 100ms ease, color 100ms ease;
+}
+
+.orbit-selection-toolbar button svg {
+	flex: none;
+	opacity: 0.76;
+}
+
+.orbit-selection-toolbar button:hover {
+	background-color: #e8e8e8;
+	background-color: rgb(from var(--vscode-list-hoverBackground, #e8e8e8) r g b / 1);
+	color: var(--vscode-list-hoverForeground, var(--vscode-foreground));
+}
+
+.orbit-selection-toolbar button:hover svg {
+	opacity: 1;
+}
+
+.orbit-selection-toolbar button:active {
+	background-color: #dddddd;
+	background-color: rgb(from var(--vscode-toolbar-activeBackground, #dddddd) r g b / 1);
+}
+
+.orbit-selection-toolbar button:focus-visible {
+	outline: none;
+	box-shadow: inset 0 0 0 1px var(--vscode-focusBorder);
+}
+
+.orbit-selection-toolbar kbd {
+	min-width: 28px;
+	padding: 2px 5px;
+	border: 1px solid var(--vscode-keybindingLabel-border, var(--vscode-panel-border));
+	border-radius: 4px;
+	background-color: #f3f3f3;
+	background-color: rgb(from var(--vscode-keybindingLabel-background, #f3f3f3) r g b / 1);
+	color: var(--vscode-keybindingLabel-foreground, var(--vscode-descriptionForeground));
+	font: inherit;
+	font-size: 10px;
+	font-weight: 500;
+	line-height: 12px;
+	text-align: center;
+}
+
+.orbit-selection-toolbar button,
+.orbit-selection-toolbar kbd,
+.orbit-selection-toolbar span {
+	font-family: inherit !important;
+}
+
+.monaco-workbench.vs-dark .orbit-selection-toolbar,
+.monaco-workbench.hc-black .orbit-selection-toolbar,
+.vs-dark .orbit-selection-toolbar,
+.hc-black .orbit-selection-toolbar {
+	background-color: #252526;
+	background-color: rgb(from var(--vscode-editorWidget-background, #252526) r g b / 1);
+}
+
+.monaco-workbench.vs-dark .orbit-selection-toolbar button,
+.monaco-workbench.hc-black .orbit-selection-toolbar button,
+.vs-dark .orbit-selection-toolbar button,
+.hc-black .orbit-selection-toolbar button {
+	background-color: #252526;
+	background-color: rgb(from var(--vscode-editorWidget-background, #252526) r g b / 1);
+}
+
+.monaco-workbench.vs-dark .orbit-selection-toolbar button:hover,
+.monaco-workbench.hc-black .orbit-selection-toolbar button:hover,
+.vs-dark .orbit-selection-toolbar button:hover,
+.hc-black .orbit-selection-toolbar button:hover {
+	background-color: #3c3c3c;
+	background-color: rgb(from var(--vscode-list-hoverBackground, #3c3c3c) r g b / 1);
+}
+
+@media (forced-colors: active) {
+	.orbit-selection-toolbar {
+		background-color: Canvas;
+		color: CanvasText;
+		border-color: CanvasText;
+		box-shadow: none;
+	}
+
+	.orbit-selection-toolbar button {
+		background-color: ButtonFace;
+		color: ButtonText;
+		border: 1px solid ButtonText;
+	}
+
+	.orbit-selection-toolbar button:hover,
+	.orbit-selection-toolbar button:active {
+		background-color: Highlight;
+		color: HighlightText;
+	}
+
+	.orbit-selection-toolbar button:focus-visible {
+		outline: 2px solid Highlight;
+	}
+}

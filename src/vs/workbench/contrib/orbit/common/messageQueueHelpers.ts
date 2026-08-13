@@ -3,14 +3,19 @@
  *  Licensed under the Apache License, Version 2.0. See LICENSE.txt for more information.
  *--------------------------------------------------------------------------------------*/
 
-import { StagingSelectionItem } from './chatThreadServiceTypes.js';
+import { StagingSelectionItem, TextQuoteAttachment } from './chatThreadServiceTypes.js';
+import { cloneTextQuote, textQuotesEqual } from './textQuoteAttachments.js';
 
 export type QueuedUserMessage = {
 	userMessage: string;
 	llmInstructions?: string;
 	_chatSelections?: StagingSelectionItem[];
 	_images?: string[];
+	_textQuotes?: TextQuoteAttachment[];
 };
+
+export const cloneQueuedTextQuotes = (quotes: readonly TextQuoteAttachment[] | undefined): TextQuoteAttachment[] | undefined =>
+	quotes?.map(cloneTextQuote);
 
 export const cloneStagingSelection = (selection: StagingSelectionItem): StagingSelectionItem => {
 	switch (selection.type) {
@@ -61,5 +66,6 @@ export const queuedUserMessagesEqual = (left: QueuedUserMessage, right: QueuedUs
 	return left.userMessage === right.userMessage
 		&& left.llmInstructions === right.llmInstructions
 		&& arraysEqual(left._images, right._images, (a, b) => a === b)
-		&& arraysEqual(left._chatSelections, right._chatSelections, stagingSelectionsEqual);
+		&& arraysEqual(left._chatSelections, right._chatSelections, stagingSelectionsEqual)
+		&& arraysEqual(left._textQuotes, right._textQuotes, textQuotesEqual);
 };

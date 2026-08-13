@@ -78,9 +78,11 @@ export const StreamingMessagePane = React.memo(({
 			: (tool.name ? `streaming-${tool.name}-${i}` : `streaming-unknown-${i}`);
 
 		return (
-			<ErrorBoundary key={toolKey}>
-				<StreamingTool toolCallSoFar={tool} />
-			</ErrorBoundary>
+			<div key={toolKey} data-orbit-chat-selectable data-orbit-quote-source='tool' data-orbit-thread-id={threadId} data-orbit-message-idx={streamingChatIdx}>
+				<ErrorBoundary>
+					<StreamingTool toolCallSoFar={tool} />
+				</ErrorBoundary>
+			</div>
 		);
 	});
 

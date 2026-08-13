@@ -3489,3 +3489,79 @@ select:-webkit-autofill:focus {
 		opacity: 0.5;
 	}
 }
+/* Composer quote attachments remain inside the scoped React tree. */
+.orbit-text-quotes {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	margin: 2px 0 6px;
+}
+
+.orbit-text-quote {
+	display: flex;
+	align-items: flex-start;
+	gap: 6px;
+	min-width: 0;
+	padding: 6px 7px;
+	border: 1px solid var(--vscode-input-border, var(--void-border-3));
+	border-radius: 7px;
+	background: var(--vscode-textBlockQuote-background, color-mix(in srgb, var(--vscode-editor-background) 92%, var(--vscode-focusBorder)));
+	color: var(--vscode-descriptionForeground);
+	font-size: 12px;
+	line-height: 16px;
+}
+
+.orbit-text-quote-icon {
+	flex: none;
+	margin-top: 2px;
+	color: var(--vscode-focusBorder);
+}
+
+.orbit-text-quote-copy {
+	display: -webkit-box;
+	min-width: 0;
+	flex: 1;
+	overflow: hidden;
+	-webkit-box-orient: vertical;
+	-webkit-line-clamp: 2;
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+
+.orbit-text-quote-remove {
+	display: grid;
+	flex: none;
+	place-items: center;
+	width: 20px;
+	height: 20px;
+	border-radius: 4px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.orbit-text-quote-remove:hover {
+	background: var(--vscode-toolbar-hoverBackground);
+	color: var(--vscode-foreground);
+}
+
+.orbit-text-quote-remove:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: 1px;
+}
+
+.orbit-text-quotes-compact {
+	margin-bottom: 4px;
+}
+
+[data-orbit-chat-selectable] {
+	user-select: text;
+}
+
+@media (forced-colors: active) {
+	.orbit-text-quote {
+		border-color: CanvasText;
+	}
+
+	.orbit-text-quote-remove:focus-visible {
+		outline: 2px solid Highlight;
+	}
+}

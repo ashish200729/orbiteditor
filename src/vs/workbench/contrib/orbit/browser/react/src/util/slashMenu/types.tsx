@@ -12,6 +12,8 @@ export type SlashCategoryId = 'skills' | 'commands' | 'modes' | 'models';
 /** Context passed to a selection side-effect (set mode/model, etc.). */
 export type SlashSelectContext = {
 	accessor: ReturnType<typeof useAccessor>;
+	threadId?: string;
+	composerSurface?: 'ide' | 'agent-main' | 'agent-side';
 };
 
 /** A single selectable row in the slash menu. */
@@ -46,6 +48,8 @@ export type SlashProviderContext = {
 	settingsState: ReturnType<typeof useSettingsState>;
 	/** Current enabled-aware skills snapshot (so providers don't each re-list). */
 	skills: SkillDefinition[];
+	threadId?: string;
+	composerSurface?: 'ide' | 'agent-main' | 'agent-side';
 };
 
 /** Owns one category of the slash menu. New categories register one of these. */

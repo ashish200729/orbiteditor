@@ -223,9 +223,7 @@ export const SidebarChatMessages = ({
 				className={`${item.shouldAddGap ? 'mt-2' : ''}${isThisStickyMessage ? ' sticky' : ''}${isNewSinceOpen ? ' orbit-card-enter' : ''}`}
 				style={isThisStickyMessage ? {
 					top: `${stickyOffset}px`,
-					backgroundColor: 'var(--vscode-editor-background)',
 					zIndex: 20,
-					boxShadow: '0 2px 8px -2px rgba(0, 0, 0, 0.15)',
 				} : undefined}
 			>
 				{item.bubble}

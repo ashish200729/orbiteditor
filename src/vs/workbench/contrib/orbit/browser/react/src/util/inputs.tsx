@@ -302,8 +302,10 @@ type InputBox2Props = {
 	onChangeHeight?: (newHeight: number) => void;
 	/** Identifies the primary thread composer across independently mounted chat surfaces. */
 	isThreadComposer?: boolean;
+	threadId?: string;
+	composerSurface?: 'ide' | 'agent-main' | 'agent-side';
 }
-export const VoidInputBox2 = forwardRef<HTMLTextAreaElement, InputBox2Props>(function X({ initValue, placeholder, multiline, enableAtToMention, enableSlashCommands, fnsRef, className, onKeyDown, onFocus, onBlur, onChangeText, onPaste, onDragEnter, onDragOver, onDragLeave, onDrop, isThreadComposer }, ref) {
+export const VoidInputBox2 = forwardRef<HTMLTextAreaElement, InputBox2Props>(function X({ initValue, placeholder, multiline, enableAtToMention, enableSlashCommands, fnsRef, className, onKeyDown, onFocus, onBlur, onChangeText, onPaste, onDragEnter, onDragOver, onDragLeave, onDrop, isThreadComposer, threadId, composerSurface }, ref) {
 
 
 	// mirrors whatever is in ref
@@ -311,6 +313,14 @@ export const VoidInputBox2 = forwardRef<HTMLTextAreaElement, InputBox2Props>(fun
 
 	const chatThreadService = accessor.get('IChatThreadService')
 	const languageService = accessor.get('ILanguageService')
+	const addStagingSelection = useCallback((selection: StagingSelectionItem) => {
+		if (!threadId) return chatThreadService.addNewStagingSelection(selection)
+		chatThreadService.addThreadStagingSelection(threadId, selection)
+	}, [chatThreadService, threadId])
+	const popStagingSelection = useCallback((count: number) => {
+		if (!threadId) return chatThreadService.popStagingSelections(count)
+		chatThreadService.popThreadStagingSelections(threadId, count)
+	}, [chatThreadService, threadId])
 
 	const textAreaRef = useRef<HTMLTextAreaElement | null>(null)
 	/** Keeps liveText / parent callbacks in sync when the DOM value changes outside onChange. */
@@ -394,7 +404,7 @@ export const VoidInputBox2 = forwardRef<HTMLTextAreaElement, InputBox2Props>(fun
 			}
 			else throw new Error(`Unexpected leafNodeType ${option.leafNodeType}`)
 
-			chatThreadService.addNewStagingSelection(newSelection)
+			addStagingSelection(newSelection)
 		}
 		else {
 
@@ -702,6 +712,8 @@ export const VoidInputBox2 = forwardRef<HTMLTextAreaElement, InputBox2Props>(fun
 		textAreaRef,
 		onChangeText: handleTextChanged,
 		adjustHeight,
+		threadId,
+		composerSurface,
 	})
 
 	// Apply `initValue` only when the prop itself changes — never re-run because `fns` /
@@ -745,6 +757,7 @@ export const VoidInputBox2 = forwardRef<HTMLTextAreaElement, InputBox2Props>(fun
 		<textarea
 			autoFocus={false}
 			data-orbit-thread-composer={isThreadComposer ? 'true' : undefined}
+			data-orbit-thread-id={threadId}
 			ref={useCallback((r: HTMLTextAreaElement | null) => {
 				if (fnsRef)
 					fnsRef.current = fns
@@ -850,9 +863,9 @@ export const VoidInputBox2 = forwardRef<HTMLTextAreaElement, InputBox2Props>(fun
 				if (e.key === 'Backspace' && !e.nativeEvent.isComposing) { // TODO allow user to undo this.
 					if (!e.currentTarget.value || (e.currentTarget.selectionStart === 0 && e.currentTarget.selectionEnd === 0)) { // if there is no text or cursor is at position 0, remove a selection
 						if (e.metaKey || e.ctrlKey) { // Ctrl+Backspace = remove all
-							chatThreadService.popStagingSelections(Number.MAX_SAFE_INTEGER)
+							popStagingSelection(Number.MAX_SAFE_INTEGER)
 						} else { // Backspace = pop 1 selection
-							chatThreadService.popStagingSelections(1)
+							popStagingSelection(1)
 						}
 						return;
 					}
@@ -933,14 +946,14 @@ export const VoidInputBox2 = forwardRef<HTMLTextAreaElement, InputBox2Props>(fun
 							};
 						}
 
-						chatThreadService.addNewStagingSelection(newSelection);
+						addStagingSelection(newSelection);
 					} catch (error) {
 						console.error('Failed to process dropped item:', error);
 					}
 				}
 
 				onDrop?.(e);
-			}, [chatThreadService, languageService, onDrop])}
+			}, [addStagingSelection, languageService, onDrop])}
 
 			rows={1}
 			defaultValue={initValue ?? undefined}

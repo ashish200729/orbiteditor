@@ -24,6 +24,8 @@ import { TerminalPanel } from './workspace/TerminalPanel.js';
 import { FileEditorPanel } from './workspace/FileEditorPanel.js';
 import { BrowserPanel } from './workspace/BrowserPanel.js';
 import { FilesExplorerPanel } from './workspace/FilesExplorerPanel.js';
+import { SideChatPanel, type SideChatSessionSnapshot } from './workspace/SideChatPanel.js';
+import type { WorkspacePanelRequest } from '../../../agentWindowService.interface.js';
 
 const EXPLORER_VISIBLE_KEY = 'orbit.agentWindow.explorerVisible';
 
@@ -75,6 +77,7 @@ const AgentWorkspaceInner = () => {
 	const storageService = accessor.get('IStorageService');
 	const textFileService = accessor.get('ITextFileService');
 	const dialogService = accessor.get('IDialogService');
+	const chatThreadService = accessor.get('IChatThreadService');
 
 	const [tabs, setTabs] = React.useState<WorkspaceTab[]>([]);
 	const tabsRef = React.useRef(tabs);
@@ -82,6 +85,7 @@ const AgentWorkspaceInner = () => {
 	const [activeId, setActiveId] = React.useState<string | null>(null);
 	const workspaceTabsRef = React.useRef(new Map<string, WorkspaceTab[]>());
 	const workspaceActiveTabRef = React.useRef(new Map<string, string | null>());
+	const sideChatSessionsRef = React.useRef(new Map<string, SideChatSessionSnapshot>());
 	const previousWorkspaceKeyRef = React.useRef(agentWorkspaceState.activeWorkspaceId ?? 'no-repo');
 	const [addMenuOpen, setAddMenuOpen] = React.useState(false);
 	const [explorerVisible, setExplorerVisible] = React.useState(() => {
@@ -280,14 +284,39 @@ const AgentWorkspaceInner = () => {
 		return () => sub.dispose();
 	}, [terminalStore, bumpIdCounterFromIds]);
 
-	const openPanel = React.useCallback((kind: PanelKind, resource?: string, opts?: { reuseExisting?: boolean }) => {
+	const openPanel = React.useCallback((kind: PanelKind, resource?: string, opts?: { reuseExisting?: boolean; sideChat?: WorkspacePanelRequest['sideChat'] }) => {
 		setAddMenuOpen(false);
 		const meta = panelMetaFor(kind);
+		let sideThreadId: string | undefined;
+		let sideParentThreadId: string | undefined;
+		if (kind === 'sideChat') {
+			// Side Chat is deliberately contextual-only. Requiring an explicit
+			// parent here prevents future generic panel launchers from accidentally
+			// becoming a third entry point alongside text selection and `/side`.
+			sideParentThreadId = opts?.sideChat?.parentThreadId;
+			if (!sideParentThreadId) return;
+			try {
+				sideThreadId = chatThreadService.createSessionSideThread({
+					agentWorkspaceId: agentWorkspaceState.activeWorkspaceId,
+					parentThreadId: sideParentThreadId,
+				});
+			} catch (error) {
+				console.error('[AgentWorkspace] Could not create side chat:', error);
+				return;
+			}
+		}
 		// Mint the id OUTSIDE the updater — updaters must stay pure (StrictMode /
 		// concurrent React may re-invoke them), and `++idCounter` inside produced a
 		// different id per invocation. A deduped open wastes one id; ids only need
 		// to be unique, not dense.
 		const newId = `ws-${kind}-${++idCounter.current}`;
+		if (kind === 'sideChat') {
+			sideChatSessionsRef.current.set(newId, {
+				draftText: '',
+				images: [],
+				textQuotes: opts?.sideChat?.initialQuotes?.map(quote => ({ ...quote })) ?? [],
+			});
+		}
 		setTabs(prev => {
 			if (!meta.allowMultiple) {
 				const existing = prev.find(t => t.kind === kind);
@@ -338,16 +367,19 @@ const AgentWorkspaceInner = () => {
 				}
 			}
 
-			const title = resource ? basename(resource) : meta.label;
+			const title = kind === 'sideChat' ? 'New Side Chat' : (resource ? basename(resource) : meta.label);
 			setActiveId(newId);
 			return [...prev, {
 				id: newId,
 				kind,
 				title,
 				resource: resource ? normalizeFileResource(resource) : resource,
+				threadId: sideThreadId,
+				parentThreadId: sideParentThreadId,
+				initialQuotes: opts?.sideChat?.initialQuotes?.map(quote => ({ ...quote })),
 			}];
 		});
-	}, []);
+	}, [agentWorkspaceState.activeWorkspaceId, chatThreadService]);
 
 	// Open panels requested from outside the workspace column — e.g. the chat
 	// composer's browser button opens the Browser tab here instead of a Simple
@@ -355,11 +387,11 @@ const AgentWorkspaceInner = () => {
 	// rather than stacking another (the composer button is a "show me a browser"
 	// affordance, not "open N browsers").
 	React.useEffect(() => {
-		const handleRequest = ({ kind, resource }: { kind: string; resource?: string }) => {
+		const handleRequest = ({ kind, resource, sideChat }: WorkspacePanelRequest) => {
 			// Browser: focus an existing tab rather than stacking another. The
 			// dedup happens inside openPanel's setTabs updater so concurrent
 			// requests in one tick can't both create a tab.
-			openPanel(kind as PanelKind, resource, { reuseExisting: kind === 'browser' });
+			openPanel(kind as PanelKind, resource, { reuseExisting: kind === 'browser', sideChat });
 		};
 		const sub = agentWindowService.onDidRequestWorkspacePanel(handleRequest);
 		// Drain requests that fired before this component mounted (e.g. an MCP
@@ -436,6 +468,30 @@ const AgentWorkspaceInner = () => {
 			const tab = tabsRef.current.find(t => t.id === id);
 			if (!tab) {
 				return;
+			}
+			if (tab.kind === 'sideChat' && tab.threadId) {
+				const thread = chatThreadService.getThread(tab.threadId);
+				const session = sideChatSessionsRef.current.get(id);
+				const hasContent = agentWindowService.isSideChatDirty(tab.threadId)
+					|| !!thread?.messages.length
+					|| chatThreadService.getQueuedUserMessages(tab.threadId).length > 0
+					|| chatThreadService.streamState[tab.threadId]?.isRunning !== undefined
+					|| !!session?.draftText.trim()
+					|| (session?.images.length ?? 0) > 0
+					|| (session?.textQuotes.length ?? 0) > 0;
+				if (hasContent) {
+					const result = await dialogService.confirm({
+						type: 'warning',
+						message: `Close “${tab.title}”?`,
+						detail: 'This side chat, its queued work, and any running tasks will be discarded. Workspace edits already made will not be reverted.',
+						primaryButton: 'Close Side Chat',
+						cancelButton: 'Cancel',
+					});
+					if (!result.confirmed) return;
+				}
+				await chatThreadService.disposeSessionSideThread(tab.threadId);
+				agentWindowService.setSideChatDirty(tab.threadId, false);
+				sideChatSessionsRef.current.delete(id);
 			}
 			if (tab.kind === 'files' && tab.resource) {
 				const uri = tryParseUri(tab.resource);
@@ -524,7 +580,7 @@ const AgentWorkspaceInner = () => {
 		} finally {
 			closingTabsRef.current.delete(id);
 		}
-	}, [textFileService, dialogService]);
+	}, [agentWindowService, chatThreadService, dialogService, textFileService]);
 
 	const setTitle = React.useCallback((id: string, title: string) => {
 		// Skip the state update when the title is unchanged. Panels call this on
@@ -756,6 +812,15 @@ const AgentWorkspaceInner = () => {
 									<ChangesPanel {...commonProps} />
 								) : tab.kind === 'terminal' ? (
 									<TerminalPanel {...commonProps} />
+								) : tab.kind === 'sideChat' ? (
+									<SideChatPanel
+										{...commonProps}
+										initialSession={sideChatSessionsRef.current.get(tab.id)}
+										onSessionChange={(patch) => {
+											const current = sideChatSessionsRef.current.get(tab.id) ?? { draftText: '', images: [], textQuotes: [] };
+											sideChatSessionsRef.current.set(tab.id, { ...current, ...patch });
+										}}
+									/>
 								) : (
 									<BrowserPanel {...commonProps} />
 								)}

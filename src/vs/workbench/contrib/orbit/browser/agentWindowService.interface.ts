@@ -6,13 +6,20 @@
 import { Event } from '../../../../base/common/event.js';
 import { IDisposable } from '../../../../base/common/lifecycle.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
+import type { TextQuoteAttachment } from '../common/chatThreadServiceTypes.js';
 
 export const IAgentWindowService = createDecorator<IAgentWindowService>('agentWindowService');
 
 /** Kinds of panel the agents-window workspace column can host (mirrors PanelKind
  *  in the React workspaceTypes; kept as a string union so this platform-side file
  *  does not depend on the React bundle). */
-export type WorkspacePanelKind = 'changes' | 'terminal' | 'files' | 'browser';
+export type WorkspacePanelKind = 'changes' | 'terminal' | 'files' | 'browser' | 'sideChat';
+
+export interface WorkspacePanelRequest {
+	kind: WorkspacePanelKind;
+	resource?: string;
+	sideChat?: { parentThreadId: string; initialQuotes?: TextQuoteAttachment[] };
+}
 
 export interface IAgentWindowService {
 	readonly _serviceBrand: undefined;
@@ -25,7 +32,7 @@ export interface IAgentWindowService {
 	 * agents window to open a panel in its right-side workspace column. The
 	 * React `AgentWorkspace` listens and opens/focuses the tab.
 	 */
-	readonly onDidRequestWorkspacePanel: Event<{ kind: WorkspacePanelKind; resource?: string }>;
+	readonly onDidRequestWorkspacePanel: Event<WorkspacePanelRequest>;
 
 	/** True while the standalone agents window is open. */
 	isOpen(): boolean;
@@ -47,7 +54,10 @@ export interface IAgentWindowService {
 	 * Ensures the workspace is visible first. No-op when the window is closed.
 	 * For `browser`, `resource` is the initial URL.
 	 */
-	requestWorkspacePanel(kind: WorkspacePanelKind, resource?: string): void;
+	requestWorkspacePanel(kind: WorkspacePanelKind, resource?: string, sideChat?: WorkspacePanelRequest['sideChat']): void;
+	/** Track unsent side-chat draft/quote state for aggregate window-close confirmation. */
+	setSideChatDirty(threadId: string, dirty: boolean): void;
+	isSideChatDirty(threadId: string): boolean;
 
 	/**
 	 * Drain panel requests that were fired while nothing was subscribed yet
@@ -55,7 +65,7 @@ export interface IAgentWindowService {
 	 * early MCP `agentOpenTab` would otherwise be silently lost and time out).
 	 * Called once by `AgentWorkspace` right after it subscribes.
 	 */
-	consumePendingWorkspacePanelRequests(): { kind: WorkspacePanelKind; resource?: string }[];
+	consumePendingWorkspacePanelRequests(): WorkspacePanelRequest[];
 
 	/**
 	 * Fires when the built-in browser MCP asks to focus an agents-window browser

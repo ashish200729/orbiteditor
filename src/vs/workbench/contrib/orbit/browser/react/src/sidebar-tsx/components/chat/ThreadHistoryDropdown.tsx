@@ -72,7 +72,7 @@ export const ThreadHistoryDropdown = ({ onClose }: ThreadHistoryDropdownProps) =
 		if (!allThreads) { return []; }
 
 		return Object.values(allThreads)
-			.filter(t => t && t.messages.length > 0)
+			.filter(t => t && t.sessionKind !== 'side-chat' && t.messages.length > 0)
 			.sort((a, b) => (b!.lastModified ?? 0) - (a!.lastModified ?? 0)) as ThreadType[];
 	}, [allThreads]);
 

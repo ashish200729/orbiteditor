@@ -110,6 +110,8 @@ export type ChatMessage =
 		displayContent: string; // content displayed to user  - allowed to be '', will be ignored
 		selections: StagingSelectionItem[] | null; // the user's selection
 		images?: string[]; // Array of image URLs (data URIs or URLs) to send to AI
+		/** User-approved excerpts captured from assistant/reasoning/tool output. */
+		textQuotes?: TextQuoteAttachment[];
 		/** Slash tokens injected via the menu on send (optional for back-compat). */
 		injectedSlashTokens?: string[];
 		state: {
@@ -128,6 +130,16 @@ export type ChatMessage =
 	| ToolMessage<ToolName>
 	| DecorativeCanceledTool
 	| CheckpointEntry
+
+export type TextQuoteSourceKind = 'assistant' | 'reasoning' | 'tool';
+
+export type TextQuoteAttachment = {
+	id: string;
+	text: string;
+	sourceKind: TextQuoteSourceKind;
+	sourceThreadId?: string;
+	sourceMessageIdx?: number;
+};
 
 
 // one of the square items that indicates a selection in a chat bubble

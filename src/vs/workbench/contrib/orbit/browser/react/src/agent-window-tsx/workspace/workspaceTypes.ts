@@ -4,10 +4,11 @@
  *--------------------------------------------------------------------------------------*/
 
 import type { ComponentType } from 'react';
-import { GitCompareArrows, Globe, SquareTerminal, FolderTree } from 'lucide-react';
+import { GitCompareArrows, Globe, SquareTerminal, FolderTree, MessageSquare } from 'lucide-react';
+import type { TextQuoteAttachment } from '../../../../../common/chatThreadServiceTypes.js';
 
 /** The kinds of panel the Agents-window workspace can host. */
-export type PanelKind = 'changes' | 'terminal' | 'files' | 'browser';
+export type PanelKind = 'changes' | 'terminal' | 'files' | 'browser' | 'sideChat';
 
 /** One open tab in the workspace tab strip. */
 export interface WorkspaceTab {
@@ -21,6 +22,9 @@ export interface WorkspaceTab {
 	 * workspace Explorer tree tab. For `browser`: the initial URL.
 	 */
 	resource?: string;
+	threadId?: string;
+	parentThreadId?: string;
+	initialQuotes?: TextQuoteAttachment[];
 }
 
 export interface PanelMeta {
@@ -35,9 +39,9 @@ export interface PanelMeta {
 }
 
 /**
- * Canonical panel registry. The tab strip, the "+" menu, and the empty-state
- * launcher all derive their entries from this single list so a new panel is
- * added in exactly one place.
+ * Panels users may open directly from the "+" menu or empty-state launcher.
+ * Side Chat is intentionally absent: it is contextual and may only be opened
+ * from selected conversation text or the `/side` composer command.
  *
  * Ordering also defines the "+" menu / empty-state launch order. The browser is
  * intentionally placed LAST: it's a heavy native surface that takes over the
@@ -53,8 +57,16 @@ export const PANEL_METAS: readonly PanelMeta[] = [
 	{ kind: 'browser', label: 'Browser', icon: Globe, hint: 'Open a live browser', allowMultiple: true },
 ];
 
+const SIDE_CHAT_PANEL_META: PanelMeta = {
+	kind: 'sideChat',
+	label: 'Side Chat',
+	icon: MessageSquare,
+	hint: 'Explore selected conversation text in a side chat',
+	allowMultiple: true,
+};
+
 export const panelMetaFor = (kind: PanelKind): PanelMeta =>
-	PANEL_METAS.find(m => m.kind === kind) ?? PANEL_METAS[0];
+	kind === 'sideChat' ? SIDE_CHAT_PANEL_META : (PANEL_METAS.find(m => m.kind === kind) ?? PANEL_METAS[0]);
 
 /** Props every workspace panel body receives. */
 export interface WorkspacePanelProps {

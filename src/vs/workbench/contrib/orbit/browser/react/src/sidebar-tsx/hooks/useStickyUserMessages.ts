@@ -17,11 +17,8 @@ import { getConnectedWindow } from '../../util/connectedWindow.js';
  * - User messages: z-index 20 (highest, always visible on top)
  * - TodoTool card: z-index 15 (below user messages, above regular content)
  *
- * Styling includes:
- * - Consistent 8px offset from top
- * - 4px padding for visual breathing room
- * - Subtle box-shadow for depth
- * - Background color to prevent content bleeding through
+ * The sticky wrapper owns positioning only. UserMessageComponent owns the
+ * visible card surface so sticky and in-flow messages render identically.
  */
 
 export const STICKY_OFFSET = 0;

@@ -11,7 +11,7 @@ import { ISandboxGlobals } from '../../../../base/parts/sandbox/electron-sandbox
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
 import { INativeHostService } from '../../../../platform/native/common/native.js';
-import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
+import { IConfirmation, IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { CodeWindow } from '../../../../base/browser/window.js';
 import { mark } from '../../../../base/common/performance.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
@@ -30,9 +30,6 @@ type NativeCodeWindow = CodeWindow & {
 };
 
 export class NativeAuxiliaryWindow extends AuxiliaryWindow {
-
-	private skipUnloadConfirmation = false;
-
 	private maximized = false;
 
 	constructor(
@@ -44,9 +41,9 @@ export class NativeAuxiliaryWindow extends AuxiliaryWindow {
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
 		@IHostService hostService: IHostService,
 		@IWorkbenchEnvironmentService environmentService: IWorkbenchEnvironmentService,
-		@IDialogService private readonly dialogService: IDialogService
+		@IDialogService dialogService: IDialogService
 	) {
-		super(window, container, stylesHaveLoaded, configurationService, hostService, environmentService);
+		super(window, container, stylesHaveLoaded, configurationService, hostService, environmentService, dialogService);
 
 		if (!isMacintosh) {
 			// For now, limit this to platforms that have clear maximised
@@ -88,14 +85,16 @@ export class NativeAuxiliaryWindow extends AuxiliaryWindow {
 		await this.dialogService.error(veto, localize('backupErrorDetails', "Try saving or reverting the editors with unsaved changes first and then try again."));
 	}
 
-	protected override async confirmBeforeClose(e: BeforeUnloadEvent): Promise<void> {
+	protected override async confirmBeforeClose(e: BeforeUnloadEvent, confirmation?: IConfirmation): Promise<void> {
 		if (this.skipUnloadConfirmation) {
 			return;
 		}
 
 		this.preventUnload(e);
 
-		const confirmed = await this.instantiationService.invokeFunction(accessor => NativeAuxiliaryWindow.confirmOnShutdown(accessor, ShutdownReason.CLOSE));
+		const confirmed = confirmation
+			? (await this.dialogService.confirm(confirmation)).confirmed
+			: await this.instantiationService.invokeFunction(accessor => NativeAuxiliaryWindow.confirmOnShutdown(accessor, ShutdownReason.CLOSE));
 		if (confirmed) {
 			this.skipUnloadConfirmation = true;
 			this.nativeHostService.closeWindow({ targetWindowId: this.window.vscodeWindowId });
