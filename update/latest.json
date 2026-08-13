@@ -1,47 +1,16 @@
 {
-	"version": "0.5.2",
-	"releasedAt": "2026-08-09",
+	"version": "0.5.3",
+	"releasedAt": "2026-08-13",
 	"assets": {
 		"darwin-arm64": {
-			"url": "https://github.com/ashish200729/orbiteditor/releases/download/v0.5.2/Orbit-0.5.2-darwin-arm64.dmg",
-			"sha256": "7bb54f6b43461657280a5266366083f2197543951cc69d26bd47cdeab8370402"
+			"url": "https://github.com/ashish200729/orbiteditor/releases/download/v0.5.3/Orbit-0.5.3-darwin-arm64.dmg",
+			"sha256": "428554f8575cda47442079ccf3752f66c714cb67df582a92710c9f5502480b9e"
 		},
 		"darwin-x64": {
-			"url": "https://github.com/ashish200729/orbiteditor/releases/download/v0.5.2/Orbit-0.5.2-darwin-x64.dmg",
-			"sha256": "e9cfb9d0b6abac643345b803f0d7450ee32bffe491b6ed746a8c514424e55b5c"
-		},
-		"linux-x64-deb": {
-			"url": "https://github.com/ashish200729/orbiteditor/releases/download/v0.5.2/Orbit-0.5.2-linux-x64.deb",
-			"sha256": "254b01b741de54b35de673144d559e6dd82474d683691ae1b5cf4b94f3af4a1a"
-		},
-		"linux-x64-rpm": {
-			"url": "https://github.com/ashish200729/orbiteditor/releases/download/v0.5.2/Orbit-0.5.2-linux-x64.rpm",
-			"sha256": "afbc740723a661bfdf34b619b29fbbad3927759a0eae5712ebd3766b3783d2f8"
-		},
-		"linux-x64-appimage": {
-			"url": "https://github.com/ashish200729/orbiteditor/releases/download/v0.5.2/Orbit-0.5.2-linux-x64.AppImage",
-			"sha256": "ed511c0d158dbdd6893276cc3bf56dc0e5442495886f8e304b8210e873e6f20b"
-		},
-		"linux-arm64-deb": {
-			"url": "https://github.com/ashish200729/orbiteditor/releases/download/v0.5.2/Orbit-0.5.2-linux-arm64.deb",
-			"sha256": "b9a0a1566437259edfab4fac6233cc610d01a06a7a49af8a573576d8a88555d6"
-		},
-		"linux-arm64-rpm": {
-			"url": "https://github.com/ashish200729/orbiteditor/releases/download/v0.5.2/Orbit-0.5.2-linux-arm64.rpm",
-			"sha256": "6e623a1fdc94f20042fd9ff2d8c810fc73ae016b21897f44b48a47debb529d6a"
-		},
-		"linux-arm64-appimage": {
-			"url": "https://github.com/ashish200729/orbiteditor/releases/download/v0.5.2/Orbit-0.5.2-linux-arm64.AppImage",
-			"sha256": "551a00480377e0af1adce66f05a1a4db14bec8a8a603c7ad63203e489d418f40"
-		},
-		"win32-x64": {
-			"url": "https://github.com/ashish200729/orbiteditor/releases/download/v0.5.2/Orbit-0.5.2-win32-x64-setup.exe",
-			"sha256": "896509b619544b7bcdbba0ff56da39a1a513140db901975de1b597164b0b7387"
-		},
-		"win32-arm64": {
-			"url": "https://github.com/ashish200729/orbiteditor/releases/download/v0.5.2/Orbit-0.5.2-win32-arm64-setup.exe",
-			"sha256": "0b0b88e2ce5f796e601099cec8b06a4f0efdb773060d60f2d8e81a22cf1a9c03"
+			"url": "https://github.com/ashish200729/orbiteditor/releases/download/v0.5.3/Orbit-0.5.3-darwin-x64.dmg",
+			"sha256": "aabfeaddeb51cadf8b036ff69f0caf9164afd20b4feaf85b79cba50d30cb8d9a"
 		}
 	},
-	"signature": "r7GWyxCnVrz0ARHRpLd6NBRMHz0FHZw0UWChJK4cP5rQQllD1RBoyymEXjr0fUswKsYpRjkrGnA5biGqtQtXBA=="
+	"commit": "866e0a3eb5e6ebbb328919abe8131beb33e665d7",
+	"signature": "QKNqS28C2IINARySwBYQQFbYRQgabIJrsY+uMBxgcpDgK6wTdYOn5sgMh1Ut1+1ye38NVqTZEy6Mo5heDSMdDQ=="
 }
