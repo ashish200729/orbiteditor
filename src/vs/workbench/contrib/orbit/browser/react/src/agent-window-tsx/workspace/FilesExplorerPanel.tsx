@@ -152,6 +152,7 @@ export const FilesExplorerPanel = ({
 	const nativeHostService = accessor.get('INativeHostService');
 	const notificationService = accessor.get('INotificationService');
 	const commandService = accessor.get('ICommandService');
+	const agentWindowService = accessor.get('IAgentWindowService');
 
 	const [roots, setRoots] = React.useState<ExplorerNode[]>([]);
 	const [childrenByParent, setChildrenByParent] = React.useState<Record<string, ExplorerNode[]>>({});
@@ -1298,29 +1299,30 @@ export const FilesExplorerPanel = ({
 		onOpenFile(node.uri);
 	}, [onOpenFile]);
 
+	/**
+	 * Search and diff editors only exist in the main IDE window (this window has no
+	 * editor groups or Search view). Run the command there and bring that window
+	 * forward — previously the command ran invisibly and the click looked dead.
+	 */
+	const runInMainWindow = React.useCallback((commandId: string, ...args: unknown[]) => {
+		commandService.executeCommand(commandId, ...args).then(
+			() => agentWindowService.focusMainWindow(),
+			(e: unknown) => notificationService.error(String((e as Error)?.message ?? e)),
+		);
+	}, [commandService, agentWindowService, notificationService]);
+
 	const findInFolder = React.useCallback((node: ExplorerNode) => {
 		setContextMenu(null);
 		if (!node.isDirectory) {
 			return;
 		}
-		// Delegate to the VS Code search command, which opens the Search view
-		// in the main IDE window scoped to this folder. The agent window has
-		// no search UI, so this is the pragmatic path.
-		try {
-			void commandService.executeCommand('search.action.findInFolder', node.uri);
-		} catch (e: unknown) {
-			notificationService.error(String((e as Error)?.message ?? e));
-		}
-	}, [commandService, notificationService]);
+		runInMainWindow('search.action.findInFolder', node.uri);
+	}, [runInMainWindow]);
 
-	const findInWorkspace = React.useCallback((node: ExplorerNode) => {
+	const findInWorkspace = React.useCallback(() => {
 		setContextMenu(null);
-		try {
-			void commandService.executeCommand('search.action.findInWorkspace');
-		} catch (e: unknown) {
-			notificationService.error(String((e as Error)?.message ?? e));
-		}
-	}, [commandService, notificationService]);
+		runInMainWindow('search.action.findInWorkspace');
+	}, [runInMainWindow]);
 
 	const selectForCompare = React.useCallback((node: ExplorerNode) => {
 		setContextMenu(null);
@@ -1328,19 +1330,18 @@ export const FilesExplorerPanel = ({
 			return;
 		}
 		setCompareSelectedUri(node.uri);
-	}, []);
+		// `compareFiles` only works against the workbench's own "compare source", which is
+		// set by this command — tracking the choice locally alone made Compare a silent no-op.
+		void commandService.executeCommand('selectForCompare', node.uri);
+	}, [commandService]);
 
 	const compareWithSelected = React.useCallback((node: ExplorerNode) => {
 		setContextMenu(null);
 		if (node.isDirectory || !compareSelectedUri) {
 			return;
 		}
-		try {
-			void commandService.executeCommand('compareFiles', node.uri);
-		} catch (e: unknown) {
-			notificationService.error(String((e as Error)?.message ?? e));
-		}
-	}, [commandService, notificationService, compareSelectedUri]);
+		runInMainWindow('compareFiles', node.uri);
+	}, [runInMainWindow, compareSelectedUri]);
 
 	const collapseAll = React.useCallback(() => {
 		setExpanded(prev => {
@@ -1843,18 +1844,16 @@ export const FilesExplorerPanel = ({
 							</button>
 							<button type="button" role="menuitem" className="agent-workspace-explorer-menu-item" onClick={() => openToSide(contextMenu.node)}>
 								Open to the Side
-								<span className="agent-workspace-explorer-menu-kbd">{isMacintosh ? '⌘↵' : 'Ctrl+Enter'}</span>
 							</button>
 						</>
 					)}
 					{contextMenu.node.isDirectory && (
 						<button type="button" role="menuitem" className="agent-workspace-explorer-menu-item" onClick={() => findInFolder(contextMenu.node)}>
 							Find in Folder…
-							<span className="agent-workspace-explorer-menu-kbd">{isMacintosh ? '⇧⌥F' : 'Shift+Alt+F'}</span>
 						</button>
 					)}
 					{contextMenu.node.isRoot && contextMenu.node.isDirectory && (
-						<button type="button" role="menuitem" className="agent-workspace-explorer-menu-item" onClick={() => findInWorkspace(contextMenu.node)}>
+						<button type="button" role="menuitem" className="agent-workspace-explorer-menu-item" onClick={findInWorkspace}>
 							Find in Workspace…
 						</button>
 					)}

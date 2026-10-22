@@ -44,16 +44,27 @@ export const badgeFor = (f: GitFileChange): Badge => {
 
 /* ---------------------------------------------------------------------------- */
 
-const useGitStatus = () => {
+const NO_TOTALS = { added: 0, removed: 0 };
+
+/**
+ * @param isActive whether the Changes tab is the visible one. The panel stays
+ * mounted while another tab is showing, and the SCM watcher fires on every agent
+ * edit — so while hidden we only remember that something changed and catch up
+ * (one status read, one diff refresh per visible file) when the tab is shown again.
+ */
+const useGitStatus = (isActive: boolean) => {
 	const accessor = useAccessor();
 	const gitService = accessor.get('IAgentGitService');
 
 	const [root, setRoot] = React.useState<string | null | undefined>(undefined);
 	const [roots, setRoots] = React.useState<string[]>([]);
 	const [status, setStatus] = React.useState<GitRepoStatus | null>(null);
-	const [totals, setTotals] = React.useState<{ added: number; removed: number }>({ added: 0, removed: 0 });
+	const [totals, setTotals] = React.useState<{ added: number; removed: number }>(NO_TOTALS);
 	const [error, setError] = React.useState<string | null>(null);
 	const [refreshKey, setRefreshKey] = React.useState(0);
+	const isActiveRef = React.useRef(isActive);
+	isActiveRef.current = isActive;
+	const staleWhileHiddenRef = React.useRef(false);
 
 	const resolveRoots = React.useCallback(async () => {
 		try {
@@ -71,11 +82,17 @@ const useGitStatus = () => {
 		}
 	}, [gitService]);
 
+	// Repo discovery only: status + diff refreshes are driven by the root-scoped
+	// subscription below (this one used to bump `refreshKey` too, so every git
+	// event refetched every visible diff twice).
 	React.useEffect(() => {
 		void resolveRoots();
 		const sub = gitService.onDidChange(() => {
+			if (!isActiveRef.current) {
+				staleWhileHiddenRef.current = true;
+				return;
+			}
 			void resolveRoots();
-			setRefreshKey(k => k + 1);
 		});
 		return () => sub.dispose();
 	}, [gitService, resolveRoots]);
@@ -101,15 +118,38 @@ const useGitStatus = () => {
 	React.useEffect(() => {
 		if (!root) {
 			setStatus(null);
+			setTotals(NO_TOTALS);
 			return;
 		}
+		// A different repository must not render the previous one's file list (and
+		// fetch diffs for paths that do not exist in it) while its status loads.
+		setStatus(null);
+		setTotals(NO_TOTALS);
+		setError(null);
 		void reload(root);
 		const sub = gitService.onDidChange(() => {
+			if (!isActiveRef.current) {
+				staleWhileHiddenRef.current = true;
+				return;
+			}
 			void reload(root);
 			setRefreshKey(k => k + 1);
 		});
 		return () => sub.dispose();
 	}, [root, gitService, reload]);
+
+	// Catch up on changes that happened while the tab was hidden.
+	React.useEffect(() => {
+		if (!isActive || !staleWhileHiddenRef.current) {
+			return;
+		}
+		staleWhileHiddenRef.current = false;
+		void resolveRoots();
+		if (root) {
+			void reload(root);
+		}
+		setRefreshKey(k => k + 1);
+	}, [isActive, root, reload, resolveRoots]);
 
 	const manualRefresh = React.useCallback(() => {
 		void resolveRoots();
@@ -134,7 +174,7 @@ export const ChangesPanel = ({ openInWorkspace, isActive }: WorkspacePanelProps)
 	const dialogService = accessor.get('IDialogService');
 	const agentProjectWorkspaceService = accessor.get('IAgentProjectWorkspaceService');
 	const doc = useConnectedDocument();
-	const { gitService, root, roots, selectRoot, status, totals, error, refreshKey, manualRefresh } = useGitStatus();
+	const { gitService, root, roots, selectRoot, status, totals, error, refreshKey, manualRefresh } = useGitStatus(isActive);
 
 	const [busy, setBusy] = React.useState<string | null>(null);
 	const [message, setMessage] = React.useState('');
@@ -155,6 +195,7 @@ export const ChangesPanel = ({ openInWorkspace, isActive }: WorkspacePanelProps)
 	const [repoMenuOpen, setRepoMenuOpen] = React.useState(false);
 	const [branches, setBranches] = React.useState<string[]>([]);
 
+	const panelRef = React.useRef<HTMLDivElement | null>(null);
 	const overflowRef = React.useRef<HTMLDivElement | null>(null);
 	const commitRef = React.useRef<HTMLDivElement | null>(null);
 	const branchRef = React.useRef<HTMLDivElement | null>(null);
@@ -191,6 +232,10 @@ export const ChangesPanel = ({ openInWorkspace, isActive }: WorkspacePanelProps)
 		return q ? files.filter(f => f.path.toLowerCase().includes(q)) : files;
 	}, [files, findText]);
 	const count = files.length;
+	// `status` is null from the moment a repo is picked until its first read lands —
+	// without this the panel claimed "No uncommitted changes" for a repo it had not
+	// looked at yet.
+	const statusLoading = status === null && !error;
 	const allCollapsed = count > 0 && collapsedFiles.size >= count;
 	const allFullyStaged = count > 0 && files.every(f => f.staged && !f.unstaged);
 	const anyStaged = files.some(f => f.staged);
@@ -222,18 +267,40 @@ export const ChangesPanel = ({ openInWorkspace, isActive }: WorkspacePanelProps)
 	/* ------- keyboard: ⌘F find, ⌘R refresh ------- */
 	// Panels stay MOUNTED (display:none) while another tab is active — gate on
 	// isActive or this hidden panel would hijack ⌘F/⌘R from the Editor/Files/
-	// Browser tab the user is actually looking at.
+	// Browser tab the user is actually looking at. The listener is document-wide,
+	// so also require the keystroke to originate inside this panel; otherwise ⌘F
+	// typed in the chat composer opened "Find in changes" instead.
 	const isActiveRef = React.useRef(isActive);
 	isActiveRef.current = isActive;
 	React.useEffect(() => {
 		const onKey = (e: KeyboardEvent) => {
 			if (!isActiveRef.current) { return; }
+			const target = e.target as Node | null;
+			if (!target || !panelRef.current?.contains(target)) { return; }
 			if ((e.metaKey || e.ctrlKey) && e.key === 'f') { e.preventDefault(); setFindOpen(true); }
 			if ((e.metaKey || e.ctrlKey) && e.key === 'r') { e.preventDefault(); manualRefresh(); }
 		};
 		doc.addEventListener('keydown', onKey);
 		return () => doc.removeEventListener('keydown', onKey);
 	}, [doc, manualRefresh]);
+
+	// Menus are lists of div[role=menuitem*]: make them operable from the keyboard
+	// (Enter/Space activate, arrows move) and put focus inside when one opens.
+	const onMenuKeyDown = React.useCallback((e: React.KeyboardEvent<HTMLElement>) => {
+		const items = Array.from(e.currentTarget.querySelectorAll<HTMLElement>('[role^="menuitem"]:not([aria-disabled="true"])'));
+		const current = items.indexOf(e.target as HTMLElement);
+		if (e.key === 'Enter' || e.key === ' ') {
+			if (current >= 0) { e.preventDefault(); items[current].click(); }
+		} else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+			if (items.length === 0) { return; }
+			e.preventDefault();
+			const step = e.key === 'ArrowDown' ? 1 : -1;
+			items[(current + step + items.length) % items.length].focus();
+		}
+	}, []);
+	const focusFirstMenuItem = React.useCallback((el: HTMLElement | null) => {
+		el?.querySelector<HTMLElement>('[role^="menuitem"]:not([aria-disabled="true"])')?.focus();
+	}, []);
 
 	/* ------- prune per-file caches when a file leaves the change set ------- */
 	React.useEffect(() => {
@@ -417,7 +484,7 @@ export const ChangesPanel = ({ openInWorkspace, isActive }: WorkspacePanelProps)
 	}
 
 	return (
-		<div className="agent-git">
+		<div className="agent-git" ref={panelRef} tabIndex={-1}>
 			{/* row 1 — scope / repo / branch / … / primary */}
 			<div className="agent-git-topbar">
 				<span className="agent-git-scope"><Monitor size={13} strokeWidth={1.75} /> Local</span>
@@ -433,7 +500,7 @@ export const ChangesPanel = ({ openInWorkspace, isActive }: WorkspacePanelProps)
 							<ChevronDown size={11} strokeWidth={2} className="agent-git-branch-caret" />
 						</button>
 						{repoMenuOpen && (
-							<div className="agent-git-menu" role="menu">
+							<div className="agent-git-menu" role="menu" ref={focusFirstMenuItem} onKeyDown={onMenuKeyDown}>
 								{roots.map(r => (
 									<div
 										key={r}
@@ -459,7 +526,7 @@ export const ChangesPanel = ({ openInWorkspace, isActive }: WorkspacePanelProps)
 						<ChevronDown size={11} strokeWidth={2} className="agent-git-branch-caret" />
 					</button>
 					{branchMenuOpen && (
-						<div className="agent-git-menu" role="menu">
+						<div className="agent-git-menu" role="menu" ref={focusFirstMenuItem} onKeyDown={onMenuKeyDown}>
 							<div className="agent-git-menu-item" role="menuitem" tabIndex={0} onClick={createBranchFromMenu}><GitBranch size={13} strokeWidth={2} className="agent-git-menu-lead" /><span className="agent-git-menu-label">Create new branch…</span></div>
 							<div className="agent-git-menu-sep" />
 							{branches.map(b => (
@@ -474,7 +541,7 @@ export const ChangesPanel = ({ openInWorkspace, isActive }: WorkspacePanelProps)
 				<div className="agent-git-overflow-wrap" ref={overflowRef}>
 					<button type="button" className="agent-git-iconbtn" title="More actions" aria-haspopup="menu" aria-expanded={overflowOpen} onClick={() => { setOverflowOpen(v => !v); setLayoutSubOpen(false); }}><MoreHorizontal size={16} strokeWidth={2} /></button>
 					{overflowOpen && (
-						<div className="agent-git-menu right wide" role="menu">
+						<div className="agent-git-menu right wide" role="menu" ref={focusFirstMenuItem} onKeyDown={onMenuKeyDown}>
 							<div
 								className={`agent-git-menu-item has-sub${layoutSubOpen ? ' open' : ''}`}
 								role="menuitem"
@@ -529,7 +596,7 @@ export const ChangesPanel = ({ openInWorkspace, isActive }: WorkspacePanelProps)
 					</button>
 					<button type="button" className="agent-git-primary-caret" onClick={() => setCommitMenuOpen(v => !v)} disabled={count === 0}><ChevronDown size={13} strokeWidth={2} /></button>
 					{commitMenuOpen && (
-						<div className="agent-git-menu right" role="menu">
+						<div className="agent-git-menu right" role="menu" ref={focusFirstMenuItem} onKeyDown={onMenuKeyDown}>
 							<div className="agent-git-menu-item" role="menuitem" tabIndex={0} onClick={() => doCommit('branch-commit-push')}><span className="agent-git-menu-label">Create Branch, Commit &amp; Push</span></div>
 							<div className="agent-git-menu-item" role="menuitem" tabIndex={0} onClick={() => doCommit('commit-push')}><span className="agent-git-menu-label">Commit &amp; Push</span></div>
 							<div className="agent-git-menu-item" role="menuitem" tabIndex={0} onClick={() => doCommit('commit')}><span className="agent-git-menu-label">Commit</span></div>
@@ -541,7 +608,7 @@ export const ChangesPanel = ({ openInWorkspace, isActive }: WorkspacePanelProps)
 
 			{/* row 2 — summary */}
 			<div className="agent-git-summary">
-				<span className="agent-git-summary-count">{count} Uncommitted Change{count === 1 ? '' : 's'}</span>
+				<span className="agent-git-summary-count">{statusLoading ? 'Checking for changes…' : `${count} Uncommitted Change${count === 1 ? '' : 's'}`}</span>
 				<span className="agent-git-summary-totals">
 					{totals.added > 0 && <span className="add">+{totals.added}</span>}
 					{totals.removed > 0 && <span className="del">-{totals.removed}</span>}
@@ -578,7 +645,10 @@ export const ChangesPanel = ({ openInWorkspace, isActive }: WorkspacePanelProps)
 
 			<div className="agent-git-body">
 				<div className="agent-git-difflist" ref={listRef}>
-					{count === 0 && !error && (
+					{statusLoading && (
+						<div className="agent-git-clean agent-git-loading"><Loader2 size={16} className="agent-git-spin" /> Loading changes…</div>
+					)}
+					{count === 0 && !error && !statusLoading && (
 						<div className="agent-git-clean"><Check size={18} strokeWidth={1.75} /> No uncommitted changes</div>
 					)}
 					{visibleFiles.map(f => (

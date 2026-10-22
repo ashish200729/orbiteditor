@@ -1621,6 +1621,10 @@
 	padding: 48px 12px; color: var(--vscode-descriptionForeground); font-size: 12.5px;
 }
 .void-agent-git-clean svg { color: var(--vscode-charts-green, #4a9c4a); opacity: 0.85; }
+.void-agent-git-clean.void-agent-git-loading { flex-direction: row; padding: 36px 12px; }
+.void-agent-git-clean.void-agent-git-loading svg { color: var(--vscode-descriptionForeground); opacity: 0.8; }
+/* The panel root is focusable (tabIndex -1) only so ⌘F/⌘R can be scoped to it. */
+.void-agent-git:focus { outline: none; }
 
 /* file diff section — flat list, sticky headers, full deep diffs */
 .void-agent-git-file {
@@ -2258,6 +2262,13 @@
 }
 .void-agent-workspace-header-btn span {
 	font-family: inherit !important;
+}
+/* The Run-on control carries a full-width utility class for the main-window layout. Inside this row it
+   must size to its content, otherwise it claims the whole row and squeezes the workspace name to its
+   minimum width ("Select Work…") even when there is plenty of room. */
+.void-agent-workspace-header .void-agent-chat-run-header {
+	width: auto !important;
+	flex: 0 1 auto;
 }
 .void-agent-workspace-header-btn-icon {
 	display: block;

@@ -4,7 +4,6 @@
  *--------------------------------------------------------------------------------------*/
 
 import { FeatureName, ModelSelectionOptions, OverridesOfModel, ProviderName } from './orbitSettingsTypes.js';
-import { getOrbitProviderModelMetadata, pricePerMillionFromCreditMultiplier } from './orbitProviderModelMetadata.js';
 import { getClinePassModelMetadata } from './clinePassModelMetadata.js';
 
 
@@ -21,8 +20,6 @@ export const defaultProviderSettings = {
 	openAICodex: {
 	},
 	xAISuperGrok: {
-	},
-	orbit: {
 	},
 	clinePass: {
 	},
@@ -97,7 +94,6 @@ export const defaultModelsOfProvider = {
 		// 'gpt-4o',
 		// 'gpt-4o-mini',
 	],
-	orbit: [],
 	clinePass: [
 		'cline-pass/glm-5.2',
 		'cline-pass/kimi-k2.7-code',
@@ -2030,60 +2026,6 @@ const openRouterSettings: VoidStaticProviderInfo = {
 
 // ---------------- model settings of everything above ----------------
 
-const orbitProviderModelOptionsFallback: VoidStaticProviderInfo['modelOptionsFallback'] = (modelName, fallbackKnownValues) => {
-	const metadata = getOrbitProviderModelMetadata(modelName)
-	if (metadata) {
-		const heuristic = extensiveModelOptionsFallback(modelName, fallbackKnownValues)
-		const inputCost = pricePerMillionFromCreditMultiplier(metadata.inputCreditMultiplier)
-		const outputCost = pricePerMillionFromCreditMultiplier(metadata.outputCreditMultiplier)
-
-		let reasoningCapabilities = heuristic?.reasoningCapabilities ?? false
-		if (metadata.supportsReasoning) {
-			if (reasoningCapabilities) {
-				reasoningCapabilities = { ...reasoningCapabilities, supportsReasoning: true }
-			} else {
-				reasoningCapabilities = { supportsReasoning: true, canTurnOffReasoning: true, canIOReasoning: true }
-			}
-		} else {
-			reasoningCapabilities = false
-		}
-
-		let specialToolFormat = heuristic?.specialToolFormat
-		if (!metadata.supportsTools) {
-			specialToolFormat = undefined
-		} else if (!specialToolFormat) {
-			specialToolFormat = 'openai-style'
-		}
-
-		return {
-			...(heuristic ?? defaultModelOptions),
-			...fallbackKnownValues,
-			modelName,
-			recognizedModelName: modelName,
-			contextWindow: metadata.contextWindow,
-			reservedOutputTokenSpace: heuristic?.reservedOutputTokenSpace ?? 8_192,
-			cost: { input: inputCost, output: outputCost },
-			downloadable: false,
-			supportsFIM: false,
-			supportsSystemMessage: heuristic?.supportsSystemMessage ?? 'system-role',
-			specialToolFormat,
-			reasoningCapabilities,
-			additionalOpenAIPayload: heuristic?.additionalOpenAIPayload,
-		}
-	}
-	return extensiveModelOptionsFallback(modelName, fallbackKnownValues)
-}
-
-const orbitProviderSettings: VoidStaticProviderInfo = {
-	modelOptions: {},
-	modelOptionsFallback: orbitProviderModelOptionsFallback,
-	providerReasoningIOSettings: {
-		input: { includeInPayload: openAICompatIncludeInPayloadReasoning },
-		// Fallback: parse <think> tags inlined in content when the upstream model does not emit a separate reasoning field.
-		output: { needsManualParse: true },
-	},
-}
-
 // Reference pricing from https://docs.cline.bot/getting-started/clinepass (subscription is flat-rate; costs are for display/tracking).
 const clinePassReasoning = (canTurnOffReasoning = true) => ({
 	supportsReasoning: true as const,
@@ -2178,7 +2120,6 @@ const modelSettingsOfProvider: { [providerName in ProviderName]: VoidStaticProvi
 	openAI: openAISettings,
 	openAICodex: openAICodexSettings,
 	xAISuperGrok: xAISettings,
-	orbit: orbitProviderSettings,
 	clinePass: clinePassSettings,
 	anthropic: anthropicSettings,
 	xAI: xAISettings,

@@ -305,6 +305,27 @@ export function findNewestThreadIdInExactScope<T extends { id: string; lastModif
 	return newest?.id;
 }
 
+/**
+ * Whether a file-system change at `relativePath` (relative to an agent workspace root) can alter
+ * `git status`. Ordinary working-tree files can; inside `.git` only the index, HEAD and refs
+ * can. Everything else there (`index.lock`, `objects/`, `logs/`, `FETCH_HEAD`, ...) is churn that git
+ * produces while WE read the repository, so reacting to it would turn every refresh into the
+ * trigger for the next one.
+ */
+export function isGitStatusRelevantPath(relativePath: string): boolean {
+	const normalized = relativePath.replace(/\\/g, '/');
+	const match = /(?:^|\/)\.git(?:\/(.*))?$/.exec(normalized);
+	if (!match) {
+		return true;
+	}
+	const inner = match[1] ?? '';
+	return inner === 'index'
+		|| inner === 'HEAD'
+		|| inner === 'packed-refs'
+		|| inner === 'MERGE_HEAD'
+		|| inner.startsWith('refs/');
+}
+
 export function canMigrateLegacyTerminalsToWorkspace<T extends { workspaceFolderUri?: string }>(
 	entries: T[],
 	activeWorkspaceId: string | null,

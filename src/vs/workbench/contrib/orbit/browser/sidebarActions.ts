@@ -67,6 +67,34 @@ export const roundRangeToLines = (range: IRange | null | undefined, options: { e
 
 
 
+/**
+ * True when a chat command was triggered from inside the standalone Agents window.
+ * Those commands must act on the Agents window's own thread (`agentWindowThreadId`) and never open
+ * the IDE sidebar or focus the IDE composer, which would pull the user back into the main window.
+ * Gating on `isOpen()` alone would mis-scope main-IDE chats whenever the pop-out is merely open in
+ * the background.
+ */
+const isInvokedFromAgentWindow = (agentWindowService: IAgentWindowService): boolean =>
+	agentWindowService.isOpen() && isAuxiliaryWindow(getActiveDomWindow())
+
+/** Resolve at most `ms` for a mount handshake that may never complete (e.g. its UI is not mounted). */
+const awaitBriefly = async <T>(promise: Promise<T> | undefined, ms: number): Promise<T | undefined> => {
+	if (!promise) {
+		return undefined
+	}
+	let timer: ReturnType<typeof setTimeout> | undefined
+	try {
+		return await Promise.race([
+			promise,
+			new Promise<undefined>(resolve => { timer = setTimeout(() => resolve(undefined), ms) }),
+		])
+	} finally {
+		if (timer !== undefined) {
+			clearTimeout(timer)
+		}
+	}
+}
+
 const VOID_OPEN_SIDEBAR_ACTION_ID = 'void.sidebar.open'
 registerAction2(class extends Action2 {
 	constructor() {
@@ -151,21 +179,42 @@ registerAction2(class extends Action2 {
 		const metricsService = accessor.get(IMetricsService)
 		const editorService = accessor.get(ICodeEditorService)
 		const chatThreadService = accessor.get(IChatThreadService)
+		const agentWindowService = accessor.get(IAgentWindowService)
 
 		metricsService.capture('Ctrl+L', {})
 
-		// capture selection and model before opening the chat panel
-		const editor = editorService.getActiveCodeEditor()
+		// From the Agents window (its file editor is a real code editor) the selection belongs in
+		// the Agents chat. Opening the IDE sidebar and feeding the IDE thread would drag the user
+		// back into the main window.
+		const invokedFromAgentWindow = isInvokedFromAgentWindow(agentWindowService)
+
+		// capture selection and model before opening the chat panel. The workbench's "active" editor
+		// is always the main window's, so the Agents window's editor can only be found by focus.
+		const editor = invokedFromAgentWindow ? editorService.getFocusedCodeEditor() : editorService.getActiveCodeEditor()
 		const model = editor?.getModel()
 		if (!model) return
 
 		const selectionRange = roundRangeToLines(editor?.getSelection(), { emptySelectionBehavior: 'null' })
 
-		// open panel
-		const wasAlreadyOpen = viewsService.isViewContainerVisible(VOID_VIEW_CONTAINER_ID)
-		if (!wasAlreadyOpen) {
-			await commandService.executeCommand(VOID_OPEN_SIDEBAR_ACTION_ID)
+		const targetThreadId = invokedFromAgentWindow
+			? chatThreadService.state.agentWindowThreadId
+			: chatThreadService.state.currentThreadId
+		if (invokedFromAgentWindow && !targetThreadId) return
+		// Only accept an editor that is actually painted in the Agents window.
+		if (invokedFromAgentWindow) {
+			const agentDoc = agentWindowService.getAuxiliaryDomWindow()?.document
+			if (!agentDoc || editor?.getContainerDomNode()?.getRootNode() !== agentDoc) return
 		}
+
+		// open panel
+		if (!invokedFromAgentWindow) {
+			const wasAlreadyOpen = viewsService.isViewContainerVisible(VOID_VIEW_CONTAINER_ID)
+			if (!wasAlreadyOpen) {
+				await commandService.executeCommand(VOID_OPEN_SIDEBAR_ACTION_ID)
+			}
+		}
+		// Opening the sidebar can switch threads; re-resolve for the IDE path.
+		const threadId = invokedFromAgentWindow ? targetThreadId! : chatThreadService.state.currentThreadId
 
 		// Add selection to chat
 		// add line selection
@@ -176,7 +225,7 @@ registerAction2(class extends Action2 {
 				startColumn: 1,
 				endColumn: Number.MAX_SAFE_INTEGER
 			})
-			chatThreadService.addNewStagingSelection({
+			chatThreadService.addThreadStagingSelection(threadId, {
 				type: 'CodeSelection',
 				uri: model.uri,
 				language: model.getLanguageId(),
@@ -186,7 +235,7 @@ registerAction2(class extends Action2 {
 		}
 		// add file
 		else {
-			chatThreadService.addNewStagingSelection({
+			chatThreadService.addThreadStagingSelection(threadId, {
 				type: 'File',
 				uri: model.uri,
 				language: model.getLanguageId(),
@@ -194,7 +243,7 @@ registerAction2(class extends Action2 {
 			})
 		}
 
-		await chatThreadService.focusCurrentChat()
+		await chatThreadService.focusSelectedChat(invokedFromAgentWindow)
 	}
 })
 
@@ -223,21 +272,29 @@ registerAction2(class extends Action2 {
 		const agentProjectWorkspaceService = accessor.get(IAgentProjectWorkspaceService)
 		metricsService.capture('Chat Navigation', { type: 'Start New Chat' })
 
-		// get current selections and value to transfer
-		const oldThreadId = chatThreadsService.state.currentThreadId
-		const oldThread = chatThreadsService.state.allThreads[oldThreadId]
+		// Scope to the agent workspace ONLY when the command was invoked from the Agents window itself
+		// (see isInvokedFromAgentWindow) — otherwise No Repo mode would give IDE chats zero workspace
+		// folders and break Glob/Grep/Shell.
+		const invokedFromAgentWindow = isInvokedFromAgentWindow(agentWindowService)
 
-		const oldUI = await oldThread?.state.mountedInfo?.whenMounted
+		// get current selections and value to transfer — from the thread the user is actually in.
+		// (This used to always read the IDE's thread, so ⌘⇧L in the Agents window carried the IDE's
+		// draft and staged context into the new Agents chat.)
+		const oldThreadId = invokedFromAgentWindow
+			? chatThreadsService.state.agentWindowThreadId
+			: chatThreadsService.state.currentThreadId
+		const oldThread = oldThreadId ? chatThreadsService.state.allThreads[oldThreadId] : undefined
+
+		// In the Agents window a composer whose handshake never resolves (it was re-keyed or is not
+		// mounted) must not swallow the shortcut. The IDE path keeps its original unbounded wait.
+		const oldUI = invokedFromAgentWindow
+			? await awaitBriefly(oldThread?.state.mountedInfo?.whenMounted, 500)
+			: await oldThread?.state.mountedInfo?.whenMounted
 
 		const oldSelns = oldThread?.state.stagingSelections
 		const oldVal = oldUI?.textAreaRef?.current?.value
 
-	// open and focus new thread — scope to the agent workspace ONLY when the
-	// command was invoked from the Agents window itself. Gating on
-	// `isOpen()` would mis-scope main-IDE chats whenever the pop-out is
-	// merely open in the background (worst case: No Repo mode gives IDE
-	// chats zero workspace folders, breaking Glob/Grep/Shell).
-	const invokedFromAgentWindow = agentWindowService.isOpen() && isAuxiliaryWindow(getActiveDomWindow())
+		// open and focus new thread
 		if (invokedFromAgentWindow) {
 			chatThreadsService.openNewThread({
 				agentWorkspaceId: agentProjectWorkspaceService.getState().activeWorkspaceId,
@@ -258,14 +315,17 @@ registerAction2(class extends Action2 {
 		}
 		const newThread = chatThreadsService.state.allThreads[newThreadId]
 
-		const newUI = await newThread?.state.mountedInfo?.whenMounted
-		if (invokedFromAgentWindow) {
+		const newUI = invokedFromAgentWindow
+			? await awaitBriefly(newThread?.state.mountedInfo?.whenMounted, 500)
+			: await newThread?.state.mountedInfo?.whenMounted
+		if (oldSelns) {
 			chatThreadsService.setThreadState(newThreadId, { stagingSelections: oldSelns })
-		} else {
-			chatThreadsService.setCurrentThreadState({ stagingSelections: oldSelns })
 		}
 		if (newUI?.textAreaRef?.current && oldVal) newUI.textAreaRef.current.value = oldVal
 
+		// The editor-selection carry-over below only applies to the IDE: the Agents window has no
+		// "current editor" (its file panel is addressed with ⌘L instead).
+		if (invokedFromAgentWindow) return
 
 		// if has selection, add it
 		const editor = editorService.getActiveCodeEditor()

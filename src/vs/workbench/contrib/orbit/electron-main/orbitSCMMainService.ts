@@ -74,7 +74,10 @@ const runGit = async (root: string, args: string[], input?: string): Promise<Run
 	// GIT_TERMINAL_PROMPT=0 makes a missing-credential push/fetch fail fast
 	// instead of hanging on an interactive prompt nothing can answer; the
 	// timeout is a backstop for stalled networks, GPG, or pre-commit hooks.
-	const env = { ...process.env, GIT_TERMINAL_PROMPT: '0' }
+	// GIT_OPTIONAL_LOCKS=0: read-only commands (status, diff, ...) must not opportunistically
+	// rewrite the index. Besides racing the user's own git commands, those writes (and the
+	// index.lock churn) are file-system events that would re-trigger the Changes panel's refresh.
+	const env = { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0' }
 	try {
 		if (input !== undefined) {
 			// promisified execFile doesn't stream stdin; use the callback form.

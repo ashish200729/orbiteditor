@@ -141,6 +141,13 @@ const AgentWorkspaceInner = () => {
 	const sideExplorerRef = React.useRef<HTMLElement | null>(null);
 	// Tab ids with a close currently in flight (dialog open / save pending).
 	const closingTabsRef = React.useRef<Set<string>>(new Set());
+	// Terminal tabs the user just opened whose panel has not registered with the
+	// terminal store yet (registration waits on the pty backend). Without this, any
+	// store change in that window — e.g. another shell retitling itself — makes
+	// syncFromStore treat the unregistered tab as stale and silently drop it.
+	const pendingTerminalIdsRef = React.useRef<Set<string>>(new Set());
+	// True while a pane divider is being dragged; native surfaces must not paint then.
+	const [layoutDragging, setLayoutDragging] = React.useState(false);
 
 	// File/browser/changes tabs belong to the workspace that opened them. Swap
 	// them as a unit on workspace changes so an editor from repo A is never left
@@ -159,6 +166,7 @@ const AgentWorkspaceInner = () => {
 		previousWorkspaceKeyRef.current = nextKey;
 		fileHandlesRef.current.clear();
 		closingTabsRef.current.clear();
+		pendingTerminalIdsRef.current.clear();
 		setTabs(restored);
 		setActiveId(restoredActive && restored.some(tab => tab.id === restoredActive)
 			? restoredActive
@@ -240,9 +248,14 @@ const AgentWorkspaceInner = () => {
 			// `tabsRef.current` inside setActiveId would see the pre-update
 			// tabs and could keep an activeId pointing at a tab we just dropped).
 			const storeIds = new Set(storeEntries.map(e => e.id));
+			// Once a terminal shows up in the store it is no longer "pending" — from
+			// here on, its absence means the shell was closed.
+			for (const id of storeIds) {
+				pendingTerminalIdsRef.current.delete(id);
+			}
 			const byId = new Map(tabsRef.current.map(t => [t.id, t]));
 			const seen = new Set<string>();
-			let next = tabsRef.current.filter(t => t.kind !== 'terminal' || storeIds.has(t.id));
+			let next = tabsRef.current.filter(t => t.kind !== 'terminal' || storeIds.has(t.id) || pendingTerminalIdsRef.current.has(t.id));
 			for (const entry of storeEntries) {
 				if (seen.has(entry.id)) {
 					continue;
@@ -310,6 +323,9 @@ const AgentWorkspaceInner = () => {
 		// different id per invocation. A deduped open wastes one id; ids only need
 		// to be unique, not dense.
 		const newId = `ws-${kind}-${++idCounter.current}`;
+		if (kind === 'terminal') {
+			pendingTerminalIdsRef.current.add(newId);
+		}
 		if (kind === 'sideChat') {
 			sideChatSessionsRef.current.set(newId, {
 				draftText: '',
@@ -414,6 +430,14 @@ const AgentWorkspaceInner = () => {
 				setActiveId(workspaceTabId);
 			}
 		});
+		return () => sub.dispose();
+	}, [agentWindowService]);
+
+	// Hide native surfaces (the browser WebContentsView) while a pane divider is
+	// dragged: they sit above all HTML and eat pointer events, so the drag would
+	// stall the moment the pointer crossed into the browser's rectangle.
+	React.useEffect(() => {
+		const sub = agentWindowService.onDidChangeLayoutDrag(setLayoutDragging);
 		return () => sub.dispose();
 	}, [agentWindowService]);
 
@@ -562,6 +586,7 @@ const AgentWorkspaceInner = () => {
 				}
 			}
 
+			pendingTerminalIdsRef.current.delete(id);
 			setTabs(prev => {
 				const idx = prev.findIndex(t => t.id === id);
 				if (idx === -1) {
@@ -647,6 +672,27 @@ const AgentWorkspaceInner = () => {
 		}
 	}, [showSideExplorer, hasFileTab]);
 
+	// Keep the active tab in view. The strip scrolls horizontally with its scrollbar
+	// hidden, so a tab opened or activated off-screen (many files, an MCP-opened
+	// browser) would otherwise be unreachable without a trackpad.
+	React.useEffect(() => {
+		if (!activeId) {
+			return;
+		}
+		tabsListRef.current
+			?.querySelector<HTMLElement>(`[data-tab-id="${CSS.escape(activeId)}"]`)
+			?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+	}, [activeId, tabs.length]);
+
+	// Let a vertical mouse wheel scroll the (horizontal) tab strip.
+	const onTabListWheel = (e: React.WheelEvent) => {
+		const list = tabsListRef.current;
+		if (!list || e.deltaX !== 0 || e.deltaY === 0 || list.scrollWidth <= list.clientWidth) {
+			return;
+		}
+		list.scrollLeft += e.deltaY;
+	};
+
 	// Roving-tabindex keyboard support for the tab strip (ARIA tabs pattern):
 	// Left/Right cycle, Home/End jump; selection follows focus.
 	const onTabListKeyDown = (e: React.KeyboardEvent) => {
@@ -690,7 +736,7 @@ const AgentWorkspaceInner = () => {
 	return (
 		<div className="agent-workspace">
 			<div className="agent-workspace-tabbar">
-				<div className="agent-workspace-tabs" role="tablist" ref={tabsListRef} onKeyDown={onTabListKeyDown}>
+				<div className="agent-workspace-tabs" role="tablist" ref={tabsListRef} onKeyDown={onTabListKeyDown} onWheel={onTabListWheel}>
 					{tabs.map(tab => {
 						const isActive = tab.id === activeId;
 						const meta = panelMetaFor(tab.kind);
@@ -788,7 +834,7 @@ const AgentWorkspaceInner = () => {
 						const commonProps: WorkspacePanelProps = {
 							tab,
 							isActive,
-							overlayOpen: addMenuOpen,
+							overlayOpen: addMenuOpen || layoutDragging,
 							setTitle: (t) => setTitle(tab.id, t),
 							close: () => { void closeTab(tab.id); },
 							openInWorkspace: openPanel,

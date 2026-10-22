@@ -28,7 +28,7 @@ You can rename, test connection, refresh status, or revoke a paired runner from 
 3. Keep using Orbit’s normal Chat model picker for any synced provider. Debounced Settings changes re-sync **chat-only** (fingerprint-diff). Use **Sync all providers now** under **Settings → Self-hosted Runners** for a full refresh.
 4. Remote tasks send only `providerId` + `modelId`. Keys are encrypted on the runner and never returned to the editor.
 
-**Not available on runner v1:** Orbit Provider, ClinePass, ChatGPT Plus/Pro OAuth, SuperGrok, native Anthropic, Google Vertex (ADC). If Chat uses one of these, sync is skipped — switch Chat to a BYOK or OpenAI-Compatible model (DeepSeek, OpenAI, OpenRouter, Groq, custom gateway, …).
+**Not available on runner v1:** ClinePass, ChatGPT Plus/Pro OAuth, SuperGrok, native Anthropic, Google Vertex (ADC). If Chat uses one of these, sync is skipped — switch Chat to a BYOK or OpenAI-Compatible model (DeepSeek, OpenAI, OpenRouter, Groq, custom gateway, …).
 
 Custom OpenAI-Compatible HTTPS base URLs (e.g. `https://compute.virtuals.io/v1`) work after copy/auto-copy with the runner’s default `trusted` origin policy. Restart the runner after upgrading for that default to apply.
 

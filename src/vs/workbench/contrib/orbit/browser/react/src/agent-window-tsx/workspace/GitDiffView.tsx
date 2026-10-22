@@ -94,6 +94,10 @@ export const GitDiffView = ({
 		connectedWindow.requestAnimationFrame(() => {
 			if (cancelled) { return; }
 			const rect = el.getBoundingClientRect();
+			// A zero-size rect means the panel is display:none (Changes tab not showing, e.g.
+			// right after a workspace switch). "In range" would then be vacuously true and every
+			// file's diff would be fetched at once; the observer above reveals it when shown.
+			if (rect.width === 0 && rect.height === 0) { return; }
 			const viewH = connectedWindow.innerHeight ?? 2000;
 			if (rect.bottom >= -1200 && rect.top <= viewH + 1200) {
 				mark();

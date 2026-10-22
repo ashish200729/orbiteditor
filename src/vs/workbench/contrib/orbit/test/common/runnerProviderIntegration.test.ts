@@ -23,8 +23,8 @@ function cloneSettings(): SettingsOfProvider {
 }
 
 suite('runner provider integration', () => {
-	test('marks orbit as unsupported', () => {
-		assert.ok(RUNNER_REMOTE_UNSUPPORTED_PROVIDERS.has('orbit'));
+	test('marks OAuth-only providers as unsupported', () => {
+		assert.ok(RUNNER_REMOTE_UNSUPPORTED_PROVIDERS.has('clinePass'));
 		assert.ok(RUNNER_REMOTE_UNSUPPORTED_PROVIDERS.has('googleVertex'));
 	});
 
@@ -92,9 +92,9 @@ suite('runner provider integration', () => {
 		const settings = cloneSettings();
 		(settings.openAI as { apiKey: string }).apiKey = 'sk-test';
 		settings.openAI.models = [{ modelName: 'gpt-4.1', type: 'default', isHidden: false }];
-		const ids = selectProvidersForSync(settings, { Chat: { providerName: 'orbit', modelName: 'x' } }, { mode: 'all_copyable' });
+		const ids = selectProvidersForSync(settings, { Chat: { providerName: 'clinePass', modelName: 'x' } }, { mode: 'all_copyable' });
 		assert.ok(ids.includes('openAI'));
-		assert.ok(!ids.includes('orbit'));
+		assert.ok(!ids.includes('clinePass'));
 	});
 
 	test('syncProvidersToRunner provisions missing provider', async () => {

@@ -157,6 +157,8 @@ export const ChatSelectionToolbar = ({ threadId, onAddToChat, onAddToSideChat }:
 				</button>
 			</>}
 		</div>,
-		doc.body,
+		// Portal into the themed workbench container, not <body>: the theme class and --vscode-* variables
+		// live on the container, so a body-level toolbar rendered white in the dark Agents window.
+		(doc.querySelector('.monaco-workbench') as HTMLElement | null) ?? doc.body,
 	);
 };

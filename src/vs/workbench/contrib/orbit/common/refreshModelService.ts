@@ -5,7 +5,6 @@
 
 import { IVoidSettingsService } from './orbitSettingsService.js';
 import { ILLMMessageService } from './sendLLMMessageService.js';
-import { IOrbitProviderAuthService } from './orbitProviderAuthService.js';
 import { IClinePassAuthService } from './clinePassAuthService.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable, IDisposable } from '../../../../base/common/lifecycle.js';
@@ -67,7 +66,6 @@ function eq<T>(a: T[], b: T[]): boolean {
 export interface IRefreshModelService {
 	readonly _serviceBrand: undefined;
 	startRefreshingModels: (providerName: RefreshableProviderName, options: { enableProviderOnSuccess: boolean, doNotFire: boolean }) => void;
-	refreshOrbitProviderModels(): void;
 	refreshClinePassProviderModels(): void;
 	onDidChangeState: Event<RefreshableProviderName>;
 	state: RefreshModelStateOfProvider;
@@ -88,22 +86,9 @@ export class RefreshModelService extends Disposable implements IRefreshModelServ
 	constructor(
 		@IVoidSettingsService private readonly voidSettingsService: IVoidSettingsService,
 		@ILLMMessageService private readonly llmMessageService: ILLMMessageService,
-		@IOrbitProviderAuthService private readonly orbitProviderAuthService: IOrbitProviderAuthService,
 		@IClinePassAuthService private readonly clinePassAuthService: IClinePassAuthService,
 	) {
 		super()
-
-		const refreshOrbitWhenReady = () => {
-			void this.voidSettingsService.waitForInitState.then(() => {
-				this.refreshOrbitProviderModels()
-			})
-		}
-
-		this._register(this.orbitProviderAuthService.onDidChangeState((state) => {
-			if (state.isAuthenticated) {
-				refreshOrbitWhenReady()
-			}
-		}))
 
 		const refreshClinePassWhenReady = () => {
 			void this.voidSettingsService.waitForInitState.then(() => {
@@ -119,12 +104,8 @@ export class RefreshModelService extends Disposable implements IRefreshModelServ
 
 		void Promise.all([
 			this.voidSettingsService.waitForInitState,
-			this.orbitProviderAuthService.getState(),
 			this.clinePassAuthService.getState(),
-		]).then(([, orbitState, clinePassState]) => {
-			if (orbitState.isAuthenticated) {
-				this.refreshOrbitProviderModels()
-			}
+		]).then(([, clinePassState]) => {
 			if (clinePassState.isAuthenticated) {
 				this.refreshClinePassProviderModels()
 			}
@@ -268,20 +249,6 @@ export class RefreshModelService extends Disposable implements IRefreshModelServ
 		})
 
 
-	}
-
-	refreshOrbitProviderModels(): void {
-		this.llmMessageService.orbitProviderList({
-			onSuccess: ({ models }) => {
-				this.voidSettingsService.setOrbitProviderModels(
-					models,
-					{ source: 'auth_refresh' },
-				)
-			},
-			onError: ({ error }) => {
-				console.warn('[Orbit Provider] Model list refresh failed:', error)
-			},
-		})
 	}
 
 	refreshClinePassProviderModels(): void {

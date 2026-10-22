@@ -12,13 +12,11 @@ import { createDecorator } from '../../../../platform/instantiation/common/insta
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IMetricsService } from './metricsService.js';
 import { defaultProviderSettings, getModelCapabilities, ModelOverrides } from './modelCapabilities.js';
-import { clearOrbitProviderModelMetadata, setOrbitProviderModelMetadata } from './orbitProviderModelMetadata.js';
 import { clearClinePassModelMetadata, setClinePassModelMetadata } from './clinePassModelMetadata.js';
 import { VOID_SETTINGS_STORAGE_KEY } from './storageKeys.js';
 import { defaultSettingsOfProvider, displayInfoOfProviderName, FeatureName, ProviderName, ModelSelectionOfFeature, SettingsOfProvider, SettingName, providerNames, ModelSelection, modelSelectionsEqual, featureNames, VoidStatefulModelInfo, GlobalSettings, GlobalSettingName, defaultGlobalSettings, ModelSelectionOptions, OptionsOfModelSelection, ChatMode, OverridesOfModel, defaultOverridesOfModel, MCPUserStateOfName as MCPUserStateOfName, MCPUserState, authGatedProviderNames, normalizeExecutionTargetSetting } from './orbitSettingsTypes.js';
-import { IOrbitProviderAuthService, OrbitProviderAuthState } from './orbitProviderAuthService.js';
 import { IClinePassAuthService } from './clinePassAuthService.js';
-import { OrbitProviderModelResponse, ClinePassModelResponse } from './sendLLMMessageTypes.js';
+import { ClinePassModelResponse } from './sendLLMMessageTypes.js';
 import { BUILTIN_SUBAGENTS } from './subAgentRegistry.js';
 
 
@@ -83,7 +81,6 @@ export interface IVoidSettingsService {
 	resetState(): Promise<void>;
 
 	setAutodetectedModels(providerName: ProviderName, modelNames: string[], logging: object): void;
-	setOrbitProviderModels(orbitModels: OrbitProviderModelResponse[], logging: object): void;
 	setClinePassProviderModels(clinePassModels: ClinePassModelResponse[], logging: object): void;
 	toggleModelHidden(providerName: ProviderName, modelName: string): void;
 	addModel(providerName: ProviderName, modelName: string): void;
@@ -97,7 +94,7 @@ export interface IVoidSettingsService {
 
 
 
-const _modelsWithSwappedInNewModels = (options: { existingModels: VoidStatefulModelInfo[], models: string[], type: 'autodetected' | 'default' | 'orbit' | 'clinePass' }) => {
+const _modelsWithSwappedInNewModels = (options: { existingModels: VoidStatefulModelInfo[], models: string[], type: 'autodetected' | 'default' | 'clinePass' }) => {
 	const { existingModels, models, type } = options
 
 	const existingModelsMap: Record<string, VoidStatefulModelInfo> = {}
@@ -302,14 +299,10 @@ class VoidSettingsService extends Disposable implements IVoidSettingsService {
 		@IStorageService private readonly _storageService: IStorageService,
 		@IEncryptionService private readonly _encryptionService: IEncryptionService,
 		@IMetricsService private readonly _metricsService: IMetricsService,
-		@IOrbitProviderAuthService private readonly _orbitProviderAuth: IOrbitProviderAuthService,
 		@IClinePassAuthService private readonly _clinePassAuth: IClinePassAuthService,
 	) {
 		super()
 
-		this._register(this._orbitProviderAuth.onDidChangeState((state) => {
-			this._revalidateOrbitProvider(state)
-		}))
 		this._register(this._clinePassAuth.onDidChangeState((state) => {
 			this._revalidateClinePassProvider(state)
 		}))
@@ -374,6 +367,15 @@ class VoidSettingsService extends Disposable implements IVoidSettingsService {
 
 			// E26: coerce executionTarget to a valid ExecutionTargetId
 			readS.globalSettings.executionTarget = normalizeExecutionTargetSetting(readS.globalSettings.executionTarget);
+
+			// The hosted "Orbit Provider" (GitHub sign-in) no longer exists. Drop whatever was persisted for it;
+			// a model selection that pointed at it is repaired by _validatedModelState below.
+			const removedProvider = 'orbit'
+			delete (readS.settingsOfProvider as Record<string, unknown>)[removedProvider]
+			delete (readS.overridesOfModel as Record<string, unknown>)[removedProvider]
+			for (const featureOptions of Object.values(readS.optionsOfModelSelection ?? {})) {
+				delete (featureOptions as Record<string, unknown>)[removedProvider]
+			}
 		}
 		catch (e) {
 			// Preserve the already-read settings (including API keys) rather than wiping them.
@@ -420,7 +422,6 @@ class VoidSettingsService extends Disposable implements IVoidSettingsService {
 		this._resolver();
 		this._onDidChangeState.fire();
 
-		void this._orbitProviderAuth.getState().then((state) => this._revalidateOrbitProvider(state))
 		void this._clinePassAuth.getState().then((state) => this._revalidateClinePassProvider(state))
 	}
 
@@ -655,61 +656,6 @@ class VoidSettingsService extends Disposable implements IVoidSettingsService {
 		) {
 			this._metricsService.capture('Autodetect Models', { providerName, newModels: newModels, ...logging })
 		}
-	}
-
-	setOrbitProviderModels(orbitModels: OrbitProviderModelResponse[], logging: object) {
-		const providerName = 'orbit' as const
-		const orbitModelNames = orbitModels.map(m => m.modelName)
-		if (orbitModelNames.length === 0) {
-			// A transient empty response (deploy blip, gateway warm-up) must not wipe a
-			// signed-in user's model list. Explicit sign-out already clears the list via
-			// _revalidateOrbitProvider -> _clearOrbitProviderModels; keep last-known-good here.
-			console.warn('[Orbit Provider] Model list refresh returned no models; keeping existing list.')
-			this._metricsService.capture('Orbit Provider Models Empty', { providerName, ...logging })
-			return
-		}
-		setOrbitProviderModelMetadata(orbitModels)
-		const { models } = this.state.settingsOfProvider[providerName]
-		const oldModelNames = models.map(m => m.modelName)
-		const orbitNameSet = new Set(orbitModelNames)
-		const swapped = _modelsWithSwappedInNewModels({ existingModels: models, models: orbitModelNames, type: 'orbit' })
-		// Drop stale static defaults when the gateway returns the same public name.
-		const newModels = swapped.filter(m => m.type !== 'default' || !orbitNameSet.has(m.modelName))
-		this.setSettingOfProvider(providerName, 'models', newModels)
-		const new_names = newModels.map(m => m.modelName)
-		if (!(oldModelNames.length === new_names.length
-			&& oldModelNames.every((_, i) => oldModelNames[i] === new_names[i]))
-		) {
-			this._metricsService.capture('Orbit Provider Models', { providerName, newModels, ...logging })
-		}
-		this._onDidChangeState.fire()
-	}
-
-	private _revalidateOrbitProvider(state: OrbitProviderAuthState) {
-		const prev = this.state.settingsOfProvider.orbit._didFillInProviderSettings
-		const next = !!state.isAuthenticated
-		if (prev === next) {
-			return
-		}
-		this.state = {
-			...this.state,
-			settingsOfProvider: {
-				...this.state.settingsOfProvider,
-				orbit: { ...this.state.settingsOfProvider.orbit, _didFillInProviderSettings: next },
-			},
-		}
-		this.state = _validatedModelState(this.state)
-		this._onDidChangeState.fire()
-		void this._storeState()
-		if (!next) {
-			this._clearOrbitProviderModels()
-		}
-	}
-
-	private _clearOrbitProviderModels() {
-		clearOrbitProviderModelMetadata()
-		const defaultModels = defaultSettingsOfProvider.orbit.models.filter(m => m.type === 'default')
-		this.setSettingOfProvider('orbit', 'models', defaultModels)
 	}
 
 	setClinePassProviderModels(clinePassModels: ClinePassModelResponse[], logging: object) {

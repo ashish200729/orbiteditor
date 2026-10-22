@@ -34,6 +34,15 @@ export interface IAgentWindowService {
 	 */
 	readonly onDidRequestWorkspacePanel: Event<WorkspacePanelRequest>;
 
+	/**
+	 * Fires with `true` when the user starts dragging a pane divider and `false`
+	 * when the last active drag ends. Native surfaces (the browser panel's
+	 * WebContentsView) paint above all HTML and swallow pointer events, so they
+	 * hide for the duration of a drag — otherwise the drag stalls as soon as the
+	 * pointer crosses into the native view.
+	 */
+	readonly onDidChangeLayoutDrag: Event<boolean>;
+
 	/** True while the standalone agents window is open. */
 	isOpen(): boolean;
 

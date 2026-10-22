@@ -8,8 +8,8 @@ import '../styles.css';
 import { ProviderName, providerNames, VoidStatefulModelInfo, RefreshableProviderName, refreshableProviderNames, displayInfoOfProviderName, GlobalSettingName, displayInfoOfFeatureName } from '../../../../common/orbitSettingsTypes.js'
 import ErrorBoundary from '../sidebar-tsx/ErrorBoundary.js'
 import { VoidButtonBgDarken, VoidCustomDropdownBox, VoidInputBox2, VoidSimpleInputBox, VoidSwitch } from '../util/inputs.js'
-import { useAccessor, useIsDark, useIsOptedOut, useOrbitProviderAuthState, useRefreshModelListener, useRefreshModelState, useSettingsState, useOpenAiCodexAuthState, useXAiGrokAuthState } from '../util/services.js'
-import { X, RefreshCw, Loader2, Check, Asterisk, Plus, Boxes, Cloud, Sparkles, Settings2, Puzzle, LayoutList, BookOpen, Bot, Trash2, Download, Search, Pause, Play, AlertTriangle, Database, User, Server, type LucideIcon } from 'lucide-react'
+import { useAccessor, useIsDark, useIsOptedOut, useRefreshModelListener, useRefreshModelState, useSettingsState, useOpenAiCodexAuthState, useXAiGrokAuthState } from '../util/services.js'
+import { X, RefreshCw, Loader2, Check, Asterisk, Plus, Boxes, Cloud, Sparkles, Settings2, Puzzle, LayoutList, BookOpen, Bot, Trash2, Download, Search, Pause, Play, AlertTriangle, Database, Server, type LucideIcon } from 'lucide-react'
 import { listSkills, onSkillsChanged, type SkillDefinition } from '../../../../common/skillRegistry.js'
 import { listSubAgents, type ResolvedSubAgentDefinition } from '../../../../common/subAgentRegistry.js'
 import { URI } from '../../../../../../../base/common/uri.js'
@@ -27,13 +27,10 @@ import { useMCPServiceState } from '../util/services.js';
 import { OPT_OUT_KEY } from '../../../../common/storageKeys.js';
 import { StorageScope, StorageTarget } from '../../../../../../../platform/storage/common/storage.js';
 import { consumePendingOrbitSettingsTab } from '../../../orbitSettingsNavigation.js';
-import { VOID_REFRESH_ORBIT_PROVIDER_ACTION_ID } from '../../../actionIDs.js';
 import { ProvidersSection } from './ProvidersSection.js';
-import { AccountSection } from './AccountSection.js';
 import { RunnersSection } from './RunnersSection.js';
 
 type Tab =
-	| 'account'
 	| 'models'
 	| 'providers'
 	| 'featureOptions'
@@ -114,9 +111,6 @@ const RefreshModelButton = ({ providerName }: { providerName: RefreshableProvide
 
 const RefreshableModels = () => {
 	const settingsState = useSettingsState()
-	const orbitAuth = useOrbitProviderAuthState()
-	const accessor = useAccessor()
-	const commandService = accessor.get('ICommandService')
 
 	const buttons = refreshableProviderNames.map(providerName => {
 		if (!settingsState.settingsOfProvider[providerName]._didFillInProviderSettings) return null
@@ -125,15 +119,6 @@ const RefreshableModels = () => {
 
 	return <>
 		{buttons}
-		{orbitAuth.isAuthenticated ? (
-			<VoidButtonBgDarken
-				className='px-3 py-1 text-xs w-fit'
-				onClick={() => commandService.executeCommand(VOID_REFRESH_ORBIT_PROVIDER_ACTION_ID)}
-			>
-				<RefreshCw className='inline w-3 h-3 mr-1 -mt-px' />
-				Refresh Orbit Provider models
-			</VoidButtonBgDarken>
-		) : null}
 	</>
 
 }
@@ -373,7 +358,6 @@ export const ModelDump = ({ filteredProviders }: { filteredProviders?: ProviderN
 	const settingsState = useSettingsState()
 	const authState = useOpenAiCodexAuthState()
 	const xAiAuthState = useXAiGrokAuthState()
-	const orbitAuth = useOrbitProviderAuthState()
 
 	// State to track which model's settings dialog is open
 	const [openSettingsModel, setOpenSettingsModel] = useState<{
@@ -395,16 +379,11 @@ export const ModelDump = ({ filteredProviders }: { filteredProviders?: ProviderN
 	// a dump of all the enabled providers' models
 	const modelDump: (VoidStatefulModelInfo & { providerName: ProviderName, providerEnabled: boolean })[] = []
 
-	// Use either filtered providers or all providers. Orbit Provider is listed first when available.
+	// Use either filtered providers or all providers.
 	const providersToShow = (filteredProviders || providerNames).filter((provider) => {
 		if (provider === 'openAICodex' && !authState.isAuthenticated) return false
 		if (provider === 'xAISuperGrok' && !xAiAuthState.isAuthenticated) return false
-		if (provider === 'orbit' && !orbitAuth.isAuthenticated) return false
 		return true
-	}).sort((a, b) => {
-		if (a === 'orbit') return -1
-		if (b === 'orbit') return 1
-		return 0
 	});
 
 	for (let providerName of providersToShow) {
@@ -413,12 +392,8 @@ export const ModelDump = ({ filteredProviders }: { filteredProviders?: ProviderN
 		modelDump.push(...providerSettings.models.map(model => ({ ...model, providerName, providerEnabled: !!providerSettings._didFillInProviderSettings })))
 	}
 
-	// Enabled providers first; Orbit Provider stays at the top of the list.
-	modelDump.sort((a, b) => {
-		if (a.providerName === 'orbit' && b.providerName !== 'orbit') return -1
-		if (b.providerName === 'orbit' && a.providerName !== 'orbit') return 1
-		return Number(b.providerEnabled) - Number(a.providerEnabled)
-	})
+	// Enabled providers first.
+	modelDump.sort((a, b) => Number(b.providerEnabled) - Number(a.providerEnabled))
 
 	// how many models each provider has (computed off the full dump, not the filtered one, so the count doesn't change while searching)
 	const modelCountByProvider = useMemo(() => {
@@ -519,8 +494,6 @@ export const ModelDump = ({ filteredProviders }: { filteredProviders?: ProviderN
 
 			const detailAboutModel = type === 'autodetected' ?
 				<Asterisk size={14} className="inline-block align-text-top text-void-fg-3" data-tooltip-id='void-tooltip' data-tooltip-place='right' data-tooltip-content='Detected locally' />
-				: type === 'orbit' ?
-					<Asterisk size={14} className="inline-block align-text-top text-void-fg-3" data-tooltip-id='void-tooltip' data-tooltip-place='right' data-tooltip-content='Loaded from Orbit Provider' />
 				: type === 'custom' ?
 					<Asterisk size={14} className="inline-block align-text-top text-void-fg-3" data-tooltip-id='void-tooltip' data-tooltip-place='right' data-tooltip-content='Custom model' />
 					: undefined
@@ -579,7 +552,7 @@ export const ModelDump = ({ filteredProviders }: { filteredProviders?: ProviderN
 
 					{/* X button */}
 					<div className={`w-5 flex items-center justify-center`}>
-						{type === 'default' || type === 'autodetected' || type === 'orbit' ? null : <button
+						{type === 'default' || type === 'autodetected' ? null : <button
 							onClick={() => { settingsStateService.deleteModel(providerName, modelName); }}
 							data-tooltip-id='void-tooltip'
 							data-tooltip-place='right'
@@ -1303,7 +1276,6 @@ export const Settings = () => {
 		useState<Tab>(() => consumePendingOrbitSettingsTab() ?? 'models');
 
 	const navItems: { tab: Tab; label: string; icon: React.ReactNode; category?: string }[] = [
-		{ tab: 'account', label: 'Account', icon: <SettingsNavIcon icon={User} /> },
 		{ tab: 'models', label: 'Models', icon: <SettingsNavIcon icon={Boxes} /> },
 		{ tab: 'providers', label: 'Providers', icon: <SettingsNavIcon icon={Cloud} /> },
 		{ tab: 'featureOptions', label: 'Feature Options', icon: <SettingsNavIcon icon={Sparkles} /> },
@@ -1483,13 +1455,6 @@ export const Settings = () => {
 				<div className="@@settings-content">
 
 				<div className='@@settings-section-gap'>
-					{/* Account section */}
-					<div className={shouldShowTab('account') ? `` : 'hidden'}>
-						<ErrorBoundary>
-							<AccountSection />
-						</ErrorBoundary>
-					</div>
-
 					{/* Models section (formerly FeaturesTab) */}
 					<div className={shouldShowTab('models') ? `` : 'hidden'}>
 						<ErrorBoundary>

@@ -7,6 +7,7 @@
 export {
 	getConnectedDocument,
 	getConnectedWindow,
+	getThemedPortalHost,
 	findThreadComposerInWindow,
 	focusInConnectedWindow,
 } from '../../../connectedWindowDom.js';

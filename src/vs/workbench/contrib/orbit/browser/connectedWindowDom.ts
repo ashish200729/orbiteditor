@@ -22,6 +22,20 @@ export const getConnectedDocument = (node: Node | null | undefined): Document =>
 	return globalThis.document;
 };
 
+/**
+ * Element to portal floating UI (menus, popovers) into so it keeps the workbench theme.
+ *
+ * The theme class (`vs-dark`/`vs`) and every `--vscode-*` colour variable live on the `.monaco-workbench`
+ * container, not on `<body>`. Anything portaled to `<body>` therefore loses both and renders with its
+ * hard-coded fallbacks — a white popup inside a dark window. Falls back to `<body>` when `node` is not
+ * inside a workbench container.
+ */
+export const getThemedPortalHost = (node: Node | null | undefined): HTMLElement => {
+	const doc = getConnectedDocument(node);
+	const element = node ? (node.nodeType === 1 ? node as Element : node.parentElement) : null;
+	return (element?.closest('.monaco-workbench') as HTMLElement | null) ?? doc.body;
+};
+
 /** Resolve the window a node is connected to. */
 export const getConnectedWindow = (node: Node | null | undefined): Window => {
 	return getConnectedDocument(node).defaultView ?? globalThis.window;

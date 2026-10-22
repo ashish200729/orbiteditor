@@ -18,6 +18,9 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { INativeHostService } from '../../../../platform/native/common/native.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IKeybindingService } from '../../../../platform/keybinding/common/keybinding.js';
+import { IFileService } from '../../../../platform/files/common/files.js';
+import { URI } from '../../../../base/common/uri.js';
+import { Schemas } from '../../../../base/common/network.js';
 import { ResultKind } from '../../../../platform/keybinding/common/keybindingResolver.js';
 import { AuxiliaryWindowMode, IAuxiliaryWindow, IAuxiliaryWindowService } from '../../../services/auxiliaryWindow/browser/auxiliaryWindowService.js';
 import { ILifecycleService } from '../../../services/lifecycle/common/lifecycle.js';
@@ -25,6 +28,7 @@ import { ServicesAccessor } from '../../../../editor/browser/editorExtensions.js
 import { isMacintosh, isWindows, isLinux } from '../../../../base/common/platform.js';
 import { IChatThreadService } from './chatThreadService.js';
 import { IAgentWindowTerminalStore } from './agentWindowTerminalStore.js';
+import { IAgentProjectWorkspaceService } from './agentProjectWorkspaceService.js';
 import { ipcRenderer } from '../../../../base/parts/sandbox/electron-sandbox/globals.js';
 import { BROWSER_AUTOMATION_IPC_CHANNELS, IBrowserViewService } from '../../../../platform/browserView/common/browserView.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
@@ -172,6 +176,9 @@ export class AgentWindowService extends Disposable implements IAgentWindowServic
 	private readonly _onDidRequestSelectBrowserView = this._register(new Emitter<{ browserViewId: string; workspaceTabId: string }>());
 	readonly onDidRequestSelectBrowserView = this._onDidRequestSelectBrowserView.event;
 
+	private readonly _onDidChangeLayoutDrag = this._register(new Emitter<boolean>());
+	readonly onDidChangeLayoutDrag: Event<boolean> = this._onDidChangeLayoutDrag.event;
+
 	private auxWindow: IAuxiliaryWindow | undefined;
 	private windowDisposables: DisposableStore | undefined;
 	private mountDisposeFns: Array<() => void> = [];
@@ -191,6 +198,8 @@ export class AgentWindowService extends Disposable implements IAgentWindowServic
 	private readonly _dirtySideChats = new Set<string>();
 	/** >0 while a divider drag is active — pane clamping must not fight the drag. */
 	private _dividerDragActive = 0;
+	/** Drags that actually moved (a bare click or double-click must not blink the native views). */
+	private _movingDragCount = 0;
 	private _saveBoundsTimer: ReturnType<typeof setTimeout> | undefined;
 
 	/** Native browser view id → agents workspace tab id. */
@@ -228,6 +237,8 @@ export class AgentWindowService extends Disposable implements IAgentWindowServic
 		@IChatThreadService private readonly chatThreadService: IChatThreadService,
 		@IMainProcessService private readonly mainProcessService: IMainProcessService,
 		@IAgentWindowTerminalStore private readonly terminalStore: IAgentWindowTerminalStore,
+		@IAgentProjectWorkspaceService private readonly agentProjectWorkspaceService: IAgentProjectWorkspaceService,
+		@IFileService private readonly fileService: IFileService,
 	) {
 		super();
 
@@ -360,6 +371,7 @@ export class AgentWindowService extends Disposable implements IAgentWindowServic
 		// can't slip through and pull the user back to the IDE.
 		this.registerMainWorkbenchCommandGuard(aux, disposables);
 		this.registerBrowserAutomationHandlers(disposables);
+		this.registerWorkspaceWatchers(disposables);
 
 		try {
 			await aux.whenStylesHaveLoaded;
@@ -369,7 +381,8 @@ export class AgentWindowService extends Disposable implements IAgentWindowServic
 				return;
 			}
 
-			aux.window.document.title = 'Agents';
+			this.updateWindowTitle();
+			disposables.add(this.agentProjectWorkspaceService.onDidChangeState(() => this.updateWindowTitle()));
 
 			// CRITICAL: delegate the aux window's node factories to the MAIN window.
 			// `BrowserAuxiliaryWindowService.createContainer` overrides
@@ -668,12 +681,14 @@ export class AgentWindowService extends Disposable implements IAgentWindowServic
 		disposables.add(this.registerDividerDrag(aux, divider, sidebarPane, {
 			min: SIDEBAR_MIN,
 			max: SIDEBAR_MAX,
+			defaultWidth: SIDEBAR_DEFAULT,
 			save: (w) => this.saveSidebarWidth(w),
 			read: () => this.readSidebarWidth(),
 		}));
 		disposables.add(this.registerDividerDrag(aux, workspaceDivider, workspacePane, {
 			min: WORKSPACE_MIN,
 			max: WORKSPACE_MAX,
+			defaultWidth: WORKSPACE_DEFAULT,
 			invert: true,
 			save: (w) => this.saveWorkspaceWidth(w),
 			read: () => this.readWorkspaceWidth(),
@@ -704,6 +719,47 @@ export class AgentWindowService extends Disposable implements IAgentWindowServic
 			}
 		}, 3000);
 		disposables.add(toDisposable(() => clearTimeout(fallbackReveal)));
+	}
+
+	/**
+	 * Agent workspaces are independent of the IDE's workspace, so their folders are usually not
+	 * watched by anything. Without a watcher the Changes panel and the file explorer never learn
+	 * what the agent (or a shell command) did on disk. Watch the active folders for as long as
+	 * this window is open; AgentGitService and the explorer consume the resulting events.
+	 */
+	private registerWorkspaceWatchers(disposables: DisposableStore): void {
+		const watchers = disposables.add(new DisposableStore());
+		let watchedKey: string | undefined;
+		const apply = () => {
+			const folders = this.agentProjectWorkspaceService.getActiveFolders().filter(folder => folder.scheme === Schemas.file);
+			const key = folders.map(folder => folder.toString()).sort().join('\n');
+			if (key === watchedKey) {
+				return;
+			}
+			watchedKey = key;
+			watchers.clear();
+			for (const folder of folders) {
+				try {
+					watchers.add(this.fileService.watch(folder, { recursive: true, excludes: this.getWatcherExcludes(folder) }));
+				} catch (err) {
+					this.logService.warn(`[AgentWindow] failed to watch ${folder.toString()}`, err);
+				}
+			}
+		};
+		apply();
+		disposables.add(this.agentProjectWorkspaceService.onDidChangeState(apply));
+	}
+
+	/** Same exclusions the workbench applies to IDE workspace folders (`files.watcherExclude`). */
+	private getWatcherExcludes(folder: URI): string[] {
+		const config = this.configurationService.getValue<{ files?: { watcherExclude?: Record<string, boolean> } }>({ resource: folder });
+		const excludes: string[] = [];
+		for (const [pattern, enabled] of Object.entries(config?.files?.watcherExclude ?? {})) {
+			if (pattern && enabled === true) {
+				excludes.push(pattern);
+			}
+		}
+		return excludes;
 	}
 
 	/**
@@ -1304,16 +1360,17 @@ export class AgentWindowService extends Disposable implements IAgentWindowServic
 		aux: IAuxiliaryWindow,
 		divider: HTMLElement,
 		pane: HTMLElement,
-		opts: { min: number; max: number; invert?: boolean; save: (width: number) => void; read: () => number },
+		opts: { min: number; max: number; defaultWidth: number; invert?: boolean; save: (width: number) => void; read: () => number },
 	): IDisposable {
 		const store = new DisposableStore();
 		const win = aux.window;
-		const { min, max, invert = false, save } = opts;
+		const { min, max, defaultWidth, invert = false, save } = opts;
 		// A right-edge pane (workspace) grows when the divider is dragged LEFT, so the
 		// pointer delta is negated. The sidebar (left-edge pane) grows dragging right.
 		const sign = invert ? -1 : 1;
 
 		let dragging = false;
+		let announcedMove = false;
 		let startX = 0;
 		let startWidth = 0;
 
@@ -1324,6 +1381,12 @@ export class AgentWindowService extends Disposable implements IAgentWindowServic
 				return;
 			}
 			const delta = (e.clientX - startX) * sign;
+			if (!announcedMove && delta !== 0) {
+				announcedMove = true;
+				if (++this._movingDragCount === 1) {
+					this._onDidChangeLayoutDrag.fire(true);
+				}
+			}
 			const next = clamp(startWidth + delta);
 			pane.style.width = `${next}px`;
 			this.updateDividerAriaValue(divider, next, min, max);
@@ -1336,6 +1399,13 @@ export class AgentWindowService extends Disposable implements IAgentWindowServic
 			this._dividerDragActive = Math.max(0, this._dividerDragActive - 1);
 			divider.classList.remove('dragging');
 			save(pane.getBoundingClientRect().width);
+			if (announcedMove) {
+				announcedMove = false;
+				this._movingDragCount = Math.max(0, this._movingDragCount - 1);
+				if (this._movingDragCount === 0) {
+					this._onDidChangeLayoutDrag.fire(false);
+				}
+			}
 		};
 
 		const onDown = (e: PointerEvent) => {
@@ -1377,7 +1447,15 @@ export class AgentWindowService extends Disposable implements IAgentWindowServic
 			save(next);
 			EventHelper.stop(e, true);
 		};
+		// Double-click restores the default width (the usual splitter affordance).
+		const onDoubleClick = () => {
+			const next = clamp(defaultWidth);
+			pane.style.width = `${next}px`;
+			this.updateDividerAriaValue(divider, next, min, max);
+			save(next);
+		};
 		divider.addEventListener('pointerdown', onDown);
+		divider.addEventListener('dblclick', onDoubleClick);
 		// pointermove/pointerup are attached at the window level (not the divider) so the
 		// drag keeps tracking and ENDS correctly even if setPointerCapture above throws,
 		// is a no-op, or the pointer simply outruns the thin divider strip — mirroring the
@@ -1393,6 +1471,7 @@ export class AgentWindowService extends Disposable implements IAgentWindowServic
 
 		store.add(toDisposable(() => {
 			divider.removeEventListener('pointerdown', onDown);
+			divider.removeEventListener('dblclick', onDoubleClick);
 			win.removeEventListener('pointermove', onMove);
 			win.removeEventListener('pointerup', endDrag);
 			win.removeEventListener('pointercancel', endDrag);
@@ -1432,6 +1511,13 @@ export class AgentWindowService extends Disposable implements IAgentWindowServic
 		this._browserViews.clear();
 		this._pendingPanelRequests = [];
 		this._openTabChain = Promise.resolve();
+		// A window closed mid-drag never delivers its pointerup: without this reset the
+		// counter stays > 0 and the next window would skip its width clamping forever.
+		this._dividerDragActive = 0;
+		if (this._movingDragCount > 0) {
+			this._movingDragCount = 0;
+			this._onDidChangeLayoutDrag.fire(false);
+		}
 
 		// React unmount (below) runs every panel's effect cleanup. Without this
 		// flag the TerminalPanel cleanups would treat window teardown like a tab
@@ -1523,14 +1609,34 @@ export class AgentWindowService extends Disposable implements IAgentWindowServic
 			const thread = threadId ? this.chatThreadService.getThread(threadId) : undefined;
 			const firstUser = thread?.messages?.find(m => m.role === 'user');
 			const content = firstUser && firstUser.role === 'user' ? firstUser.displayContent : undefined;
-			if (content && content.trim()) {
-				title = content.trim();
+			// Collapse newlines/runs of whitespace so a multi-line prompt reads as one tidy line
+			// (the history list truncates the same text with CSS).
+			const singleLine = content?.replace(/\s+/g, ' ').trim();
+			if (singleLine) {
+				title = singleLine;
 			}
 		} catch { /* best-effort */ }
-		this.chatTitleEl.textContent = title;
-		this.chatTitleEl.title = title;
+		// This runs on every stream tick (the stream-state event fires per token); skip the
+		// DOM writes unless the title actually changed.
+		if (this.chatTitleEl.textContent !== title) {
+			this.chatTitleEl.textContent = title;
+			this.chatTitleEl.title = title;
+		}
 	}
 
+
+	/** "<workspace> — Agents": distinguishes this window in the OS window switcher / Mission Control. */
+	private updateWindowTitle(): void {
+		const doc = this.auxWindow?.window.document;
+		if (!doc) {
+			return;
+		}
+		const workspaceName = this.agentProjectWorkspaceService.getActiveWorkspace()?.name;
+		const title = workspaceName ? `${workspaceName} — Agents` : 'Agents';
+		if (doc.title !== title) {
+			doc.title = title;
+		}
+	}
 
 	private updateWorkspaceToggleState(): void {
 		const collapsed = this.shellEl?.classList.contains('workspace-collapsed') ?? false;

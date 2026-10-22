@@ -15,6 +15,7 @@ import {
 	filterThreadsByWorkspaceId,
 	findNewestThreadIdInExactScope,
 	getActiveFoldersAsUris,
+	isGitStatusRelevantPath,
 	isUriInsideFolders,
 	isValidWorkspaceFolderName,
 	normalizeFolderUriKey,
@@ -207,6 +208,28 @@ suite('agentWorkspaceHelpers', () => {
 		}));
 		assert.strictEqual(valid.activeWorkspaceId, 'abc');
 		assert.deepStrictEqual(valid.recents, ['abc']);
+	});
+
+	test('isGitStatusRelevantPath keeps working-tree and meaningful .git changes, drops git-internal churn', () => {
+		// working tree
+		assert.strictEqual(isGitStatusRelevantPath('src/app.ts'), true);
+		assert.strictEqual(isGitStatusRelevantPath('/README.md'), true);
+		assert.strictEqual(isGitStatusRelevantPath('docs/.gitignore'), true);
+		assert.strictEqual(isGitStatusRelevantPath('.github/workflows/ci.yml'), true);
+		// state that changes `git status`
+		assert.strictEqual(isGitStatusRelevantPath('/.git/index'), true);
+		assert.strictEqual(isGitStatusRelevantPath('/.git/HEAD'), true);
+		assert.strictEqual(isGitStatusRelevantPath('/.git/refs/heads/main'), true);
+		assert.strictEqual(isGitStatusRelevantPath('/.git/packed-refs'), true);
+		// churn produced by git itself, including while we read the repo
+		assert.strictEqual(isGitStatusRelevantPath('/.git/index.lock'), false);
+		assert.strictEqual(isGitStatusRelevantPath('/.git/objects/ab/cdef'), false);
+		assert.strictEqual(isGitStatusRelevantPath('/.git/logs/HEAD'), false);
+		assert.strictEqual(isGitStatusRelevantPath('/.git/FETCH_HEAD'), false);
+		assert.strictEqual(isGitStatusRelevantPath('/.git'), false);
+		// Windows separators
+		assert.strictEqual(isGitStatusRelevantPath('\\.git\\objects\\ab'), false);
+		assert.strictEqual(isGitStatusRelevantPath('\\.git\\index'), true);
 	});
 
 	test('EMPTY_AGENT_WORKSPACE_STATE is No Repo', () => {

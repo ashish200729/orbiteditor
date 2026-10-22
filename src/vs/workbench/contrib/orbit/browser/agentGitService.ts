@@ -16,6 +16,9 @@ import { IVoidSettingsService } from '../common/orbitSettingsService.js';
 import { IConvertToLLMMessageService } from './convertToLLMMessageService.js';
 import { ILLMMessageService } from '../common/sendLLMMessageService.js';
 import { INativeHostService } from '../../../../platform/native/common/native.js';
+import { FileChangesEvent, IFileService } from '../../../../platform/files/common/files.js';
+import { extUriBiasedIgnorePathCase } from '../../../../base/common/resources.js';
+import { isGitStatusRelevantPath } from '../common/agentWorkspaceHelpers.js';
 import { gitCommitMessage_systemMessage, gitCommitMessage_userMessage } from '../common/prompt/prompts.js';
 import { CancellationError } from '../../../../base/common/errors.js';
 import {
@@ -102,6 +105,8 @@ class AgentGitService extends Disposable implements IAgentGitService {
 	private readonly repoListeners = this._register(new DisposableStore());
 	private readonly listenersByRepo = new Map<ISCMRepository, DisposableStore>();
 	private readonly debouncer: RunOnceScheduler;
+	/** Working-tree changes arrive in bursts (builds, installs, agent edits) — coalesce them. */
+	private readonly fsDebouncer: RunOnceScheduler;
 	private cachedRoot: { path: string; root: string | null } | null = null;
 
 	constructor(
@@ -112,11 +117,19 @@ class AgentGitService extends Disposable implements IAgentGitService {
 		@IConvertToLLMMessageService private readonly convertToLLMMessageService: IConvertToLLMMessageService,
 		@ILLMMessageService private readonly llmMessageService: ILLMMessageService,
 		@INativeHostService nativeHostService: INativeHostService,
+		@IFileService private readonly fileService: IFileService,
 	) {
 		super();
 		this.channel = ProxyChannel.toService<IVoidSCMService>(mainProcessService.getChannel('void-channel-scm'), { context: nativeHostService.windowId });
 
 		this.debouncer = this._register(new RunOnceScheduler(() => this._onDidChange.fire(), 250));
+		this.fsDebouncer = this._register(new RunOnceScheduler(() => this._onDidChange.fire(), 500));
+
+		// Agent workspaces are independent of the IDE's workspace, so their repositories are
+		// usually unknown to ISCMService (hooked below) and would never signal a change. The
+		// working tree itself is the reliable source: AgentWindowService watches the active
+		// folders while the window is open, and we turn the resulting events into the same signal.
+		this._register(this.fileService.onDidFilesChange(e => this.onFilesChanged(e)));
 
 		this._register(this.agentProjectWorkspaceService.onDidChangeState(() => {
 			this.cachedRoot = null;
@@ -153,6 +166,27 @@ class AgentGitService extends Disposable implements IAgentGitService {
 		store.add(provider.onDidChangeResourceGroups(() => this.scheduleChange()));
 		this.listenersByRepo.set(repo, store);
 		this.repoListeners.add(store);
+	}
+
+	private onFilesChanged(e: FileChangesEvent): void {
+		if (this.fsDebouncer.isScheduled()) {
+			return;
+		}
+		const roots = this.agentProjectWorkspaceService.getActiveFolders();
+		if (roots.length === 0) {
+			return;
+		}
+		for (const changes of [e.rawAdded, e.rawUpdated, e.rawDeleted]) {
+			for (const resource of changes) {
+				for (const root of roots) {
+					if (extUriBiasedIgnorePathCase.isEqualOrParent(resource, root)
+						&& isGitStatusRelevantPath(resource.path.slice(root.path.length))) {
+						this.fsDebouncer.schedule();
+						return;
+					}
+				}
+			}
+		}
 	}
 
 	private scheduleChange(): void {

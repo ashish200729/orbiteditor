@@ -404,7 +404,7 @@ export const RunnersSection = () => {
 				Pair a self-hosted Orbit Runner. All configured BYOK providers
 				sync automatically when the runner connects — you do not need the form below for normal use.
 				Remote tasks send only providerId + modelId (never API keys).
-				Orbit Provider / OAuth / native Anthropic / Google Vertex models cannot run on the runner — switch Chat to a BYOK or OpenAI-Compatible model.
+				OAuth / native Anthropic / Google Vertex models cannot run on the runner — switch Chat to a BYOK or OpenAI-Compatible model.
 			</p>
 
 			<div className='rounded-lg border border-void-border-3 bg-void-bg-2 p-3 flex flex-col gap-2.5'>

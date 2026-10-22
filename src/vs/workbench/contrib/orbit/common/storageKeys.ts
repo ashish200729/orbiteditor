@@ -25,6 +25,7 @@ export const OPT_OUT_KEY = 'void.app.optOutAll'
 // rehydrated as PAUSED so a cold thread never auto-fires. Stored as { [threadId]: QueuedUserMessage[] }.
 export const QUEUED_MESSAGES_STORAGE_KEY = 'orbit.chatQueuedMessagesI'
 
+// Legacy: encrypted GitHub credentials of the removed hosted Orbit Provider. Only used to delete them on startup.
 export const GITHUB_AUTH_STORAGE_KEY = 'orbit.githubAuth.credentials'
 
 /**

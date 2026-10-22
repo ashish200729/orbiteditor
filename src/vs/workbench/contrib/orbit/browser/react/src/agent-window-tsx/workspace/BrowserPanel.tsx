@@ -337,7 +337,13 @@ export const BrowserPanel = ({ tab, isActive, overlayOpen = false, setTitle, clo
 			try {
 				screenshot = await bv.screenshot(id);
 			} catch { /* screenshot is best-effort */ }
-			chatThreadService.addNewStagingSelection({
+			// `addNewStagingSelection` targets the IDE's current thread; the element belongs in the
+			// Agents window's own chat, which is where the user is working.
+			const agentThreadId = chatThreadService.getSelectedThreadId(true);
+			if (!agentThreadId) {
+				throw new Error('No agent chat is open to attach the element to.');
+			}
+			chatThreadService.addThreadStagingSelection(agentThreadId, {
 				type: 'BrowserElement',
 				selector: data.selector,
 				selectorChain: data.selectorChain,
@@ -369,7 +375,7 @@ export const BrowserPanel = ({ tab, isActive, overlayOpen = false, setTitle, clo
 					const result = await bv.runPicker(id);
 					if (result.picked && result.data) {
 						await dispatchPickToChat(result.data);
-						notificationService.info('Element added to chat. Switch to the chat to reference it.');
+						notificationService.info('Element added to the chat composer.');
 					}
 				} catch (e) {
 					if (!disposed) {

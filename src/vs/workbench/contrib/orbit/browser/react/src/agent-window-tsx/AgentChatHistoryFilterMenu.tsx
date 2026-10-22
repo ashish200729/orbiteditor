@@ -15,7 +15,7 @@ import {
 	PencilLine,
 	Type,
 } from 'lucide-react';
-import { getConnectedDocument, getConnectedWindow } from '../util/connectedWindow.js';
+import { getConnectedDocument, getConnectedWindow, getThemedPortalHost } from '../util/connectedWindow.js';
 import { useIsDark } from '../util/services.js';
 import {
 	AgentHistoryFilterMode,
@@ -216,7 +216,6 @@ export const AgentChatHistoryFilterMenu = ({
 		return null;
 	}
 
-	const doc = getConnectedDocument(anchorRef.current ?? undefined);
 	const surfaceStyle: React.CSSProperties = {
 		backgroundColor: isDark ? '#252526' : '#ffffff',
 		opacity: 1,
@@ -396,6 +395,6 @@ export const AgentChatHistoryFilterMenu = ({
 				</div>
 			)}
 		</>,
-		doc.body
+		getThemedPortalHost(anchorRef.current)
 	);
 };

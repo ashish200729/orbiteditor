@@ -3,7 +3,7 @@
  *  Licensed under the Apache License, Version 2.0. See LICENSE.txt for more information.
  *--------------------------------------------------------------------------------------*/
 
-export type OrbitSettingsTab = 'account' | 'models' | 'localProviders' | 'providers' | 'featureOptions' | 'mcp' | 'general' | 'skills' | 'agents' | 'all'
+export type OrbitSettingsTab = 'models' | 'localProviders' | 'providers' | 'featureOptions' | 'mcp' | 'general' | 'skills' | 'agents' | 'all'
 
 let pendingSettingsTab: OrbitSettingsTab | null = null
 

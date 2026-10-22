@@ -10,7 +10,7 @@ import { URI } from '../../../../../../../base/common/uri.js';
 import { isMacintosh, isWindows } from '../../../../../../../base/common/platform.js';
 import { isValidWorkspaceFolderName, normalizeFolderUriKey } from '../../../../common/agentWorkspaceHelpers.js';
 import { useAccessor, useAgentWorkspaceState } from '../util/services.js';
-import { getConnectedDocument, getConnectedWindow } from '../util/connectedWindow.js';
+import { getConnectedDocument, getConnectedWindow, getThemedPortalHost } from '../util/connectedWindow.js';
 
 export type AgentWorkspacePickerProps = {
 	open: boolean;
@@ -446,7 +446,6 @@ export const AgentWorkspacePicker = ({ open, onClose, anchorRef }: AgentWorkspac
 		return null;
 	}
 
-	const doc = getConnectedDocument(anchorRef?.current ?? undefined);
 	const showEmptyState = recents !== null && filteredRecents.length === 0 && search.trim().length > 0;
 	const isLoadingRecents = recents === null && !search;
 
@@ -614,6 +613,6 @@ export const AgentWorkspacePicker = ({ open, onClose, anchorRef }: AgentWorkspac
 				})}
 			</div>
 		</div>,
-		doc.body
+		getThemedPortalHost(anchorRef?.current)
 	);
 };

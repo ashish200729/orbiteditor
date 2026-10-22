@@ -8,7 +8,7 @@
 
 import { IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
-import { EventLLMMessageOnTextParams, EventLLMMessageOnErrorParams, EventLLMMessageOnFinalMessageParams, MainSendLLMMessageParams, AbortRef, SendLLMMessageParams, MainLLMMessageAbortParams, ModelListParams, EventModelListOnSuccessParams, EventModelListOnErrorParams, OllamaModelResponse, OpenaiCompatibleModelResponse, OrbitProviderModelResponse, ClinePassModelResponse, MainModelListParams, MainOrbitProviderListParams, MainClinePassProviderListParams, } from '../common/sendLLMMessageTypes.js';
+import { EventLLMMessageOnTextParams, EventLLMMessageOnErrorParams, EventLLMMessageOnFinalMessageParams, MainSendLLMMessageParams, AbortRef, SendLLMMessageParams, MainLLMMessageAbortParams, ModelListParams, EventModelListOnSuccessParams, EventModelListOnErrorParams, OllamaModelResponse, OpenaiCompatibleModelResponse, ClinePassModelResponse, MainModelListParams, MainClinePassProviderListParams, } from '../common/sendLLMMessageTypes.js';
 import { sendLLMMessage } from './llmMessage/sendLLMMessage.js'
 import { IMetricsService } from '../common/metricsService.js';
 import { sendLLMMessageToProviderImplementation } from './llmMessage/sendLLMMessage.impl.js';
@@ -38,16 +38,12 @@ export class LLMMessageChannel implements IServerChannel {
 			success: new Emitter<EventModelListOnSuccessParams<OpenaiCompatibleModelResponse>>(),
 			error: new Emitter<EventModelListOnErrorParams<OpenaiCompatibleModelResponse>>(),
 		},
-		orbit: {
-			success: new Emitter<EventModelListOnSuccessParams<OrbitProviderModelResponse>>(),
-			error: new Emitter<EventModelListOnErrorParams<OrbitProviderModelResponse>>(),
-		},
 		clinePass: {
 			success: new Emitter<EventModelListOnSuccessParams<ClinePassModelResponse>>(),
 			error: new Emitter<EventModelListOnErrorParams<ClinePassModelResponse>>(),
 		},
 	} satisfies {
-		[providerName in 'ollama' | 'openaiCompat' | 'orbit' | 'clinePass']: {
+		[providerName in 'ollama' | 'openaiCompat' | 'clinePass']: {
 			success: Emitter<EventModelListOnSuccessParams<any>>,
 			error: Emitter<EventModelListOnErrorParams<any>>,
 		}
@@ -69,8 +65,6 @@ export class LLMMessageChannel implements IServerChannel {
 		else if (event === 'onError_list_ollama') return this.listEmitters.ollama.error.event;
 		else if (event === 'onSuccess_list_openAICompatible') return this.listEmitters.openaiCompat.success.event;
 		else if (event === 'onError_list_openAICompatible') return this.listEmitters.openaiCompat.error.event;
-		else if (event === 'onSuccess_list_orbit') return this.listEmitters.orbit.success.event;
-		else if (event === 'onError_list_orbit') return this.listEmitters.orbit.error.event;
 		else if (event === 'onSuccess_list_clinePass') return this.listEmitters.clinePass.success.event;
 		else if (event === 'onError_list_clinePass') return this.listEmitters.clinePass.error.event;
 
@@ -91,9 +85,6 @@ export class LLMMessageChannel implements IServerChannel {
 			}
 			else if (command === 'openAICompatibleList') {
 				this._callOpenAICompatibleList(params)
-			}
-			else if (command === 'orbitProviderList') {
-				this._callOrbitProviderList(params)
 			}
 			else if (command === 'clinePassProviderList') {
 				this._callClinePassProviderList(params)
@@ -189,17 +180,6 @@ export class LLMMessageChannel implements IServerChannel {
 			onError: (p) => { emitters.error.fire({ requestId, ...p }); },
 		}
 		sendLLMMessageToProviderImplementation[providerName].list(mainThreadParams)
-	}
-
-	_callOrbitProviderList = (params: MainOrbitProviderListParams<OrbitProviderModelResponse>) => {
-		const { requestId } = params
-		const emitters = this.listEmitters.orbit
-		const mainThreadParams: ModelListParams<OrbitProviderModelResponse> = {
-			...params,
-			onSuccess: (p) => { emitters.success.fire({ requestId, ...p }); },
-			onError: (p) => { emitters.error.fire({ requestId, ...p }); },
-		}
-		sendLLMMessageToProviderImplementation.orbit.list!(mainThreadParams)
 	}
 
 	_callClinePassProviderList = (params: MainClinePassProviderListParams<ClinePassModelResponse>) => {

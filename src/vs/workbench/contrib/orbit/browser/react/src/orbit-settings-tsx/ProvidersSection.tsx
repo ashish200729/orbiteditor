@@ -7,7 +7,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronDown, Eye, EyeOff, RefreshCw } from 'lucide-react'
 import ErrorBoundary from '../sidebar-tsx/ErrorBoundary.js'
 import { VoidButtonBgDarken, VoidSimpleInputBox } from '../util/inputs.js'
-import { useAccessor, useOpenAiCodexAuthState, useOrbitProviderAuthState, useSettingsState, useXAiGrokAuthState, useClinePassAuthState } from '../util/services.js'
+import { useAccessor, useOpenAiCodexAuthState, useSettingsState, useXAiGrokAuthState, useClinePassAuthState } from '../util/services.js'
 import { ChatMarkdownRender } from '../markdown/ChatMarkdownRender.js'
 import { WarningBox } from './WarningBox.js'
 import { isWindows } from '../../../../../../../base/common/platform.js'
@@ -32,7 +32,6 @@ import {
 	VOID_XAI_GROK_SIGN_IN_ACTION_ID,
 	VOID_XAI_GROK_SIGN_OUT_ACTION_ID,
 } from '../../../actionIDs.js'
-import { OrbitAuthPanel } from './OrbitAuthPanel.js'
 
 const cloudProviderNames: ProviderName[] = [...nonlocalProviderNames]
 
@@ -49,12 +48,8 @@ const providerStatusLabel = (
 	isConfigured: boolean,
 	codexAuthenticated: boolean,
 	xAiAuthenticated: boolean,
-	orbitAuthenticated: boolean,
 	clinePassAuthenticated: boolean,
 ): string => {
-	if (providerName === 'orbit') {
-		return orbitAuthenticated ? 'Connected' : 'Not connected'
-	}
 	if (providerName === 'openAICodex') {
 		return codexAuthenticated ? 'Connected' : 'Not connected'
 	}
@@ -68,9 +63,6 @@ const providerStatusLabel = (
 }
 
 const providerSubtitle = (providerName: ProviderName): string => {
-	if (providerName === 'orbit') {
-		return 'GitHub sign-in · managed by Orbit Provider'
-	}
 	if (providerName === 'openAICodex') {
 		return 'ChatGPT Plus or Pro subscription'
 	}
@@ -403,9 +395,6 @@ const ProviderAccordionPanel = ({ providerName }: { providerName: ProviderName }
 	if (providerName === 'openAICodex') {
 		return <OpenAICodexProviderPanel />
 	}
-	if (providerName === 'orbit') {
-		return <OrbitAuthPanel />
-	}
 	if (providerName === 'xAISuperGrok') {
 		return <XAiSuperGrokProviderPanel />
 	}
@@ -449,14 +438,11 @@ const ProviderAccordionItem = ({
 	const voidSettingsState = useSettingsState()
 	const authState = useOpenAiCodexAuthState()
 	const xAiAuthState = useXAiGrokAuthState()
-	const orbitAuthState = useOrbitProviderAuthState()
 	const clinePassAuthState = useClinePassAuthState()
 
 	const { title: providerTitle } = displayInfoOfProviderName(providerName)
 	const isConfigured = voidSettingsState.settingsOfProvider[providerName]._didFillInProviderSettings
-	const isConnected = providerName === 'orbit'
-		? orbitAuthState.isAuthenticated
-		: providerName === 'openAICodex'
+	const isConnected = providerName === 'openAICodex'
 		? authState.isAuthenticated
 		: providerName === 'xAISuperGrok'
 			? xAiAuthState.isAuthenticated
@@ -464,10 +450,10 @@ const ProviderAccordionItem = ({
 			? clinePassAuthState.isAuthenticated
 		: !!isConfigured
 
-	const statusLabel = providerStatusLabel(providerName, !!isConfigured, authState.isAuthenticated, xAiAuthState.isAuthenticated, orbitAuthState.isAuthenticated, clinePassAuthState.isAuthenticated)
+	const statusLabel = providerStatusLabel(providerName, !!isConfigured, authState.isAuthenticated, xAiAuthState.isAuthenticated, clinePassAuthState.isAuthenticated)
 
 	return (
-		<div className={`@@provider-accordion${isOpen ? ' @@provider-accordion--open' : ''}${isConnected && providerName !== 'orbit' ? ' @@provider-accordion--connected' : ''}`}>
+		<div className={`@@provider-accordion${isOpen ? ' @@provider-accordion--open' : ''}${isConnected ? ' @@provider-accordion--connected' : ''}`}>
 			<button
 				type="button"
 				className="@@provider-accordion-trigger"
@@ -478,12 +464,10 @@ const ProviderAccordionItem = ({
 					<div className="@@provider-accordion-title">{providerTitle}</div>
 					<div className="@@provider-accordion-subtitle">{providerSubtitle(providerName)}</div>
 				</div>
-				{providerName !== 'orbit' ? (
-					<div className={`@@provider-accordion-status${isConnected ? ' @@provider-accordion-status--connected' : ''}`}>
-						<span className="@@provider-accordion-status-dot" aria-hidden="true" />
-						<span className="@@provider-accordion-status-label">{statusLabel}</span>
-					</div>
-				) : null}
+				<div className={`@@provider-accordion-status${isConnected ? ' @@provider-accordion-status--connected' : ''}`}>
+					<span className="@@provider-accordion-status-dot" aria-hidden="true" />
+					<span className="@@provider-accordion-status-label">{statusLabel}</span>
+				</div>
 				<ChevronDown className="@@provider-accordion-chevron" size={14} aria-hidden="true" />
 			</button>
 			{isOpen && (
@@ -545,57 +529,6 @@ const LocalSetupCollapsible = () => {
 	)
 }
 
-const OrbitProviderFeaturedSection = ({
-	expanded,
-	onToggle,
-}: {
-	expanded: Set<ProviderName>
-	onToggle: (providerName: ProviderName) => void
-}) => {
-	const orbitAuthState = useOrbitProviderAuthState()
-	const isOpen = expanded.has('orbit')
-
-	return (
-		<section className="@@provider-orbit-featured">
-			<div className="@@provider-orbit-featured-header">
-				<div className="@@provider-orbit-featured-heading">
-					<h3 className="@@provider-orbit-featured-title">Orbit Provider</h3>
-					<p className="@@provider-orbit-featured-desc">
-						Sign in with GitHub to use managed models. No API key required — manage billing and usage from your account page.
-					</p>
-				</div>
-				<div className={`@@provider-orbit-featured-status${orbitAuthState.isAuthenticated ? ' @@provider-orbit-featured-status--connected' : ''}`}>
-					<span className="@@provider-orbit-featured-status-dot" aria-hidden="true" />
-					<span>{orbitAuthState.isAuthenticated ? 'Connected' : 'Not connected'}</span>
-				</div>
-			</div>
-			<div className={`@@provider-orbit-featured-card${isOpen ? ' @@provider-orbit-featured-card--open' : ''}`}>
-				<button
-					type="button"
-					className="@@provider-orbit-featured-trigger"
-					onClick={() => onToggle('orbit')}
-					aria-expanded={isOpen}
-				>
-					<div className="@@provider-orbit-featured-trigger-text">
-						<span className="@@provider-orbit-featured-trigger-title">Account &amp; billing</span>
-						<span className="@@provider-orbit-featured-trigger-subtitle">
-							{orbitAuthState.isAuthenticated
-								? 'Manage sign-in, wallet balance, and model refresh'
-								: 'Connect GitHub to unlock Orbit Provider models'}
-						</span>
-					</div>
-					<ChevronDown className="@@provider-orbit-featured-chevron" size={14} aria-hidden="true" />
-				</button>
-				{isOpen ? (
-					<div className="@@provider-orbit-featured-panel">
-						<OrbitAuthPanel />
-					</div>
-				) : null}
-			</div>
-		</section>
-	)
-}
-
 const ProviderSectionGroup = ({
 	title,
 	description,
@@ -634,7 +567,7 @@ export const ProvidersSection = () => {
 		},
 	], [])
 
-	const [expanded, setExpanded] = useState<Set<ProviderName>>(() => new Set(['orbit']))
+	const [expanded, setExpanded] = useState<Set<ProviderName>>(() => new Set())
 
 	const toggleProvider = useCallback((providerName: ProviderName) => {
 		setExpanded((prev) => {
@@ -653,12 +586,11 @@ export const ProvidersSection = () => {
 			<div className='@@settings-page-header'>
 				<h2 className='@@settings-page-title'>Providers</h2>
 				<div className='@@settings-page-desc'>
-					Connect Orbit Provider or bring your own API keys and local runtimes. Configure credentials here, then choose models on the Models tab.
+					Bring your own API keys or run models locally. Configure credentials here, then choose models on the Models tab.
 				</div>
 			</div>
 
 			<div className="@@providers-sections">
-				<OrbitProviderFeaturedSection expanded={expanded} onToggle={toggleProvider} />
 				{sections.map((section) => (
 					<ProviderSectionGroup
 						key={section.id}

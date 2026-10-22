@@ -24,6 +24,7 @@ const AgentWindowChat = () => {
 	const workspaceState = useAgentWorkspaceState();
 	const threadsState = useChatThreadsState();
 	const chatThreadService = accessor.get('IChatThreadService');
+	const agentWindowService = accessor.get('IAgentWindowService');
 	const threadId = threadsState.agentWindowThreadId;
 	const selected = threadId ? threadsState.allThreads[threadId] : undefined;
 	const selectedAgentWorkspaceId = selected?.agentWorkspaceId;
@@ -41,6 +42,34 @@ const AgentWindowChat = () => {
 	const ready = !!threadId
 		&& !!selected
 		&& selectedAgentWorkspaceId === workspaceState.activeWorkspaceId;
+
+	// A freshly opened window has no focus target: put the caret in the composer once
+	// the first thread is on screen so the user can start typing immediately. Once per
+	// window — later thread/workspace switches manage their own focus.
+	const didInitialFocusRef = React.useRef(false);
+	React.useEffect(() => {
+		if (!ready || didInitialFocusRef.current) {
+			return;
+		}
+		didInitialFocusRef.current = true;
+		const focusComposer = () => { void chatThreadService.focusSelectedChat(true); };
+		const auxDoc = agentWindowService.getAuxiliaryDomWindow()?.document;
+		if (!auxDoc || auxDoc.visibilityState === 'visible') {
+			focusComposer();
+			return;
+		}
+		// The window opens hidden (deferShow) until its first paint is ready. Focusing now
+		// would raise it early and reintroduce the stale white first frame, so wait until
+		// it is actually shown.
+		const onVisibilityChange = () => {
+			if (auxDoc.visibilityState === 'visible') {
+				auxDoc.removeEventListener('visibilitychange', onVisibilityChange);
+				focusComposer();
+			}
+		};
+		auxDoc.addEventListener('visibilitychange', onVisibilityChange);
+		return () => auxDoc.removeEventListener('visibilitychange', onVisibilityChange);
+	}, [ready, chatThreadService, agentWindowService]);
 
 	if (!ready) {
 		// Lightweight placeholder (R4): avoids a blank flash while

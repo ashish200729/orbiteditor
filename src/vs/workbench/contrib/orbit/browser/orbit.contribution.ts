@@ -45,7 +45,6 @@ import './orbitUpdateActions.js'
 import './openAiCodexActions.js'
 import './clinePassAuthActions.js'
 import './xAiGrokActions.js'
-import './orbitProviderAuthActions.js'
 
 import './convertToLLMMessageWorkbenchContrib.js'
 
@@ -123,8 +122,6 @@ import '../common/metricsService.js'
 import '../common/orbitUpdateService.js'
 import '../common/openAiCodexAuthService.js'
 import '../common/xAiGrokAuthService.js'
-import '../common/githubAuthService.js'
-import '../common/orbitProviderAuthService.js'
 
 // model service
 import '../common/orbitModelService.js'

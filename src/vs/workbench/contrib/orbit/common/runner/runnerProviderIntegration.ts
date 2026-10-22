@@ -11,9 +11,8 @@
 import { displayInfoOfProviderName, type ProviderName, type SettingsOfProvider, type VoidStatefulModelInfo } from '../orbitSettingsTypes.js';
 import { getModelCapabilities } from '../modelCapabilities.js';
 
-/** Providers that need Orbit cloud / OAuth and cannot be used for remote v1. */
+/** Providers that need OAuth and cannot be used for remote v1. */
 export const RUNNER_REMOTE_UNSUPPORTED_PROVIDERS = new Set<ProviderName>([
-	'orbit',
 	'clinePass',
 	'openAICodex',
 	'xAISuperGrok',
@@ -667,7 +666,7 @@ export function explainModelAvailability(
 		return {
 			ok: false,
 			code: 'orbit_provider_remote_unavailable',
-			message: 'Orbit Provider / OAuth models cannot run on Self-hosted Runner (they need Orbit cloud tokens). Switch the Chat model picker to a BYOK provider already on the runner (DeepSeek, OpenAI, OpenRouter, Groq, OpenAI-Compatible, …), or Local.',
+			message: 'OAuth models cannot run on Self-hosted Runner (they need tokens that only exist on this machine). Switch the Chat model picker to a BYOK provider already on the runner (DeepSeek, OpenAI, OpenRouter, Groq, OpenAI-Compatible, …), or Local.',
 		};
 	}
 	if (!catalog) {

@@ -2,7 +2,7 @@
 	"nameShort": "Orbit",
 	"nameLong": "Orbit",
 	"version": "1.95.0",
-	"orbitVersion": "0.5.3",
+	"orbitVersion": "0.5.4",
 	"orbitRelease": "0107",
 	"downloadUrl": "https://github.com/ashish200729/orbiteditor/releases/latest",
 	"applicationName": "orbit",
@@ -49,11 +49,7 @@
 		"https://www.orbiteditorai.com",
 		"https://orbiteditor.com",
 		"https://orbiteditor.dev",
-		"https://api.orbiteditorai.com",
-		"https://api.orbiteditor.com",
 		"https://github.com/ashish200729/orbiteditor",
 		"https://ollama.com"
-	],
-	"orbitApiUrl": "https://api.orbiteditorai.com",
-	"orbitApiUrlDev": "https://api.orbiteditorai.com"
+	]
 }

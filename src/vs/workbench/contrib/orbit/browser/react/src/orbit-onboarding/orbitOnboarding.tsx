@@ -4,13 +4,13 @@
  *--------------------------------------------------------------------------------------*/
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useAccessor, useIsDark, useSettingsState, useOpenAiCodexAuthState, useOrbitProviderAuthState, useXAiGrokAuthState } from '../util/services.js';
+import { useAccessor, useIsDark, useSettingsState, useOpenAiCodexAuthState, useXAiGrokAuthState } from '../util/services.js';
 import { Check, ChevronRight } from 'lucide-react';
 import { ColorScheme } from '../../../../../../../platform/theme/common/theme.js';
 import { ConfigurationTarget } from '../../../../../../../platform/configuration/common/configuration.js';
 import ErrorBoundary from '../sidebar-tsx/ErrorBoundary.js';
 import { isLinux } from '../../../../../../../base/common/platform.js';
-import { VOID_OPENAI_CODEX_SIGN_IN_ACTION_ID, VOID_ORBIT_PROVIDER_SIGN_IN_ACTION_ID, VOID_XAI_GROK_SIGN_IN_ACTION_ID } from '../../../actionIDs.js';
+import { VOID_OPENAI_CODEX_SIGN_IN_ACTION_ID, VOID_XAI_GROK_SIGN_IN_ACTION_ID } from '../../../actionIDs.js';
 import { VOID_OPEN_SETTINGS_ACTION_ID } from '../../../orbitSettingsPane.js';
 
 const OVERRIDE_VALUE = false
@@ -347,10 +347,9 @@ const ProviderOptionButton = ({ label, sublabel, connected, onClick }: { label: 
 const ProviderConnectPage = ({ setPageIndex }: { pageIndex: number; setPageIndex: (index: number) => void }) => {
 	const accessor = useAccessor()
 	const commandService = accessor.get('ICommandService')
-	const orbitAuth = useOrbitProviderAuthState()
 	const codexAuth = useOpenAiCodexAuthState()
 	const xAiAuth = useXAiGrokAuthState()
-	const anyConnected = orbitAuth.isAuthenticated || codexAuth.isAuthenticated || xAiAuth.isAuthenticated
+	const anyConnected = codexAuth.isAuthenticated || xAiAuth.isAuthenticated
 
 	return (
 		<div className="flex flex-col items-center gap-6 px-4 w-full max-w-md mx-auto text-center">
@@ -359,12 +358,6 @@ const ProviderConnectPage = ({ setPageIndex }: { pageIndex: number; setPageIndex
 				<p className="text-void-fg-3 text-sm mt-2">Sign in or add an API key so Orbit's agents can run. You can change this anytime in Settings.</p>
 			</FadeIn>
 			<div className="w-full flex flex-col gap-3">
-				<ProviderOptionButton
-					label="Sign in with GitHub"
-					sublabel="Use Orbit Provider — no API key needed"
-					connected={orbitAuth.isAuthenticated}
-					onClick={() => { void commandService.executeCommand(VOID_ORBIT_PROVIDER_SIGN_IN_ACTION_ID) }}
-				/>
 				<ProviderOptionButton
 					label="Sign in with ChatGPT"
 					sublabel="Use your ChatGPT Plus or Pro subscription"
@@ -379,7 +372,7 @@ const ProviderConnectPage = ({ setPageIndex }: { pageIndex: number; setPageIndex
 				/>
 				<ProviderOptionButton
 					label="Add an API key"
-					sublabel="Anthropic, OpenAI, Gemini, OpenRouter, and more"
+					sublabel="Anthropic, OpenAI, Gemini, OpenRouter — or a local model like Ollama"
 					onClick={() => { void commandService.executeCommand(VOID_OPEN_SETTINGS_ACTION_ID) }}
 				/>
 			</div>

@@ -4020,6 +4020,17 @@ We only need to do it for files that were edited since `from`, ie files between 
 
 	deleteThread(threadId: string): void {
 		const { allThreads: currentThreads, currentThreadId } = this.state
+		// A running turn must not outlive its thread: cancel the in-flight LLM request / tool call
+		// and drop the stream state, otherwise a deleted conversation keeps editing files and
+		// running commands in the background with nothing left in the UI to stop it.
+		const runningState = this.streamState[threadId]
+		if (runningState?.isRunning !== undefined) {
+			const pendingInterrupt = runningState.interrupt
+			if (pendingInterrupt && pendingInterrupt !== 'not_needed') {
+				void pendingInterrupt.then(interrupt => interrupt()).catch(() => { /* already finished */ })
+			}
+			this._setStreamState(threadId, undefined)
+		}
 		void this._getRemoteTaskService().removeTasksForThread(threadId)
 		void this._terminalToolService.killShellsForThread(threadId);
 		if (this._turnSequenceOfThread[threadId] !== undefined) {

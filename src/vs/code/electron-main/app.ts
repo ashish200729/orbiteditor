@@ -68,6 +68,8 @@ import { ISignService } from '../../platform/sign/common/sign.js';
 import { IStateService } from '../../platform/state/node/state.js';
 import { StorageDatabaseChannel } from '../../platform/storage/electron-main/storageIpc.js';
 import { ApplicationStorageMainService, IApplicationStorageMainService, IStorageMainService, StorageMainService } from '../../platform/storage/electron-main/storageMainService.js';
+import { StorageScope } from '../../platform/storage/common/storage.js';
+import { GITHUB_AUTH_STORAGE_KEY } from '../../workbench/contrib/orbit/common/storageKeys.js';
 import { resolveCommonProperties } from '../../platform/telemetry/common/commonProperties.js';
 import { ITelemetryService, TelemetryLevel } from '../../platform/telemetry/common/telemetry.js';
 import { TelemetryAppenderClient } from '../../platform/telemetry/common/telemetryIpc.js';
@@ -133,16 +135,11 @@ import { IVoidUpdateService } from '../../workbench/contrib/orbit/common/orbitUp
 import { IOpenAiCodexAuthService } from '../../workbench/contrib/orbit/common/openAiCodexAuthService.js';
 import { IClinePassAuthService } from '../../workbench/contrib/orbit/common/clinePassAuthService.js';
 import { IXAiGrokAuthService } from '../../workbench/contrib/orbit/common/xAiGrokAuthService.js';
-import { IGitHubAuthService } from '../../workbench/contrib/orbit/common/githubAuthService.js';
-import { IOrbitProviderAuthService } from '../../workbench/contrib/orbit/common/orbitProviderAuthService.js';
 import { MetricsMainService } from '../../workbench/contrib/orbit/electron-main/metricsMainService.js';
 import { VoidMainUpdateService } from '../../workbench/contrib/orbit/electron-main/orbitUpdateMainService.js';
 import { OpenAiCodexAuthMainService } from '../../workbench/contrib/orbit/electron-main/openai-codex/openAiCodexAuthMainService.js';
 import { ClinePassAuthMainService } from '../../workbench/contrib/orbit/electron-main/cline-pass/clinePassAuthMainService.js';
 import { XAiGrokAuthMainService } from '../../workbench/contrib/orbit/electron-main/xai-grok/xAiGrokAuthMainService.js';
-import { GitHubAuthMainService } from '../../workbench/contrib/orbit/electron-main/github/githubAuthMainService.js';
-import { OrbitProviderAuthMainService } from '../../workbench/contrib/orbit/electron-main/orbitProvider/orbitProviderAuthMainService.js';
-import { initOrbitLlmMainServices } from '../../workbench/contrib/orbit/electron-main/llmMessage/orbitLlmMainServices.js';
 import { LLMMessageChannel } from '../../workbench/contrib/orbit/electron-main/sendLLMMessageChannel.js';
 import { OrbitSCMChannel, VoidSCMService } from '../../workbench/contrib/orbit/electron-main/orbitSCMMainService.js';
 import { IVoidSCMService } from '../../workbench/contrib/orbit/common/orbitSCMTypes.js';
@@ -1194,8 +1191,6 @@ export class CodeApplication extends Disposable {
 		services.set(IOpenAiCodexAuthService, new SyncDescriptor(OpenAiCodexAuthMainService, undefined, false));
 		services.set(IClinePassAuthService, new SyncDescriptor(ClinePassAuthMainService, undefined, false));
 		services.set(IXAiGrokAuthService, new SyncDescriptor(XAiGrokAuthMainService, undefined, false));
-		services.set(IGitHubAuthService, new SyncDescriptor(GitHubAuthMainService, undefined, false));
-		services.set(IOrbitProviderAuthService, new SyncDescriptor(OrbitProviderAuthMainService, undefined, false));
 		services.set(IVoidSCMService, new SyncDescriptor(VoidSCMService, undefined, false));
 
 		// Default Extensions Profile Init
@@ -1355,17 +1350,10 @@ export class CodeApplication extends Disposable {
 		const xAiGrokAuthChannel = ProxyChannel.fromService(accessor.get(IXAiGrokAuthService), disposables);
 		mainProcessElectronServer.registerChannel('void-channel-xai-grok-auth', xAiGrokAuthChannel);
 
-		const githubAuthChannel = ProxyChannel.fromService(accessor.get(IGitHubAuthService), disposables);
-		mainProcessElectronServer.registerChannel('void-channel-github-auth', githubAuthChannel);
-
-		const orbitProviderAuthChannel = ProxyChannel.fromService(accessor.get(IOrbitProviderAuthService), disposables);
-		mainProcessElectronServer.registerChannel('void-channel-orbit-provider-auth', orbitProviderAuthChannel);
-
-		initOrbitLlmMainServices(
-			accessor.get(IProductService),
-			accessor.get(IEnvironmentMainService),
-			accessor.get(IMetricsService),
-		);
+		// The hosted "Orbit Provider" (GitHub sign-in) was removed and Orbit is fully local now. Delete the
+		// encrypted GitHub credentials earlier versions left in application storage.
+		const applicationStorageMainService = accessor.get(IApplicationStorageMainService) as unknown as IApplicationStorageMainService;
+		void applicationStorageMainService.whenReady.then(() => applicationStorageMainService.remove(GITHUB_AUTH_STORAGE_KEY, StorageScope.APPLICATION));
 
 		const sendLLMMessageChannel = new LLMMessageChannel(accessor.get(IMetricsService));
 		mainProcessElectronServer.registerChannel('void-channel-llmMessage', sendLLMMessageChannel);

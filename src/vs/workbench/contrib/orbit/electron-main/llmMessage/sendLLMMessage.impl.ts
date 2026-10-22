@@ -26,10 +26,8 @@ import { OPENAI_CODEX_OAUTH_CONFIG } from '../openai-codex/oauthConfig.js';
 import product from '../../../../../platform/product/common/product.js';
 import { getXAiGrokOAuthManager } from '../xai-grok/oauthManager.js';
 import { XAI_GROK_OAUTH_CONFIG } from '../xai-grok/oauthConfig.js';
-import { sendOrbitProviderChat } from './orbitProviderChat.js';
 import { sendClinePassProviderChat } from './clinePassProviderChat.js';
 import { clinePassProviderList } from './clinePassProviderList.js';
-import { orbitProviderList } from './orbitProviderList.js';
 import { schemaOfToolInfo } from './toolSchema.js';
 import { buildOpenAiCodexRequestHeaders } from './openAiCodexRequestHeaders.js';
 import { fetchWithEndpointPolicy, remoteHttpEndpointPolicyError } from '../../common/networkSecurity.js';
@@ -1918,11 +1916,6 @@ export const sendLLMMessageToProviderImplementation = {
 		sendChat: (params) => sendOpenAICodexChat(params),
 		sendFIM: null,
 		list: null,
-	},
-	orbit: {
-		sendChat: (params) => sendOrbitProviderChat(params),
-		sendFIM: null,
-		list: orbitProviderList,
 	},
 	clinePass: {
 		sendChat: (params) => sendClinePassProviderChat(params),

@@ -452,7 +452,10 @@ export const builtinToolNameToComponent: { [T in BuiltinToolName]: { resultWrapp
 			const merge = toolMessage.params?.merge ?? false
 			const isStreaming = toolMessage.type === 'running_now'
 			const accessor = useAccessor()
-			const messages = accessor.get('IChatThreadService').getCurrentThread().messages
+			// Read the thread this tool call belongs to, not the IDE's "current" thread — in the
+			// Agents window (and in side chats) those are different threads, so the previous-todos
+			// diff was computed from an unrelated conversation (and getCurrentThread() can throw).
+			const messages = accessor.get('IChatThreadService').getThread(threadId)?.messages ?? []
 			const previousTodosAtMessage = computeTodoListBeforeMessage(messages, messageIdx)
 
 			return (

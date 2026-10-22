@@ -2,6 +2,25 @@
 
 All notable changes to Orbit Editor are documented here.
 
+## 0.5.4
+
+### Fully local
+
+Orbit no longer has any hosted account or backend. Everything runs on your machine with your own provider keys, local models (such as Ollama), or the ChatGPT, SuperGrok and ClinePass subscriptions you already have.
+
+- Removed GitHub sign-in and the hosted Orbit Provider, including the account page, usage and billing, and the sign-in prompts in the chat history, onboarding, and model picker.
+- Removed the backend URL from the app configuration. Any GitHub credentials left by an earlier version are deleted on startup, and saved settings for the removed provider are cleaned up automatically.
+- Existing provider keys, model choices and chat history are unaffected. If your selected model belonged to the removed provider, Orbit switches to the first available model.
+
+### Agents window
+
+- The Changes tab and file explorer now update while the agent works, even when the folder is not open in the IDE.
+- Added-to-chat actions now reach the Agents chat instead of the IDE chat: the browser element picker, New Chat (⌘⇧L) and Add Selection to Chat (⌘L).
+- Fixed workspace, history-filter and selection popups rendering white in the dark theme, and the workspace button truncating to "Select Work…". It now reads "No Repo" when that is the active source.
+- Deleting a running conversation now stops its agent.
+- Fixed Compare in the file explorer, a terminal tab that could disappear while opening, the tab strip not scrolling to the active tab, and a divider drag stalling over the browser panel.
+- Changes no longer refreshes while hidden and shows a loading state instead of "No uncommitted changes". The window opens with the composer focused, titles itself with the workspace name, and a divider resets on double-click.
+
 ## 0.5.2
 
 ### Image annotation

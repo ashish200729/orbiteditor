@@ -1262,7 +1262,9 @@ export class ToolsService implements IToolsService {
 					};
 				} catch {
 					// File might have been deleted
-					const threadId = this.chatThreadService.state.currentThreadId;
+					// Clear the link on the thread that is executing this tool, not whichever thread the
+					// IDE sidebar happens to be showing (they differ for Agents-window chats).
+					const threadId = this._getCurrentThreadId();
 					if (threadId) {
 						this.chatThreadService.clearLinkedPlanPath(threadId);
 					}

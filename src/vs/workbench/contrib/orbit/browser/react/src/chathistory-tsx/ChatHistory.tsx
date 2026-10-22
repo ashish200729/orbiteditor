@@ -8,7 +8,6 @@ import { useIsDark, useAccessor, useChatThreadsState, useRunningThreadIds, useIs
 import '../styles.css';
 import ErrorBoundary from '../sidebar-tsx/ErrorBoundary.js';
 import { IconShell1 } from '../markdown/ApplyBlockHoverButtons.js';
-import { OrbitUserProfileFooter } from '../shared/OrbitUserProfileFooter.js';
 import { Check, Copy, FolderPlus, MessageSquarePlus, Trash2, X, MoreHorizontal, LayoutGrid, Search, ListFilter, ChevronDown } from 'lucide-react';
 import { IsRunningType, ThreadType } from '../../../chatThreadService.js';
 import { filterThreadsByWorkspaceId } from '../../../../common/agentWorkspaceHelpers.js';
@@ -368,7 +367,6 @@ const ChatHistoryContent = ({ inAgentWindow }: { inAgentWindow: boolean }) => {
 					</div>
 				</div>
 				{historyOverlays}
-				<OrbitUserProfileFooter />
 			</div>
 		);
 	}
@@ -516,7 +514,6 @@ const ChatHistoryContent = ({ inAgentWindow }: { inAgentWindow: boolean }) => {
 				)}
 			</div>
 			{historyOverlays}
-			<OrbitUserProfileFooter />
 		</div>
 	);
 };
@@ -598,6 +595,13 @@ const ChatHistoryHeader = ({
 				placeholder="Search Agents..."
 				value={searchQuery}
 				onChange={(e) => setSearchQuery(e.target.value)}
+				onKeyDown={(e) => {
+					// Escape clears the filter first (the usual search-box behavior).
+					if (e.key === 'Escape' && searchQuery) {
+						e.preventDefault();
+						setSearchQuery('');
+					}
+				}}
 				onFocus={() => setIsSearchFocused(true)}
 				onBlur={() => setIsSearchFocused(false)}
 				aria-label="Search agents"
